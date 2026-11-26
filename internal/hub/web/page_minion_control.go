@@ -36,15 +36,83 @@ type ControlPage struct {
 // ControlRow is one Worker of the editor.
 type ControlRow struct {
 	ops.ControlWorker
-	// Accepted is the set of Workers this Worker accepts control from.
+	// Accepted is the set of Workers this Worker accepts control from: a
+	// stored acceptance that allows something (all or some sessions).
 	Accepted map[string]bool
+	// States is the stored acceptance per source Worker, in its three forms.
+	States map[string]AcceptView
 	// Others are the other Workers, for the "accepts control from" picker.
 	Others []ops.ControlWorker
 	// Known are session names seen on the Worker that are not masters yet.
 	Known []string
 	Saved string // "Saved" line with the undo of the last change, when set
 	Undo  *UndoView
+	Note  string // a click that changed nothing, and why
 	Error string
+}
+
+// The three forms of a stored acceptance.
+const (
+	acceptKindAll     = "all"     // no session list: every shared session
+	acceptKindLimited = "limited" // only the listed sessions
+	acceptKindNone    = "none"    // an empty list: nothing
+)
+
+// AcceptView is what a Worker has stored for one source Worker. Kind is
+// empty when there is no row.
+type AcceptView struct {
+	Kind     string
+	Sessions []string
+}
+
+func acceptView(a ops.ControlAccept) AcceptView {
+	switch {
+	case a.Sessions == nil:
+		return AcceptView{Kind: acceptKindAll}
+	case len(*a.Sessions) == 0:
+		return AcceptView{Kind: acceptKindNone}
+	}
+	return AcceptView{Kind: acceptKindLimited, Sessions: slices.Clone(*a.Sessions)}
+}
+
+// AcceptBadge marks an acceptance that is not the whole Worker.
+type AcceptBadge struct {
+	Source, Tone, Text, Label string
+}
+
+func sessionCount(n int) string {
+	if n == 1 {
+		return "1 session"
+	}
+	return strconv.Itoa(n) + " sessions"
+}
+
+// Badge is the mark of a limited or explicit-nothing acceptance from the
+// source Worker; nil for a whole-Worker acceptance and for no row.
+func (r ControlRow) Badge(sourceID, sourceName string) *AcceptBadge {
+	st := r.States[sourceID]
+	switch st.Kind {
+	case acceptKindLimited:
+		n := len(st.Sessions)
+		return &AcceptBadge{Source: sourceName, Tone: "warning", Text: "limited (" + strconv.Itoa(n) + ")",
+			Label: r.Name + " accepts only " + sessionCount(n) + " from " + sourceName}
+	case acceptKindNone:
+		return &AcceptBadge{Source: sourceName, Tone: "danger", Text: "blocked",
+			Label: r.Name + " accepts nothing from " + sourceName}
+	}
+	return nil
+}
+
+// Exceptions are the sources a Worker that accepts all Workers still limits
+// or blocks (its picker is hidden then).
+func (r ControlRow) Exceptions() []AcceptBadge {
+	var out []AcceptBadge
+	for _, o := range r.Others {
+		if b := r.Badge(o.WorkerID, o.Name); b != nil {
+			out = append(out, *b)
+		}
+	}
+	return out
 }
 
 func (r ControlRow) MasterCount() int {
@@ -100,6 +168,9 @@ type ControlCheckView struct {
 	WorkerID        string
 	Worker, Session string
 	Result          ops.ControlCheckResult
+	// Error is set when the Hub could not answer the check; the answer is
+	// then unknown, never "no master session".
+	Error string
 }
 
 var controlTemplates = sync.OnceValue(func() *template.Template {
@@ -109,9 +180,13 @@ var controlTemplates = sync.OnceValue(func() *template.Template {
 func controlRows(res ops.ControlListResult, sessions map[string][]string) []ControlRow {
 	rows := make([]ControlRow, 0, len(res.Workers))
 	for _, w := range res.Workers {
-		r := ControlRow{ControlWorker: w, Accepted: map[string]bool{}}
+		r := ControlRow{ControlWorker: w, Accepted: map[string]bool{}, States: map[string]AcceptView{}}
 		for _, a := range w.Accepts {
-			r.Accepted[a.SourceWorkerID] = true
+			v := acceptView(a)
+			r.States[a.SourceWorkerID] = v
+			if v.Kind != acceptKindNone {
+				r.Accepted[a.SourceWorkerID] = true
+			}
 		}
 		for _, o := range res.Workers {
 			if o.WorkerID != w.WorkerID {
@@ -181,14 +256,16 @@ func controlData(r *http.Request, c OpCaller) (any, error) {
 	}
 	if w != "" && s != "" {
 		var chk ops.ControlCheckResult
-		if err := c.CallOp(r, ops.OpControlCheck, ops.ControlCheckArgs{WorkerID: w, SessionName: s}, &chk); err == nil {
-			name := w
-			for _, row := range p.Rows {
-				if row.WorkerID == w {
-					name = row.Name
-				}
+		err := c.CallOp(r, ops.OpControlCheck, ops.ControlCheckArgs{WorkerID: w, SessionName: s}, &chk)
+		name := w
+		for _, row := range p.Rows {
+			if row.WorkerID == w {
+				name = row.Name
 			}
-			p.Check = &ControlCheckView{WorkerID: w, Worker: name, Session: s, Result: chk}
+		}
+		p.Check = &ControlCheckView{WorkerID: w, Worker: name, Session: s, Result: chk}
+		if err != nil {
+			p.Check.Error = failureText(err)
 		}
 	}
 	return p, nil
@@ -205,6 +282,11 @@ func handleControlChange(w http.ResponseWriter, r *http.Request, c OpCaller) {
 		row   string
 		undo  *UndoView
 		saved string
+		note  string
+		// skip, when set, means the click writes nothing; the row is
+		// answered with skip as a note (skipIsNote) or as an error.
+		skip       string
+		skipIsNote bool
 	)
 	on := f.Get("value") == "on"
 	wa := newWriteArgs()
@@ -253,20 +335,60 @@ func handleControlChange(w http.ResponseWriter, r *http.Request, c OpCaller) {
 	case "accept":
 		row = f.Get("worker_id")
 		src := f.Get("source_worker_id")
-		op, args = ops.OpControlSetAccept, ops.ControlSetAcceptArgs{WriteArgs: wa, WorkerID: row, SourceWorkerID: src, Accept: on}
-		saved = map[bool]string{true: "Accepts control from that Worker.", false: "No longer accepts control from that Worker."}[on]
-		undo = &UndoView{Action: action, Fields: map[string]string{"worker_id": row, "source_worker_id": src, "value": flip}}
-		if !on && acceptLimited(r, c, row, src) {
-			// Undo would accept all shared sessions, not the old few.
-			undo = nil
-			saved += " It was limited to some sessions; adding it again accepts all shared sessions."
+		a := ops.ControlSetAcceptArgs{WriteArgs: wa, WorkerID: row, SourceWorkerID: src, Accept: on}
+		before, known := storedAccept(r, c, row, src)
+		// Undo is offered only where the inverse click restores exactly what
+		// was stored before.
+		inverse := &UndoView{Action: action, Fields: map[string]string{"worker_id": row, "source_worker_id": src, "value": flip}}
+		kind := before.View.Kind
+		switch {
+		case on && !known:
+			// A tick without a list could widen a limited acceptance: write
+			// nothing and answer the row as the Hub has it, with the reason.
+			skip = "The Hub could not say what this Worker accepts now, so nothing was changed. Try again."
+		case on && kind == acceptKindLimited:
+			// Never widen silently, and never write the list read a moment
+			// ago (a revoke in between would be undone): change nothing.
+			skip, skipIsNote = "This acceptance is limited to "+sessionCount(len(before.View.Sessions))+
+				". Nothing was changed. Change the list with the operation control_set_accept.", true
+		case on && kind == acceptKindNone:
+			saved = before.Target + " now accepts every shared session from " + before.Source + "."
+			if before.AcceptAll {
+				undo = inverse // a revoke on a Worker that accepts all blocks again
+			} else {
+				saved += " No Undo: it cannot block that Worker again."
+			}
+		case on && kind == acceptKindAll:
+			saved = "Accepts control from that Worker, as before."
+		case on:
+			saved = "Accepts control from that Worker."
+			if before.AcceptAll {
+				saved += " No Undo: it would block that Worker."
+			} else {
+				undo = inverse
+			}
+		case !known:
+			saved = "No longer accepts control from that Worker. No Undo: the Hub could not say what it accepted before."
+		case kind == acceptKindAll:
+			saved = "No longer accepts control from that Worker."
+			undo = inverse
+		case kind == acceptKindLimited:
+			saved = "No longer accepts control from that Worker. It was limited to some sessions; adding it again accepts all shared sessions, so there is no Undo."
+		default:
+			// Nothing was allowed before (a blocked entry or none): a tick
+			// would accept the whole Worker.
+			saved = "No longer accepts control from that Worker. No Undo: it accepted nothing from it before."
 		}
+		op, args = ops.OpControlSetAccept, a
 	default:
 		http.NotFound(w, r)
 		return
 	}
 	var res ops.WriteResult
-	callErr := c.CallOp(r, op, args, &res)
+	var callErr error
+	if skip == "" {
+		callErr = c.CallOp(r, op, args, &res)
+	}
 	// The matrix and other rows read the same rows: ask the page to refresh
 	// them from the Hub (minion-control.js).
 	w.Header().Set("HX-Trigger", "control-changed")
@@ -281,10 +403,15 @@ func handleControlChange(w http.ResponseWriter, r *http.Request, c OpCaller) {
 		if cr.WorkerID != row {
 			continue
 		}
-		if callErr != nil {
+		switch {
+		case skip != "" && skipIsNote:
+			cr.Note = skip
+		case skip != "":
+			cr.Error = skip
+		case callErr != nil:
 			cr.Error = failureText(callErr)
-		} else {
-			cr.Saved, cr.Undo = saved, undo
+		default:
+			cr.Saved, cr.Undo, cr.Note = saved, undo, note
 		}
 		writeFragmentTemplate(w, controlTemplates(), "control_row", cr)
 		return
@@ -292,24 +419,35 @@ func handleControlChange(w http.ResponseWriter, r *http.Request, c OpCaller) {
 	writeResultError(w, "The Worker is gone.")
 }
 
-// acceptLimited reports whether target accepts control from source only for
-// some sessions (or the Hub could not say: then no Undo is offered either).
-func acceptLimited(r *http.Request, c OpCaller, target, source string) bool {
+// acceptBefore is what the target has stored for the source before a click.
+type acceptBefore struct {
+	View           AcceptView // Kind is empty without a row
+	AcceptAll      bool       // the target accepts all Workers
+	Target, Source string     // names, for the saved sentence
+}
+
+// storedAccept reads what target accepts from source now; false when the Hub
+// could not say.
+func storedAccept(r *http.Request, c OpCaller, target, source string) (acceptBefore, bool) {
+	out := acceptBefore{Target: target, Source: source}
 	var list ops.ControlListResult
 	if err := c.CallOp(r, ops.OpControlList, ops.ControlListArgs{}, &list); err != nil {
-		return true
+		return out, false
 	}
 	for _, w := range list.Workers {
-		if w.WorkerID != target {
-			continue
-		}
-		for _, a := range w.Accepts {
-			if a.SourceWorkerID == source {
-				return a.Sessions != nil
+		switch w.WorkerID {
+		case source:
+			out.Source = w.Name
+		case target:
+			out.Target, out.AcceptAll = w.Name, w.AcceptAll
+			for _, a := range w.Accepts {
+				if a.SourceWorkerID == source {
+					out.View = acceptView(a)
+				}
 			}
 		}
 	}
-	return false
+	return out, true
 }
 
 func init() {

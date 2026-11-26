@@ -262,3 +262,37 @@ func TestControlCheckNamesMigratedSelfGrants(t *testing.T) {
 		t.Fatalf("check = %d %s", code, body)
 	}
 }
+
+// A session-bound master is not in master_session: the name-only revoke must
+// refuse instead of answering delivered while nothing is revoked.
+func TestNameOnlyRevokeRefusesABoundMaster(t *testing.T) {
+	k := newSessionControlStack(t)
+	a := k.worker(k.u1, "a", store.WorkerKindPrivate)
+	ctx := context.Background()
+	if _, err := k.st.DB().ExecContext(ctx, `INSERT INTO bound_master_session
+		(worker_id,session_name,incarnation_id,owner_id,worker_pub,generation,active,changed_at) VALUES (?,?,?,?,?,1,1,1)`,
+		a.ID, "boss", "incarnation-one", a.OwnerID, []byte{1}); err != nil {
+		t.Fatal(err)
+	}
+	k.as(k.admin)
+	for op, args := range map[string]map[string]any{
+		ops.OpControlSetMaster:  {"worker_id": a.ID, "session_name": "boss", "master": false},
+		ops.OpSessionControlSet: {"worker_id": a.ID, "session_name": "boss", "targets": []any{}},
+	} {
+		if code, body := k.call(op, args); code != http.StatusConflict || !strings.Contains(body, "session-bound master action") {
+			t.Errorf("%s on a bound master = %d %s; want conflict", op, code, body)
+		}
+	}
+	if ok, err := k.st.BoundMasterActive(ctx, a.ID, "boss"); err != nil || !ok {
+		t.Fatalf("bound master after the refused revokes = %t, %v", ok, err)
+	}
+	// An inactive bound nomination and a plain name are revoked as before.
+	if _, err := k.st.DB().ExecContext(ctx, `UPDATE bound_master_session SET active=0 WHERE worker_id=?`, a.ID); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"boss", "plain"} {
+		if code, body := k.call(ops.OpControlSetMaster, map[string]any{"worker_id": a.ID, "session_name": name, "master": false}); code != http.StatusOK {
+			t.Errorf("revoke of %s = %d %s", name, code, body)
+		}
+	}
+}

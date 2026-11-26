@@ -94,14 +94,38 @@ func (s *Store) PutMasterSession(ctx context.Context, m MasterRow) error {
 	return nil
 }
 
-// DeleteMasterSession ends a nomination and reports whether it existed.
+// DeleteMasterSession ends a nomination and reports whether it existed. A
+// slot held by an active session-bound master is refused with
+// [ErrBoundMasterSlot] in the same transaction: that master is not in
+// master_session, so the delete would revoke nothing.
 func (s *Store) DeleteMasterSession(ctx context.Context, workerID, session string) (bool, error) {
-	res, err := s.db.ExecContext(ctx, `DELETE FROM master_session WHERE worker_id = ? AND session_name = ?`, workerID, session)
-	if err != nil {
-		return false, fmt.Errorf("store: delete master session: %w", err)
-	}
-	n, err := res.RowsAffected()
+	var n int64
+	err := s.Tx(ctx, func(tx *sql.Tx) error {
+		if err := refuseBoundSlot(ctx, tx, workerID, session); err != nil {
+			return err
+		}
+		res, err := tx.ExecContext(ctx, `DELETE FROM master_session WHERE worker_id = ? AND session_name = ?`, workerID, session)
+		if err != nil {
+			return fmt.Errorf("store: delete master session: %w", err)
+		}
+		n, err = res.RowsAffected()
+		return err
+	})
 	return n > 0, err
+}
+
+// refuseBoundSlot answers [ErrBoundMasterSlot] when the session holds an
+// active session-bound master nomination, read in the caller's transaction.
+func refuseBoundSlot(ctx context.Context, tx *sql.Tx, workerID, session string) error {
+	var n int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM bound_master_session WHERE worker_id=? AND session_name=? AND active=1`,
+		workerID, session).Scan(&n); err != nil {
+		return fmt.Errorf("store: read the bound master slot: %w", err)
+	}
+	if n > 0 {
+		return ErrBoundMasterSlot
+	}
+	return nil
 }
 
 // ListAccepts returns every acceptance, ordered by target and source.
@@ -283,6 +307,9 @@ func (s *Store) DeleteMasterSessionIfOwner(ctx context.Context, workerID, sessio
 		if err := checkOwners(ctx, tx, map[string]string{workerID: owner}); err != nil {
 			return err
 		}
+		if err := refuseBoundSlot(ctx, tx, workerID, session); err != nil {
+			return err
+		}
 		res, err := tx.ExecContext(ctx, `DELETE FROM master_session WHERE worker_id = ? AND session_name = ?`, workerID, session)
 		if err != nil {
 			return fmt.Errorf("store: delete master session: %w", err)
@@ -304,6 +331,48 @@ func (s *Store) DeleteAcceptIfOwners(ctx context.Context, target, source, target
 		res, err := tx.ExecContext(ctx, `DELETE FROM control_accept WHERE target_worker_id = ? AND source_worker_id = ?`, target, source)
 		if err != nil {
 			return fmt.Errorf("store: delete acceptance: %w", err)
+		}
+		n, err = res.RowsAffected()
+		return err
+	})
+	return n > 0, err
+}
+
+// RevokeAcceptIfOwners withdraws what target accepts from source, while both
+// Workers still have the owners the change was decided for. A target that
+// accepts control from all Workers keeps an explicit row that allows nothing
+// (sessions_json = '[]'): deleting the row there would let the source fall
+// back to accept_all and reach every shared session. Without accept_all the
+// row is deleted. It reports whether a row was deleted or changed.
+func (s *Store) RevokeAcceptIfOwners(ctx context.Context, a AcceptRow, targetOwner, sourceOwner string) (bool, error) {
+	if a.TargetWorkerID == "" || a.SourceWorkerID == "" || a.TargetWorkerID == a.SourceWorkerID {
+		return false, errors.New("store: an acceptance needs two different Workers")
+	}
+	var n int64
+	err := s.Tx(ctx, func(tx *sql.Tx) error {
+		if err := checkOwners(ctx, tx, map[string]string{a.TargetWorkerID: targetOwner, a.SourceWorkerID: sourceOwner}); err != nil {
+			return err
+		}
+		var all bool
+		err := tx.QueryRowContext(ctx, `SELECT accept_all FROM worker_control WHERE worker_id = ?`, a.TargetWorkerID).Scan(&all)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("store: revoke acceptance: %w", err)
+		}
+		var res sql.Result
+		if all {
+			res, err = tx.ExecContext(ctx,
+				`INSERT INTO control_accept (target_worker_id, source_worker_id, sessions_json, created_by, created_at) VALUES (?, ?, '[]', ?, ?)
+				 ON CONFLICT (target_worker_id, source_worker_id) DO UPDATE SET sessions_json = excluded.sessions_json, created_by = excluded.created_by, created_at = excluded.created_at`,
+				a.TargetWorkerID, a.SourceWorkerID, a.CreatedBy, a.CreatedAt)
+		} else {
+			// An explicit block ('[]') stays: it allows nothing already, and
+			// deleting it would let the source reach everything as soon as
+			// the target accepts all Workers again.
+			res, err = tx.ExecContext(ctx, `DELETE FROM control_accept WHERE target_worker_id = ? AND source_worker_id = ?
+				AND (sessions_json IS NULL OR sessions_json <> '[]')`, a.TargetWorkerID, a.SourceWorkerID)
+		}
+		if err != nil {
+			return fmt.Errorf("store: revoke acceptance: %w", err)
 		}
 		n, err = res.RowsAffected()
 		return err

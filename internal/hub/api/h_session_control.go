@@ -20,6 +20,7 @@ type SessionControlStore interface {
 	WorkerOwner(ctx context.Context, workerID string) (string, error)
 	PutSessionControlIfOwner(ctx context.Context, r store.SessionControlRow, expectedOwnerID string) error
 	DeleteSessionControl(ctx context.Context, workerID, sessionName string) (bool, error)
+	BoundMasterActive(ctx context.Context, workerID, session string) (bool, error)
 }
 
 var _ SessionControlStore = (*store.Store)(nil)
@@ -119,7 +120,18 @@ func (h sessionControlHandlers) set(ctx context.Context, c *Call, a ops.SessionC
 		return ops.WriteResult{}, NewError(proto.CodeConflict, "session_control_set is replaced by Minion control: use control_set_master and control_set_accept (Access > Minion control)")
 	}
 	if len(a.Targets) == 0 {
+		bound, err := h.st.BoundMasterActive(ctx, a.WorkerID, a.SessionName)
+		if err != nil {
+			return ops.WriteResult{}, err
+		}
+		if bound {
+			// Not in master_session: the delete below would revoke nothing.
+			return ops.WriteResult{}, ownerErr(store.ErrBoundMasterSlot)
+		}
 		if _, err := h.st.DeleteSessionControl(ctx, a.WorkerID, a.SessionName); err != nil {
+			if errors.Is(err, store.ErrBoundMasterSlot) {
+				return ops.WriteResult{}, ownerErr(err)
+			}
 			return ops.WriteResult{}, err
 		}
 		return delivered(), nil
