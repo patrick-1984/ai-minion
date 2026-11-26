@@ -18,7 +18,11 @@ import (
 
 // newStrictStack is newGrantStack with the request de-duplication wired to
 // the real store, as the Hub wires it.
-func newStrictStack(t *testing.T) *kindStack {
+func newStrictStack(t *testing.T) *kindStack { return newStrictStackWith(t, nil) }
+
+// newStrictStackWith is newStrictStack; requests, when set, wraps the store as
+// the dispatcher's request store.
+func newStrictStackWith(t *testing.T, requests func(*store.Store) RequestStore) *kindStack {
 	t.Helper()
 	k := newKindStack(t)
 	cat := ops.NewRegistry()
@@ -49,7 +53,11 @@ func newStrictStack(t *testing.T) *kindStack {
 		t.Fatal(err)
 	}
 	k.mux = http.NewServeMux()
-	d := &Dispatcher{Catalog: cat, Handlers: handlers, Auth: k.authn, Authz: k.az, Audit: lg, Requests: k.st,
+	var rs RequestStore = k.st
+	if requests != nil {
+		rs = requests(k.st)
+	}
+	d := &Dispatcher{Catalog: cat, Handlers: handlers, Auth: k.authn, Authz: k.az, Audit: lg, Requests: rs,
 		Log: testLogger(&strings.Builder{})}
 	if _, err := NewRouter(d, k.mux); err != nil {
 		t.Fatal(err)
@@ -166,7 +174,7 @@ func TestRequestIDOfAnotherRequestConflicts(t *testing.T) {
 	code, body = k.call(ops.OpGrantSet, other)
 	reused("other arguments", code, body)
 	// Another operation with the same id.
-	code, body = k.call(ops.OpGrantRevoke, map[string]any{"request_id": id, "id": first.Grant.ID})
+	code, body = k.call(ops.OpGrantRevoke, map[string]any{"request_id": id, "id": first.Grant.ID, "if_revision": first.Grant.Revision})
 	reused("another operation", code, body)
 	// Another caller with the same id and the same arguments.
 	k.as(k.admin)
@@ -185,7 +193,7 @@ func TestRepeatedGrantRevokeIsAuditedOnce(t *testing.T) {
 	k.as(k.u1)
 	g := k.setGrant(grantArgs(a1, a2, ops.GrantLevelView))
 	before := k.auditTotal()
-	args := map[string]any{"request_id": ops.NewUUIDv7(), "id": g.ID}
+	args := map[string]any{"request_id": ops.NewUUIDv7(), "id": g.ID, "if_revision": g.Revision}
 	code1, body1 := k.call(ops.OpGrantRevoke, args)
 	if code1 != http.StatusOK {
 		t.Fatalf("grant_revoke = %d %s", code1, body1)
@@ -344,5 +352,58 @@ func TestUnknownMemberWalksNestedArguments(t *testing.T) {
 		if got != want || found != (want != "") {
 			t.Errorf("unknownMember(%s) = %q %v, want %q", body, got, found, want)
 		}
+	}
+}
+
+// stoppedRequests is the request store of a Hub that stops right after a
+// grant change commits: the dispatcher's own write of the answer never
+// happens.
+type stoppedRequests struct{ *store.Store }
+
+func (stoppedRequests) PutOpRequest(context.Context, store.OpRequestRow) (bool, error) {
+	return false, nil
+}
+
+// The answer of a grant write commits with the change: a repeat of the
+// request after a stop at the commit gets the same answer, not a conflict or
+// not_found, and nothing runs again.
+func TestGrantWriteAnswerCommitsWithTheChange(t *testing.T) {
+	k := newStrictStackWith(t, func(st *store.Store) RequestStore { return stoppedRequests{st} })
+	a1, a2 := k.worker(k.u1, "a1", store.WorkerKindPrivate), k.worker(k.u1, "a2", store.WorkerKindPrivate)
+	b := k.worker(k.u2, "b", store.WorkerKindPrivate)
+	twice := func(op string, args map[string]any) string {
+		t.Helper()
+		args["request_id"] = ops.NewUUIDv7()
+		code1, body1 := k.call(op, args)
+		if code1 != http.StatusOK {
+			t.Fatalf("%s = %d %s", op, code1, body1)
+		}
+		before := k.auditTotal()
+		if code2, body2 := k.call(op, args); code2 != code1 || body2 != body1 {
+			t.Fatalf("%s repeated = %d %s, want %d %s", op, code2, body2, code1, body1)
+		}
+		if n := k.auditTotal(); n != before {
+			t.Fatalf("%s repeated added audit rows: %d, want %d", op, n, before)
+		}
+		return body1
+	}
+	k.as(k.u1)
+	var set ops.GrantSetResult
+	if err := json.Unmarshal([]byte(twice(ops.OpGrantSet, grantArgs(a1, a2, ops.GrantLevelView))), &set); err != nil || set.Grant.ID == "" {
+		t.Fatalf("grant_set = %+v (%v)", set, err)
+	}
+	twice(ops.OpGrantRevoke, map[string]any{"id": set.Grant.ID, "if_revision": set.Grant.Revision})
+	if l := k.listGrants(); len(l) != 0 {
+		t.Fatalf("grants = %+v", l)
+	}
+	k.as(k.admin)
+	g := k.setGrant(grantArgs(a1, b, ops.GrantLevelView))
+	if _, err := k.st.DB().ExecContext(t.Context(), `UPDATE session_grant SET suspended_at = 1, suspend_cause = 'test' WHERE id = ?`, g.ID); err != nil {
+		t.Fatal(err)
+	}
+	var appr ops.GrantSetResult
+	if err := json.Unmarshal([]byte(twice(ops.OpGrantApprove, map[string]any{"id": g.ID, "if_revision": g.Revision})), &appr); err != nil ||
+		appr.Grant.Suspended || appr.Grant.Revision != g.Revision+1 {
+		t.Fatalf("grant_approve = %+v (%v)", appr, err)
 	}
 }

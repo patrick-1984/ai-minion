@@ -174,7 +174,7 @@ func TestSessionGrantsOnTheRealHub(t *testing.T) {
 	}
 
 	// After grant_revoke the next call is refused.
-	if code, body := op(asAlice, ops.OpGrantRevoke, map[string]any{"id": g.ID}); code != 200 {
+	if code, body := op(asAlice, ops.OpGrantRevoke, map[string]any{"id": g.ID, "if_revision": g.Revision}); code != 200 {
 		t.Fatalf("grant_revoke = %d %s", code, body)
 	}
 	refused("revoked", a2, "minion-1")

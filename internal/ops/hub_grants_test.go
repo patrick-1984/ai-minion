@@ -125,11 +125,11 @@ func TestGrantRevokeAndApproveArgsValidate(t *testing.T) {
 		a     GrantRevokeArgs
 		field string
 	}{
-		{"any revision", GrantRevokeArgs{wa, id, 0}, ""},
 		{"at a revision", GrantRevokeArgs{wa, id, 2}, ""},
-		{"no request id", GrantRevokeArgs{WriteArgs{}, id, 0}, "request_id"},
-		{"no id", GrantRevokeArgs{wa, "", 0}, "id"},
-		{"bad id", GrantRevokeArgs{wa, "x", 0}, "id"},
+		{"no revision", GrantRevokeArgs{wa, id, 0}, "if_revision"},
+		{"no request id", GrantRevokeArgs{WriteArgs{}, id, 1}, "request_id"},
+		{"no id", GrantRevokeArgs{wa, "", 1}, "id"},
+		{"bad id", GrantRevokeArgs{wa, "x", 1}, "id"},
 	}
 	for _, tc := range revoke {
 		if err := tc.a.Validate(); tc.field == "" {
@@ -189,5 +189,38 @@ func TestGrantMaskedMembersAreOmittedWhenFalse(t *testing.T) {
 	var back Grant
 	if err := json.Unmarshal(masked, &back); err != nil || !back.SourceMasked || !back.TargetMasked {
 		t.Fatalf("round trip = %+v (%v)", back, err)
+	}
+}
+
+// grant_bind needs an explicit bind value: an omitted or null bind would
+// otherwise decode as false and unbind a Verified grant.
+func TestGrantBindArgsNeedAnExplicitBind(t *testing.T) {
+	id, rid := NewUUIDv7(), NewUUIDv7()
+	for _, tc := range []struct {
+		body  string
+		field string
+		binds bool
+	}{
+		{`{"request_id":"` + rid + `","id":"` + id + `","if_revision":2,"bind":true}`, "", true},
+		{`{"request_id":"` + rid + `","id":"` + id + `","if_revision":2,"bind":false}`, "", false},
+		{`{"request_id":"` + rid + `","id":"` + id + `","if_revision":2}`, "bind", false},
+		{`{"request_id":"` + rid + `","id":"` + id + `","if_revision":2,"bind":null}`, "bind", false},
+		{`{"request_id":"` + rid + `","id":"` + id + `","bind":true}`, "if_revision", true},
+	} {
+		var a GrantBindArgs
+		if err := json.Unmarshal([]byte(tc.body), &a); err != nil {
+			t.Fatalf("%s: %v", tc.body, err)
+		}
+		err := a.Validate()
+		if tc.field == "" {
+			if err != nil {
+				t.Errorf("%s: err = %v, want none", tc.body, err)
+			}
+		} else {
+			invalidOn(t, err, tc.field)
+		}
+		if a.Binds() != tc.binds {
+			t.Errorf("%s: Binds = %v, want %v", tc.body, a.Binds(), tc.binds)
+		}
 	}
 }

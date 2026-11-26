@@ -1694,6 +1694,7 @@
         "required": [
           "force",
           "id",
+          "if_revision",
           "request_id"
         ],
         "type": "object"

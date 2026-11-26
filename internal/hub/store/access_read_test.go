@@ -34,6 +34,9 @@ func TestAccessSnapshotReadsEveryTableWithoutTheWriteLock(t *testing.T) {
 	f.exec(t, `INSERT INTO bound_master_session(worker_id,owner_id,session_name,incarnation_id,worker_pub,generation,active,changed_at)
 		VALUES(?,?,?,?,?,1,1,1)`, f.b.ID, "alice", "lead", "inc-1", f.b.Pub)
 	f.exec(t, `UPDATE users SET active = 0 WHERE id = 'bob'`)
+	// The grant fixture gives alice a user role; take it away for the check
+	// below (an account without a role has no access).
+	f.exec(t, `DELETE FROM user_roles WHERE user_id = 'alice'`)
 
 	var snap AccessSnapshot
 	err := f.s.Tx(ctx, func(tx *sql.Tx) error {
@@ -62,7 +65,7 @@ func TestAccessSnapshotReadsEveryTableWithoutTheWriteLock(t *testing.T) {
 	if u := snap.Users["root"]; !u.Active || !u.Admin || u.Username != "root" {
 		t.Errorf("root = %+v", u)
 	}
-	// alice has no role row in this fixture, bob is deactivated: neither may call.
+	// alice has no role row any more, bob is deactivated: neither may call.
 	if snap.Users["alice"].Active || snap.Users["bob"].Active || snap.Users["bob"].Admin {
 		t.Errorf("users = %+v", snap.Users)
 	}

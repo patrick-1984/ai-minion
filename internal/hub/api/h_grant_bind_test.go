@@ -179,3 +179,38 @@ func TestGrantBindAuthorityIsReadInTheWritingTransaction(t *testing.T) {
 		t.Fatalf("the refused bind left %d audit rows", n)
 	}
 }
+
+// An omitted or null bind is refused before the handler runs: it would
+// otherwise decode as false and turn a Verified grant into a Claimed one.
+func TestGrantBindNeedsAnExplicitBind(t *testing.T) {
+	lane := &fakeBindLane{live: map[string]string{"agent": "inc-1"}}
+	k := newGrantBindStack(t, lane)
+	a1, a2 := k.worker(k.u1, "a1", store.WorkerKindPrivate), k.worker(k.u1, "a2", store.WorkerKindPrivate)
+	if _, err := k.st.DB().ExecContext(t.Context(), `UPDATE workers SET approval='approved'`); err != nil {
+		t.Fatal(err)
+	}
+	g, err := k.st.PutSessionGrant(t.Context(), store.SessionGrantRow{SourceWorkerID: a1.ID, SourceSession: "agent",
+		TargetWorkerID: a2.ID, TargetSession: "build", Level: 3, Authority: store.GrantAuthorityOwner,
+		SourceOwnerID: k.u1, TargetOwnerID: k.u1}, 0, store.GrantWrite{ActorID: k.u1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if g, err = k.st.BindSessionGrant(t.Context(), g.ID, "inc-1", g.Revision, store.GrantWrite{ActorID: k.u1}); err != nil {
+		t.Fatal(err)
+	}
+	k.as(k.u1)
+	for name, args := range map[string]map[string]any{
+		"omitted": {"id": g.ID, "if_revision": g.Revision},
+		"null":    {"id": g.ID, "if_revision": g.Revision, "bind": nil},
+	} {
+		if code, body := k.call(ops.OpGrantBind, args); code == http.StatusOK || kindErrCode(t, body) != proto.CodeInvalidArgument {
+			t.Fatalf("%s bind = %d %s, want invalid_argument", name, code, body)
+		}
+	}
+	if row, _ := k.st.SessionGrant(t.Context(), g.ID); row.SourceIncarnation != "inc-1" || row.Revision != g.Revision {
+		t.Fatalf("the Verified grant changed: %+v", row)
+	}
+	if len(lane.refreshed) != 0 {
+		t.Fatalf("leases refreshed: %v", lane.refreshed)
+	}
+}

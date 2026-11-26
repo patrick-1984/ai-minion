@@ -164,10 +164,10 @@ func TestGrantBetweenUsersTakesAnAdministrator(t *testing.T) {
 	}
 	// The owner of the target revokes; a second revoke answers not_found.
 	k.as(k.u2)
-	if code, body := k.call(ops.OpGrantRevoke, map[string]any{"id": g.ID}); code != http.StatusOK {
+	if code, body := k.call(ops.OpGrantRevoke, map[string]any{"id": g.ID, "if_revision": g.Revision}); code != http.StatusOK {
 		t.Fatalf("revoke by the target's owner = %d %s", code, body)
 	}
-	if code, body := k.call(ops.OpGrantRevoke, map[string]any{"id": g.ID}); kindErrCode(t, body) != proto.CodeNotFound {
+	if code, body := k.call(ops.OpGrantRevoke, map[string]any{"id": g.ID, "if_revision": g.Revision}); kindErrCode(t, body) != proto.CodeNotFound {
 		t.Fatalf("second revoke = %d %s", code, body)
 	}
 }
@@ -329,22 +329,47 @@ func TestGrantAdministratorBetweenWorkersOfOneOtherUserAndTheAudit(t *testing.T)
 	}
 }
 
-// grant_set is SessionOnly: the dispatcher refuses an act-as session before
-// the handler runs, for the acted user's own Workers and between users alike
-// (even when the actor is an administrator). Nothing is stored.
-func TestGrantActAsIsRefusedBySessionOnly(t *testing.T) {
+// D4: an administrator acting as a user in a browser session creates owner
+// grants between that user's own Workers; the grant is the user's and the
+// audit row names the administrator as acting. Between users it is refused,
+// as are the other SessionOnly grant operations and an act-as API key.
+func TestGrantActAsCreatesOwnerGrantsOnly(t *testing.T) {
 	k := newGrantStack(t)
+	ctx := context.Background()
 	a1, a2 := k.worker(k.u1, "a1", store.WorkerKindPrivate), k.worker(k.u1, "a2", store.WorkerKindPrivate)
 	b := k.worker(k.u2, "b", store.WorkerKindPrivate)
-	k.authn.mu.Lock()
-	k.authn.id = Identity{Principal: authz.NewActAsPrincipal(k.admin, k.u1, time.Now().Add(time.Hour)), Actor: k.admin, ActingAs: k.u1, Via: ViaSession}
-	k.authn.mu.Unlock()
-	for _, args := range []map[string]any{grantArgs(a1, a2, ops.GrantLevelView), grantArgs(a1, b, ops.GrantLevelView)} {
-		if code, body := k.call(ops.OpGrantSet, args); code != http.StatusForbidden {
-			t.Fatalf("act-as grant_set = %d %s, want forbidden", code, body)
+	actAs := func(via string) {
+		k.authn.mu.Lock()
+		k.authn.id = Identity{Principal: authz.NewActAsPrincipal(k.admin, k.u1, time.Now().Add(time.Hour)), Actor: k.admin, ActingAs: k.u1, Via: via}
+		k.authn.mu.Unlock()
+	}
+	actAs(ViaSession)
+	if code, body := k.call(ops.OpGrantSet, grantArgs(a1, b, ops.GrantLevelView)); code != http.StatusForbidden {
+		t.Fatalf("act-as grant_set between users = %d %s, want forbidden", code, body)
+	}
+	g := k.setGrant(grantArgs(a1, a2, ops.GrantLevelView))
+	if g.Authority != ops.GrantAuthorityOwner || g.GrantedBy != k.u1 {
+		t.Fatalf("act-as grant = %+v", g)
+	}
+	var ok *audit.Event
+	for _, ev := range k.grantEvents(AuditActionGrantCreate) {
+		if ev.Outcome == AuditOutcomeSuccess {
+			ok = &ev
 		}
 	}
-	if rows, _ := k.st.ListSessionGrants(context.Background(), store.SessionGrantFilter{}); len(rows) != 0 {
+	if ok == nil || ok.Actor != k.admin || ok.ActingAs != k.u1 || ok.GrantID != g.ID {
+		t.Fatalf("act-as audit = %+v", k.grantEvents(AuditActionGrantCreate))
+	}
+	// grant_approve stays refused to an act-as session; grant_set to an
+	// act-as identity that did not come through a browser session.
+	if code, body := k.call(ops.OpGrantApprove, map[string]any{"id": g.ID, "if_revision": g.Revision}); code != http.StatusForbidden {
+		t.Fatalf("act-as grant_approve = %d %s, want forbidden", code, body)
+	}
+	actAs(ViaAPIKey)
+	if code, body := k.call(ops.OpGrantSet, grantArgs(a2, a1, ops.GrantLevelView)); code != http.StatusForbidden {
+		t.Fatalf("act-as grant_set not via a session = %d %s, want forbidden", code, body)
+	}
+	if rows, _ := k.st.ListSessionGrants(ctx, store.SessionGrantFilter{}); len(rows) != 1 || rows[0].ID != g.ID {
 		t.Fatalf("stored %+v", rows)
 	}
 }
@@ -400,7 +425,7 @@ func TestGrantDemotedAdministratorCommitsNothing(t *testing.T) {
 		t.Fatalf("create audit = %+v", evs)
 	}
 	// The former grantor, who owns neither Worker, still withdraws the grant.
-	if code, body := k.call(ops.OpGrantRevoke, map[string]any{"id": g.ID}); code != http.StatusOK {
+	if code, body := k.call(ops.OpGrantRevoke, map[string]any{"id": g.ID, "if_revision": cur.Revision}); code != http.StatusOK {
 		t.Fatalf("revoke by the demoted grantor = %d %s", code, body)
 	}
 	if _, err := k.st.SessionGrant(ctx, g.ID); err == nil {
@@ -435,7 +460,7 @@ func TestGrantRevokeByScopedKeyAndRefusals(t *testing.T) {
 	}
 	// A key of the administrator limited to another Worker is refused.
 	key(k.admin, grantKeyScope{c.ID: true})
-	if code, body := k.call(ops.OpGrantRevoke, map[string]any{"id": g.ID}); code == http.StatusOK {
+	if code, body := k.call(ops.OpGrantRevoke, map[string]any{"id": g.ID, "if_revision": g.Revision}); code == http.StatusOK {
 		t.Fatalf("revoke by a key of another Worker = %d %s", code, body)
 	}
 	if _, err := k.st.SessionGrant(ctx, g.ID); err != nil {
@@ -443,21 +468,21 @@ func TestGrantRevokeByScopedKeyAndRefusals(t *testing.T) {
 	}
 	// The same key limited to the target Worker alone revokes.
 	key(k.admin, grantKeyScope{b.ID: true})
-	if code, body := k.call(ops.OpGrantRevoke, map[string]any{"id": g.ID}); code != http.StatusOK {
+	if code, body := k.call(ops.OpGrantRevoke, map[string]any{"id": g.ID, "if_revision": g.Revision}); code != http.StatusOK {
 		t.Fatalf("revoke by a key of the target Worker = %d %s", code, body)
 	}
 	// The owner of the source revokes a grant on another owner's Worker.
 	k.as(k.admin)
 	g = k.setGrant(grantArgs(a, b, ops.GrantLevelView))
 	k.as(k.u1)
-	if code, body := k.call(ops.OpGrantRevoke, map[string]any{"id": g.ID}); code != http.StatusOK {
+	if code, body := k.call(ops.OpGrantRevoke, map[string]any{"id": g.ID, "if_revision": g.Revision}); code != http.StatusOK {
 		t.Fatalf("revoke by the source's owner = %d %s", code, body)
 	}
 	// A user who owns neither Worker of a grant is refused.
 	k.as(k.admin)
 	g = k.setGrant(grantArgs(b, c, ops.GrantLevelView)) // both bob's
 	k.as(k.u1)
-	if code, body := k.call(ops.OpGrantRevoke, map[string]any{"id": g.ID}); code == http.StatusOK {
+	if code, body := k.call(ops.OpGrantRevoke, map[string]any{"id": g.ID, "if_revision": g.Revision}); code == http.StatusOK {
 		t.Fatalf("revoke by a stranger = %d %s", code, body)
 	}
 	if _, err := k.st.SessionGrant(ctx, g.ID); err != nil {
@@ -469,11 +494,11 @@ func TestGrantRevokeByScopedKeyAndRefusals(t *testing.T) {
 		t.Fatal(err)
 	}
 	key(k.u1, grantKeyScope{})
-	if code, body := k.call(ops.OpGrantRevoke, map[string]any{"id": g.ID}); code == http.StatusOK {
+	if code, body := k.call(ops.OpGrantRevoke, map[string]any{"id": g.ID, "if_revision": g.Revision}); code == http.StatusOK {
 		t.Fatalf("revoke by a key of the grantor = %d %s", code, body)
 	}
 	k.as(k.u1)
-	if code, body := k.call(ops.OpGrantRevoke, map[string]any{"id": g.ID}); code != http.StatusOK {
+	if code, body := k.call(ops.OpGrantRevoke, map[string]any{"id": g.ID, "if_revision": g.Revision}); code != http.StatusOK {
 		t.Fatalf("revoke by the grantor = %d %s", code, body)
 	}
 	if _, err := k.st.SessionGrant(ctx, g.ID); err == nil {
@@ -519,5 +544,29 @@ func TestGrantListMasksTheOtherOwnersSessionName(t *testing.T) {
 		if strings.Contains(gr.SourceSession+gr.TargetSession, "agent") && gr.SourceMasked {
 			t.Fatalf("a masked row carries the name: %+v", gr)
 		}
+	}
+}
+
+// grant_revoke carries the revision the caller saw (D2): without one it is
+// refused, with a stale one it conflicts, and the grant stays either way.
+func TestGrantRevokeNeedsTheRevision(t *testing.T) {
+	k := newGrantStack(t)
+	a1, a2 := k.worker(k.u1, "a1", store.WorkerKindPrivate), k.worker(k.u1, "a2", store.WorkerKindPrivate)
+	k.as(k.u1)
+	g := k.setGrant(grantArgs(a1, a2, ops.GrantLevelView))
+	up := grantArgs(a1, a2, ops.GrantLevelControl)
+	up["id"], up["if_revision"] = g.ID, g.Revision
+	g2 := k.setGrant(up)
+	if code, body := k.call(ops.OpGrantRevoke, map[string]any{"id": g.ID}); kindErrCode(t, body) != proto.CodeInvalidArgument {
+		t.Fatalf("revoke without a revision = %d %s", code, body)
+	}
+	if code, body := k.call(ops.OpGrantRevoke, map[string]any{"id": g.ID, "if_revision": g.Revision}); kindErrCode(t, body) != proto.CodeConflict {
+		t.Fatalf("revoke at a stale revision = %d %s", code, body)
+	}
+	if cur, err := k.st.SessionGrant(context.Background(), g.ID); err != nil || cur.Revision != g2.Revision {
+		t.Fatalf("after the refusals: %+v (%v)", cur, err)
+	}
+	if code, body := k.call(ops.OpGrantRevoke, map[string]any{"id": g.ID, "if_revision": g2.Revision}); code != http.StatusOK {
+		t.Fatalf("revoke = %d %s", code, body)
 	}
 }
