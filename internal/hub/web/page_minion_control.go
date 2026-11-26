@@ -168,6 +168,9 @@ type ControlCheckView struct {
 	WorkerID        string
 	Worker, Session string
 	Result          ops.ControlCheckResult
+	// Error is set when the Hub could not answer the check; the answer is
+	// then unknown, never "no master session".
+	Error string
 }
 
 var controlTemplates = sync.OnceValue(func() *template.Template {
@@ -253,14 +256,16 @@ func controlData(r *http.Request, c OpCaller) (any, error) {
 	}
 	if w != "" && s != "" {
 		var chk ops.ControlCheckResult
-		if err := c.CallOp(r, ops.OpControlCheck, ops.ControlCheckArgs{WorkerID: w, SessionName: s}, &chk); err == nil {
-			name := w
-			for _, row := range p.Rows {
-				if row.WorkerID == w {
-					name = row.Name
-				}
+		err := c.CallOp(r, ops.OpControlCheck, ops.ControlCheckArgs{WorkerID: w, SessionName: s}, &chk)
+		name := w
+		for _, row := range p.Rows {
+			if row.WorkerID == w {
+				name = row.Name
 			}
-			p.Check = &ControlCheckView{WorkerID: w, Worker: name, Session: s, Result: chk}
+		}
+		p.Check = &ControlCheckView{WorkerID: w, Worker: name, Session: s, Result: chk}
+		if err != nil {
+			p.Check.Error = failureText(err)
 		}
 	}
 	return p, nil

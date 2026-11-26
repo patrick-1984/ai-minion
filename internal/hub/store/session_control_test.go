@@ -530,3 +530,28 @@ func TestWorkerContentManagedNeedsTheWorker(t *testing.T) {
 		}
 	}
 }
+
+// A name-only revoke of a slot held by an active session-bound master is
+// refused inside the delete's transaction, on both delete paths.
+func TestNameOnlyDeleteRefusesAnActiveBoundSlotInTheTransaction(t *testing.T) {
+	s := openTest(t)
+	ctx := t.Context()
+	w := worker("wA", 4, "alice", "a")
+	if err := s.InsertWorker(ctx, nil, w); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB().ExecContext(ctx, `INSERT INTO bound_master_session
+		(worker_id,owner_id,session_name,incarnation_id,worker_pub,generation,active,legacy_targets_json,changed_at)
+		VALUES (?,?,?,?,?,1,1,'',1)`, w.ID, w.OwnerID, "boss", "inc-1", w.Pub); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DeleteMasterSession(ctx, w.ID, "boss"); !errors.Is(err, ErrBoundMasterSlot) {
+		t.Fatalf("DeleteMasterSession = %v, want ErrBoundMasterSlot", err)
+	}
+	if _, err := s.DeleteMasterSessionIfOwner(ctx, w.ID, "boss", w.OwnerID); !errors.Is(err, ErrBoundMasterSlot) {
+		t.Fatalf("DeleteMasterSessionIfOwner = %v, want ErrBoundMasterSlot", err)
+	}
+	if _, err := s.DeleteMasterSession(ctx, w.ID, "other"); err != nil {
+		t.Fatalf("a plain name is deleted as before: %v", err)
+	}
+}

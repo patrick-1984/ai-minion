@@ -113,6 +113,18 @@ func TestMinionControlOffersOnlyKnownSessionsAndOneCheckChoice(t *testing.T) {
 	}
 }
 
+// A check the Hub cannot answer is shown as failed, never as "no master
+// session", and the chosen session stays selected.
+func TestMinionControlShowsAFailedCheck(t *testing.T) {
+	f := newFakeOps().reply(ops.OpControlList, controlFixture()).on(ops.OpControlCheck, func(map[string]any) (any, error) {
+		return nil, &OpError{Status: 500, Code: "internal", Message: "store unavailable"}
+	})
+	connect(t, f)
+	body := get(t, adminServer(t), pathMinionControl+"?check=wB%7Cci-1", "X-Test-Session", adminHeader).Body.String()
+	mustHave(t, body, "the check failed, so it is not known who can control this session")
+	mustNotHave(t, body, "no master session.")
+}
+
 // When every shared session is already a master, the picker says so instead
 // of asking to share sessions.
 func TestMinionControlAllSharedSessionsAreMasters(t *testing.T) {

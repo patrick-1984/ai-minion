@@ -6,6 +6,8 @@
 
 ### Fixed
 
+- Minion control: a name-only revoke (`control_set_master` with `master=false`, `session_control_set` without targets) of a session that holds an active session-bound master is refused with a conflict instead of answering delivered and revoking nothing; the check runs in the same transaction as the delete.
+- Access > Minion control: an acceptance limited to some sessions shows "limited (n)" and an acceptance that allows nothing shows "blocked" (also on a Worker that accepts all Workers); a tick on a limited row keeps its list instead of widening it to every session; a failed "Who can control this session?" check says so instead of showing "no master session".
 - Minion control: withdrawing "accepts control from" for one Worker on a Worker that accepts control from all Workers no longer widens that source to every shared session (the Hub keeps a row that allows nothing); `control_set_master` and `session_control_set` refuse to revoke a session-bound master by name instead of answering delivered and revoking nothing; `control_check` reports a store error instead of leaving the master out.
 
 ## v0.20.6

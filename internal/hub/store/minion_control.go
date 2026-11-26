@@ -94,14 +94,38 @@ func (s *Store) PutMasterSession(ctx context.Context, m MasterRow) error {
 	return nil
 }
 
-// DeleteMasterSession ends a nomination and reports whether it existed.
+// DeleteMasterSession ends a nomination and reports whether it existed. A
+// slot held by an active session-bound master is refused with
+// [ErrBoundMasterSlot] in the same transaction: that master is not in
+// master_session, so the delete would revoke nothing.
 func (s *Store) DeleteMasterSession(ctx context.Context, workerID, session string) (bool, error) {
-	res, err := s.db.ExecContext(ctx, `DELETE FROM master_session WHERE worker_id = ? AND session_name = ?`, workerID, session)
-	if err != nil {
-		return false, fmt.Errorf("store: delete master session: %w", err)
-	}
-	n, err := res.RowsAffected()
+	var n int64
+	err := s.Tx(ctx, func(tx *sql.Tx) error {
+		if err := refuseBoundSlot(ctx, tx, workerID, session); err != nil {
+			return err
+		}
+		res, err := tx.ExecContext(ctx, `DELETE FROM master_session WHERE worker_id = ? AND session_name = ?`, workerID, session)
+		if err != nil {
+			return fmt.Errorf("store: delete master session: %w", err)
+		}
+		n, err = res.RowsAffected()
+		return err
+	})
 	return n > 0, err
+}
+
+// refuseBoundSlot answers [ErrBoundMasterSlot] when the session holds an
+// active session-bound master nomination, read in the caller's transaction.
+func refuseBoundSlot(ctx context.Context, tx *sql.Tx, workerID, session string) error {
+	var n int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM bound_master_session WHERE worker_id=? AND session_name=? AND active=1`,
+		workerID, session).Scan(&n); err != nil {
+		return fmt.Errorf("store: read the bound master slot: %w", err)
+	}
+	if n > 0 {
+		return ErrBoundMasterSlot
+	}
+	return nil
 }
 
 // ListAccepts returns every acceptance, ordered by target and source.
@@ -281,6 +305,9 @@ func (s *Store) DeleteMasterSessionIfOwner(ctx context.Context, workerID, sessio
 	var n int64
 	err := s.Tx(ctx, func(tx *sql.Tx) error {
 		if err := checkOwners(ctx, tx, map[string]string{workerID: owner}); err != nil {
+			return err
+		}
+		if err := refuseBoundSlot(ctx, tx, workerID, session); err != nil {
 			return err
 		}
 		res, err := tx.ExecContext(ctx, `DELETE FROM master_session WHERE worker_id = ? AND session_name = ?`, workerID, session)

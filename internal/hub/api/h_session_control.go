@@ -129,6 +129,9 @@ func (h sessionControlHandlers) set(ctx context.Context, c *Call, a ops.SessionC
 			return ops.WriteResult{}, ownerErr(store.ErrBoundMasterSlot)
 		}
 		if _, err := h.st.DeleteSessionControl(ctx, a.WorkerID, a.SessionName); err != nil {
+			if errors.Is(err, store.ErrBoundMasterSlot) {
+				return ops.WriteResult{}, ownerErr(err)
+			}
 			return ops.WriteResult{}, err
 		}
 		return delivered(), nil
