@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Invitation keys can name the Worker they enroll (`worker_name` in `invitation_create`, shown by `invitation_list`; Hub migration 0037). The Hub stores that name for the new Worker whatever name the Worker announces, so a Worker set up with the key or join token alone (the Android app, or any older Worker) gets the name chosen on the Hub, with the usual owner prefix (a reusable key names the next Workers `-2`, `-3` and so on). The Worker learns the name from the Hub's welcome and `minion worker status` shows it. The name of "Add a Worker in one step" on the Add worker page now sets both the key's label and the Worker's name; the Invitations page has a separate optional "Worker name" field and shows it in the list. Unused one-time keys made before the upgrade keep their name as the Worker name when it is a valid Worker name (no spaces or colons). A key without a Worker name leaves the Worker its own name, as before.
+- Worker page: a **Name** panel renames the Worker (`worker_rename`), for its owner and for administrators (any Worker). The name keeps the owner prefix and must be unique among the owner's Workers; the rename is audited (`worker.rename`) and a connected Worker reconnects to learn the new name. Session links, grants, keys, trust, sharing and pipes name the Worker by its id and keep working.
+
 ## v0.22.0
 
 ### Added
