@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Added
+
+- **Command shells** (A116). The owner of both Workers of a Control grant that names one target session (or an administrator) can mark that session as a command shell of the source session: **Access > Grants > Mark as command shell**, or `grant_set` with `"command_shell": true` (absent keeps the flag, a level below Control clears it). A `send_text` or `send_keys` of that source into that session is then a normal write: the Hub adds `shell_ok` and the grant id to the request origin, and the Worker skips the `shell_pane` guard, and only that guard, without `force`. Other callers, other sessions and local callers still need `force`. The Hub decides it on every call, so unmarking or revoking applies to the next call. The audit event of such a write has the detail `command_shell=<grant id>`; `grant_list` and `access_matrix` show the flag. Nothing is told to the target session. An older Worker ignores the flag and refuses with `shell_pane` as before. Needs Hub and Worker update (migration 0037, column `session_grant.command_shell`).
+
 ## v0.22.0
 
 ### Added

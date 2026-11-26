@@ -79,6 +79,7 @@ func TestOriginValidateAttributionMembers(t *testing.T) {
 			o.SourceSession, o.SourceProof, o.Grant, o.GrantID = "planner", OriginProofClaimed, true, testGrantID
 		}),
 		"session without a grant": with(func(o *Origin) { o.SourceSession, o.SourceProof = "planner", OriginProofClaimed }),
+		"command shell":           with(func(o *Origin) { o.Grant, o.GrantID, o.ShellOK = true, testGrantID, true }),
 	}
 	for name, o := range good {
 		if err := o.Validate(); err != nil {
@@ -93,18 +94,21 @@ func TestOriginValidateAttributionMembers(t *testing.T) {
 		"session too long": with(func(o *Origin) {
 			o.SourceSession, o.SourceProof = strings.Repeat("s", MaxMasterSessionName+1), OriginProofClaimed
 		}),
-		"session of invalid UTF-8": with(func(o *Origin) { o.SourceSession, o.SourceProof = "a\xffb", OriginProofClaimed }),
-		"session without proof":    with(func(o *Origin) { o.SourceSession = "planner" }),
-		"proof without session":    with(func(o *Origin) { o.SourceProof = OriginProofClaimed }),
-		"unknown proof":            with(func(o *Origin) { o.SourceSession, o.SourceProof = "planner", "bound" }),
-		"proof in another case":    with(func(o *Origin) { o.SourceSession, o.SourceProof = "planner", "Claimed" }),
-		"grant_id without grant":   with(func(o *Origin) { o.GrantID = testGrantID }),
-		"grant_id not a UUID":      with(func(o *Origin) { o.Grant, o.GrantID = true, "grant-1" }),
-		"grant_id of version 4":    with(func(o *Origin) { o.Grant, o.GrantID = true, "01a00000-0000-4000-8000-0000000000aa" }),
-		"grant_id in upper case":   with(func(o *Origin) { o.Grant, o.GrantID = true, "01A00000-0000-7000-8000-0000000000AA" }),
-		"user with a session":      {Kind: OriginUser, UserID: "u", SourceSession: "planner", SourceProof: OriginProofClaimed},
-		"user with a grant id":     {Kind: OriginUser, UserID: "u", GrantID: testGrantID},
-		"free key with a session":  {Kind: OriginAPIKey, UserID: "u", KeyID: "k", SourceSession: "planner", SourceProof: OriginProofClaimed},
+		"session of invalid UTF-8":  with(func(o *Origin) { o.SourceSession, o.SourceProof = "a\xffb", OriginProofClaimed }),
+		"session without proof":     with(func(o *Origin) { o.SourceSession = "planner" }),
+		"proof without session":     with(func(o *Origin) { o.SourceProof = OriginProofClaimed }),
+		"unknown proof":             with(func(o *Origin) { o.SourceSession, o.SourceProof = "planner", "bound" }),
+		"proof in another case":     with(func(o *Origin) { o.SourceSession, o.SourceProof = "planner", "Claimed" }),
+		"grant_id without grant":    with(func(o *Origin) { o.GrantID = testGrantID }),
+		"shell_ok without grant id": with(func(o *Origin) { o.Grant, o.ShellOK = true, true }),
+		"shell_ok without grant":    with(func(o *Origin) { o.ShellOK = true }),
+		"user with shell_ok":        {Kind: OriginUser, UserID: "u", ShellOK: true},
+		"grant_id not a UUID":       with(func(o *Origin) { o.Grant, o.GrantID = true, "grant-1" }),
+		"grant_id of version 4":     with(func(o *Origin) { o.Grant, o.GrantID = true, "01a00000-0000-4000-8000-0000000000aa" }),
+		"grant_id in upper case":    with(func(o *Origin) { o.Grant, o.GrantID = true, "01A00000-0000-7000-8000-0000000000AA" }),
+		"user with a session":       {Kind: OriginUser, UserID: "u", SourceSession: "planner", SourceProof: OriginProofClaimed},
+		"user with a grant id":      {Kind: OriginUser, UserID: "u", GrantID: testGrantID},
+		"free key with a session":   {Kind: OriginAPIKey, UserID: "u", KeyID: "k", SourceSession: "planner", SourceProof: OriginProofClaimed},
 		"bound key with a session": {Kind: OriginAPIKey, UserID: "u", KeyID: "k", KeyBoundWorkerID: "w1", SourceWorkerID: "w1",
 			SourceWorkerFP: "fp1", SourceWorkerOwnerID: "u1", SourceSession: "planner", SourceProof: OriginProofClaimed},
 		"worker without source": {Kind: OriginWorker, SourceSession: "planner", SourceProof: OriginProofClaimed},

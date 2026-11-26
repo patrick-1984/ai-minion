@@ -214,6 +214,9 @@ type SessionGrantRow struct {
 	UpdatedAt         int64
 	SuspendedAt       *int64
 	SuspendCause      string
+	// CommandShell marks the target session as a command shell of the source
+	// session (A116): only on a Control grant that names one target session.
+	CommandShell bool
 }
 
 // SessionGrantFilter narrows [Store.ListSessionGrants]. An empty member does
@@ -225,15 +228,16 @@ type SessionGrantFilter struct {
 
 const sessionGrantCols = `id, source_worker_id, source_session, source_incarnation, target_worker_id, target_session,
 	level, authority, granted_by, source_owner_id, target_owner_id, note, expires_at, revision, created_at, updated_at,
-	suspended_at, suspend_cause`
+	suspended_at, suspend_cause, command_shell`
 
 func scanSessionGrant(sc rowScanner) (SessionGrantRow, error) {
 	var g SessionGrantRow
 	var exp, sus sql.NullInt64
-	var rev int64
+	var rev, shell int64
 	err := sc.Scan(&g.ID, &g.SourceWorkerID, &g.SourceSession, &g.SourceIncarnation, &g.TargetWorkerID, &g.TargetSession,
 		&g.Level, &g.Authority, &g.GrantedBy, &g.SourceOwnerID, &g.TargetOwnerID, &g.Note, &exp, &rev, &g.CreatedAt,
-		&g.UpdatedAt, &sus, &g.SuspendCause)
+		&g.UpdatedAt, &sus, &g.SuspendCause, &shell)
+	g.CommandShell = shell != 0
 	if err != nil {
 		return g, err
 	}
@@ -287,11 +291,11 @@ func pinGrantOwners(ctx context.Context, tx *sql.Tx, g SessionGrantRow) error {
 }
 
 // PutSessionGrant creates the grant (ifRevision 0, no row with that id) or
-// changes level, expiry and note of the stored one when its revision is
-// ifRevision. Both Workers' owners and approvals, and the authority of the
-// acting user w.ActorID (an active administrator, or the active owner of both
-// Workers of an owner grant), are checked in the same transaction, which also
-// writes the audit row of w. A new grant names w.ActorID as granted_by. It
+// changes level, expiry, note and the command_shell flag of the stored one
+// when its revision is ifRevision. Both Workers' owners and approvals, and
+// the authority of the acting user w.ActorID (an active administrator, or the
+// active owner of both Workers of an owner grant), are checked in the same
+// transaction, which also writes the audit row of w. A new grant names w.ActorID as granted_by. It
 // returns the row as stored. An empty ID gets a new one; a zero UpdatedAt is
 // now. An update leaves created_at, the purge fence, as it is.
 func (s *Store) PutSessionGrant(ctx context.Context, row SessionGrantRow, ifRevision uint64, w GrantWrite) (SessionGrantRow, error) {
@@ -327,10 +331,10 @@ func (s *Store) PutSessionGrant(ctx context.Context, row SessionGrantRow, ifRevi
 			}
 			_, err := tx.ExecContext(ctx, `INSERT INTO session_grant (id, source_worker_id, source_session, source_incarnation,
 				target_worker_id, target_session, level, authority, granted_by, source_owner_id, target_owner_id, note,
-				expires_at, revision, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,1,?,?)`,
+				expires_at, revision, created_at, updated_at, command_shell) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,1,?,?,?)`,
 				row.ID, row.SourceWorkerID, row.SourceSession, row.SourceIncarnation, row.TargetWorkerID, row.TargetSession,
 				row.Level, row.Authority, row.GrantedBy, row.SourceOwnerID, row.TargetOwnerID, row.Note,
-				nullInt64(row.ExpiresAt), created, now)
+				nullInt64(row.ExpiresAt), created, now, boolInt(row.CommandShell))
 			if err != nil {
 				msg := err.Error()
 				switch {
@@ -354,9 +358,9 @@ func (s *Store) PutSessionGrant(ctx context.Context, row SessionGrantRow, ifRevi
 				return err
 			}
 			old = &cur
-			if _, err := tx.ExecContext(ctx, `UPDATE session_grant SET level = ?, expires_at = ?, note = ?,
+			if _, err := tx.ExecContext(ctx, `UPDATE session_grant SET level = ?, expires_at = ?, note = ?, command_shell = ?,
 				revision = revision + 1, updated_at = ? WHERE id = ? AND revision = ?`,
-				row.Level, nullInt64(row.ExpiresAt), row.Note, now, row.ID, int64(ifRevision)); err != nil {
+				row.Level, nullInt64(row.ExpiresAt), row.Note, boolInt(row.CommandShell), now, row.ID, int64(ifRevision)); err != nil {
 				if strings.Contains(err.Error(), "CHECK constraint") {
 					return fmt.Errorf("%w: %v", ErrGrantInvalid, err)
 				}

@@ -208,6 +208,10 @@ type CallContext struct {
 	// the Router read them at its final admission; for the audit event of a write
 	// and for the usage of the grants.
 	grantIDs []string
+	// commandShell is the command shell grant (A116) that let the routed
+	// request skip the shell_pane guard, as the Router decided it last; "" for
+	// none. The audit event of the write names it.
+	commandShell string
 }
 
 // source is the calling session of the call as its admission knows it: the
@@ -590,6 +594,13 @@ func (s *CallServer) serveRequest(ctx context.Context, workerID string, st Frame
 		// session-control grant or the own-Worker rule did, and when the
 		// write was refused before the Router decided it).
 		ev.GrantID = strings.Join(c.grantIDs, ",")
+		if c.commandShell != "" {
+			// A116: the write was a normal write into a command shell.
+			ev.Detail = "command_shell=" + c.commandShell
+			if ev.GrantID == "" {
+				ev.GrantID = c.commandShell
+			}
+		}
 		s.auditEvent(ctx, ev)
 	}
 	if errors.Is(cause, errCallerGone) {
@@ -797,7 +808,7 @@ func directGrantsOf(rows []store.SessionGrantRow) []authz.DirectGrant {
 		d := authz.DirectGrant{
 			ID: g.ID, TargetWorkerID: g.TargetWorkerID, TargetSession: g.TargetSession, Level: g.Level,
 			Authority: g.Authority, GrantedBy: g.GrantedBy, SourceOwnerID: g.SourceOwnerID, TargetOwnerID: g.TargetOwnerID,
-			Suspended: g.SuspendedAt != nil,
+			Suspended: g.SuspendedAt != nil, CommandShell: g.CommandShell,
 		}
 		if g.ExpiresAt != nil {
 			// A stored expiry always ends the grant, the zero time included.

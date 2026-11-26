@@ -44,6 +44,9 @@ func RegisterSessionControlCalls(cs *CallServer, rt SessionControlRouter) error 
 				// The grants behind the call: named by the audit event of a
 				// write, and counted as used when the call is answered.
 				req.granted = func(ids []string) { c.grantIDs = ids }
+				// A116: the command shell grant that let a typed input skip
+				// the shell_pane guard, for the same audit event.
+				req.commandShell = func(id string) { c.commandShell = id }
 			}
 			if t, ok := targetOfArgs(c.Args); ok {
 				req.WorkerID, req.Session = t.WorkerID, t.SessionName

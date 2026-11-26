@@ -118,6 +118,10 @@ type AccessCell struct {
 	// Via is "master" or, later, the id of a direct grant.
 	Via       string `json:"via"`
 	BlockedBy string `json:"blocked_by"`
+	// CommandShell is true when the direct grant of the cell marks the target
+	// as a command shell of the source (A116): typing there from the source
+	// needs no force on a Worker that knows the flag.
+	CommandShell bool `json:"command_shell,omitempty"`
 }
 
 // AccessMatrixResult is the matrix at one moment.

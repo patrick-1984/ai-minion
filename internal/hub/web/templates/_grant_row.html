@@ -2,7 +2,7 @@
   <td data-label="Source" class="grant-member">{{if .SourceMasked}}<em class="grant-masked">{{.SourceSession}}</em>{{else}}<strong>{{.SourceSession}}</strong>{{end}} @ {{.SourceWorker}}{{if .SourceOwner}} <span class="muted">{{.SourceOwner}}</span>{{end}}
     {{if .Verified}}<span class="chip" title="Verified: this session proved its identity to the Hub.">Verified</span>{{else}}<span class="chip grant-claimed" title="Claimed: this session is named by its Worker. Any program running as that Worker's OS user can use this grant.">Claimed</span>{{end}}</td>
   <td data-label="Target" class="grant-member">{{if .TargetMasked}}<em class="grant-masked">{{.TargetSession}}</em> @ {{.TargetWorker}}{{else if .TargetSession}}<strong>{{.TargetSession}}</strong> @ {{.TargetWorker}}{{else}}all shared sessions of {{.TargetWorker}}{{end}}{{if .TargetOwner}} <span class="muted">{{.TargetOwner}}</span>{{end}}</td>
-  <td data-label="Granted" class="grant-level-cell">{{.LevelLabel}}</td>
+  <td data-label="Granted" class="grant-level-cell">{{.LevelLabel}}{{if .CommandShell}} <span class="chip grant-shell" id="grant-{{.ID}}-shell" title="{{.ShellText}}">Command shell</span><span class="help grant-shell-help">{{.ShellText}}</span>{{end}}</td>
   <td data-label="State"><span class="badge" data-tone="{{.StateTone}}">{{.StateLabel}}</span></td>
   <td data-label="In effect">{{if not .Effect.Known}}<span class="muted" title="The Hub could not say whether this grant works now.">unknown</span>{{else if .Effect.Level}}{{.EffectLabel}}{{else}}<span class="chip grant-blocked" title="Blocked by: {{.BlockedText}}">Blocked: {{.BlockedText}}</span>{{end}}</td>
   <td data-label="Decided by">{{if .DecidedBy}}{{.DecidedBy}}{{else}}<span class="muted grant-user-id">another user</span>{{end}} <span class="muted">{{.AuthorityLabel}}</span></td>
@@ -28,7 +28,11 @@
           <option value="control"{{if eq .Level "control"}} selected{{end}}>Control</option>
         </select>
       <button type="submit" class="btn btn-secondary" id="grant-{{.ID}}-save">Save</button>
-    </form>{{end}}
+    </form>{{if or .CommandShell .CanBeShell}}<form hx-post="/access/grants/set-shell" hx-target="closest tr" hx-swap="outerHTML" hx-sync="#grant-panel:queue all" hx-disabled-elt="find button">
+      <input type="hidden" name="id" value="{{.ID}}"><input type="hidden" name="if_revision" value="{{.Revision}}">
+      <input type="hidden" name="command_shell" value="{{if .CommandShell}}0{{else}}1{{end}}">
+      <button type="submit" class="btn btn-secondary" id="grant-{{.ID}}-shell-toggle" title="A command shell: typing into {{.TargetSession}} from {{.SourceSession}} is a normal write, without force. Other checks stay.">{{if .CommandShell}}Unmark command shell{{else}}Mark as command shell{{end}}</button>
+    </form>{{end}}{{end}}
     {{if and .IsSuspended .Admin}}<form hx-post="/access/grants/approve" hx-target="closest tr" hx-swap="outerHTML" hx-sync="#grant-panel:queue all" hx-disabled-elt="find button">
       <input type="hidden" name="id" value="{{.ID}}"><input type="hidden" name="if_revision" value="{{.Revision}}">
       <button type="submit" class="btn btn-secondary" id="grant-{{.ID}}-approve">Approve</button>

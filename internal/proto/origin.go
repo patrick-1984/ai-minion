@@ -73,6 +73,15 @@ type Origin struct {
 	SourceSession string `json:"source_session,omitempty"`
 	SourceProof   string `json:"source_proof,omitempty"`
 	GrantID       string `json:"grant_id,omitempty"`
+	// ShellOK is set by the Hub only on a send_text or send_keys that a
+	// Control grant marked "command shell" authorized for this source session
+	// on this very target session (A116); GrantID then names that grant. A
+	// receiving Worker skips the shell_pane guard for it, and only that guard:
+	// typing into that shell is a normal write, not a forced one. Like Grant
+	// it is the claim of an honest Hub, and a Worker reads it only on a
+	// request that came over its Hub connection. A Worker that does not know
+	// it ignores it (and refuses with shell_pane unless forced, as before).
+	ShellOK bool `json:"shell_ok,omitempty"`
 }
 
 // FromWorker reports whether the origin names a source Worker.
@@ -117,6 +126,9 @@ func (o Origin) Validate() error {
 	}
 	if o.GrantID != "" && (!o.Grant || !validOriginUUIDv7(o.GrantID)) {
 		return bad("grant_id needs grant and must be a UUIDv7")
+	}
+	if o.ShellOK && o.GrantID == "" {
+		return bad("shell_ok needs the grant id of the command shell grant")
 	}
 	switch o.Kind {
 	case OriginUser:
