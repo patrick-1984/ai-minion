@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/patrick-1984/ai-minion/internal/config"
+	"github.com/patrick-1984/ai-minion/internal/hubdial"
 	"github.com/patrick-1984/ai-minion/internal/identity"
 	"github.com/patrick-1984/ai-minion/internal/ops"
 	"github.com/patrick-1984/ai-minion/internal/proto"
@@ -289,7 +290,7 @@ func NewHub(cfg HubConfig, opts ...HubOption) (*HubBackend, error) {
 	}
 	tr := &http.Transport{
 		Proxy:                  http.ProxyFromEnvironment,
-		DialContext:            (&net.Dialer{Timeout: hubDialTimeout, KeepAlive: hubKeepAlive}).DialContext,
+		DialContext:            hubdial.Dial((&net.Dialer{Timeout: hubDialTimeout, KeepAlive: hubKeepAlive}).DialContext),
 		TLSClientConfig:        tlsCfg,
 		TLSHandshakeTimeout:    hubTLSTimeout,
 		ForceAttemptHTTP2:      true,

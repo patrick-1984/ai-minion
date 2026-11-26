@@ -168,6 +168,8 @@ internal class NativeWorker(private val context: Context) {
             put("MINION_TMUX_BINARY", File(nativeDir, "libtmux.so").path)
             put("MINION_TMUX_SOCKET", tmuxSocket.path)
             put("MINION_TMUX_CONFIG", tmuxConfig.path)
+            // Read on every start, so it survives Worker, app and device restarts.
+            HubDialOverride.saved(context).takeIf { it.isNotBlank() }?.let { put(HubDialOverride.ENVIRONMENT, it) }
         }
         return builder.start()
     }

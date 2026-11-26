@@ -134,3 +134,11 @@ deterministic.
 golangci-lint (with the negative check of the import rules), `go test -race`
 once with the distribution tmux and once with tmux 3.8 built from source and
 cached, `govulncheck`, the cross-build, the English and documentation-link checks, and the Compose file validation (`make check-compose`). `release.yml` runs the same steps on a tag.
+
+An Android app fix can ship alone: the tag `android-vX.Y.Z` runs
+`.github/workflows/android-release.yml`, which tests the commit, builds and
+signs the APK through `android-apk.yml` and publishes a release with only
+`minion-android-X.Y.Z.apk`, `checksums.txt` and `checksums.txt.sigstore.json`
+(never marked latest; `release.yml` and `publish.yml` do not run). Pick an
+X.Y.Z between the newest full release and the next one, and never tag a full
+`vX.Y.Z` with the same number later.
