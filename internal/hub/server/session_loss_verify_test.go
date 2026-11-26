@@ -202,8 +202,8 @@ func TestVerifyLossWorkerRemovalDropsEveryPermissionOfItsSessions(t *testing.T) 
 	}
 	for q, what := range map[string]string{
 		`SELECT COUNT(*) FROM session_grant WHERE source_worker_id=?1 OR target_worker_id=?1`:  "session grants",
-		`SELECT COUNT(*) FROM master_session WHERE worker_id=?1`:                                "name-only masters",
-		`SELECT COUNT(*) FROM bound_master_session WHERE worker_id=?1`:                          "bound masters",
+		`SELECT COUNT(*) FROM master_session WHERE worker_id=?1`:                               "name-only masters",
+		`SELECT COUNT(*) FROM bound_master_session WHERE worker_id=?1`:                         "bound masters",
 		`SELECT COUNT(*) FROM control_accept WHERE source_worker_id=?1 OR target_worker_id=?1`: "acceptances",
 	} {
 		if n := count(q); n != 0 {
