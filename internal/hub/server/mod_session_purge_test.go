@@ -37,12 +37,16 @@ func TestGoneSessionsLoseTheirMasterNomination(t *testing.T) {
 	}
 	p := &sessionPurger{st: st, log: slog.New(slog.NewTextHandler(io.Discard, nil)),
 		sessions: fakeSessions{ws: workers.WorkerSessions{WorkerID: "wA", Online: true, Synced: false, Sessions: []workers.SessionState{{Name: "live"}}}}}
-	p.handle(ctx, workers.Event{Type: workers.EventSessionRemoved, WorkerID: "wA", Session: "boss", Time: ops.Timestamp(time.Now())})
+	if err := p.handle(ctx, workers.Event{Type: workers.EventSessionRemoved, WorkerID: "wA", Session: "boss", Time: ops.Timestamp(time.Now())}); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := st.MasterSession(ctx, "wA", "boss"); err == nil {
 		t.Fatal("boss is still a master after it was removed")
 	}
 	// Before the snapshot of this connection nothing is purged.
-	p.handle(ctx, workers.Event{Type: workers.EventWorkerResynced, WorkerID: "wA", Time: ops.Timestamp(time.Now())})
+	if err := p.handle(ctx, workers.Event{Type: workers.EventWorkerResynced, WorkerID: "wA", Time: ops.Timestamp(time.Now())}); err != nil {
+		t.Fatal(err)
+	}
 	if ms, _ := st.ListMasterSessions(ctx); len(ms) != 2 {
 		t.Fatalf("purged before the snapshot: %+v", ms)
 	}
@@ -99,12 +103,14 @@ func TestGoneSessionEndsItsGrantsWithAudit(t *testing.T) {
 
 	exec(`CREATE TRIGGER test_audit_down BEFORE INSERT ON audit_events WHEN NEW.action = 'grant.end'
 		BEGIN SELECT RAISE(ABORT, 'audit down'); END`)
-	p.handle(ctx, removed)
+	_ = p.handle(ctx, removed) // the audit insert fails: the purge rolls back
 	if _, err := st.SessionGrant(ctx, g.ID); err != nil {
 		t.Fatalf("grant deleted although its audit row failed: %v", err)
 	}
 	exec(`DROP TRIGGER test_audit_down`)
-	p.handle(ctx, removed)
+	if err := p.handle(ctx, removed); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := st.SessionGrant(ctx, g.ID); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("grant of a removed session survived: %v", err)
 	}
