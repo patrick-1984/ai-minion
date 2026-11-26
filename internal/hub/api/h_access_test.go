@@ -309,3 +309,95 @@ func TestAccessExplainAgreesWithTheMatrix(t *testing.T) {
 		t.Errorf("bob asks about his own target: %+v", ex)
 	}
 }
+
+// The read model takes proof and level from the route that authorizes a
+// pair: a grant bound to one terminal incarnation is served by the master
+// broker while that incarnation holds a lease (at most Message), and a grant
+// by name stays Claimed although its source session is a session-bound
+// master.
+func TestAccessRouteDecidesProofAndLevel(t *testing.T) {
+	f := accessFixture("u-admin", "u-alice", "u-bob")
+	f.Now = 1000
+	f.Admins = map[string]bool{"u-admin": true}
+	f.Masters = f.Masters[:1] // B:lead becomes a session-bound master
+	f.Bound = []store.BoundMasterRow{{WorkerID: "B", OwnerID: "u-alice", SessionName: "lead", Active: true}}
+	f.Attached = map[[2]string]bool{{"B", "lead"}: true}
+	verified := store.SessionGrantRow{ID: "g-ver", SourceWorkerID: "B", SourceSession: "b1", SourceIncarnation: "inc-1",
+		TargetWorkerID: "C", TargetSession: "c1", Level: 1, Authority: store.GrantAuthorityOwner, GrantedBy: "u-alice",
+		SourceOwnerID: "u-alice", TargetOwnerID: "u-alice"}
+	wide := verified
+	wide.ID, wide.TargetSession, wide.Level = "g-ver-c3", "c3", 3
+	claimed := store.SessionGrantRow{ID: "g-claim", SourceWorkerID: "B", SourceSession: "lead", TargetWorkerID: "E", TargetSession: "e1",
+		Level: 1, Authority: store.GrantAuthorityAdmin, GrantedBy: "u-admin", SourceOwnerID: "u-alice", TargetOwnerID: "u-bob"}
+	f.Grants = []store.SessionGrantRow{verified, wide, claimed}
+
+	cells := func(f AccessFacts) (map[string]string, map[string]string) {
+		res := AccessMatrix(f, "u-admin", true, "")
+		got, proofs := map[string]string{}, map[string]string{}
+		for _, c := range res.Cells {
+			s, tg := res.Sources[c.Source], res.Targets[c.Target]
+			got[s.WorkerID+":"+s.Session+">"+tg.WorkerID+":"+tg.Session] = c.Granted + "/" + c.InEffect + "/" + c.Via + "/" + c.BlockedBy
+		}
+		for _, s := range res.Sources {
+			proofs[s.WorkerID+":"+s.Session] = s.Proof
+		}
+		return got, proofs
+	}
+	explain := func(f AccessFacts, ss, tw, ts string) ops.AccessExplainResult {
+		t.Helper()
+		ex, ok := AccessExplain(f, "u-admin", true, ops.AccessExplainArgs{SourceWorkerID: "B", SourceSession: ss, TargetWorkerID: tw, TargetSession: ts})
+		if !ok {
+			t.Fatalf("explain B:%s > %s:%s: no answer", ss, tw, ts)
+		}
+		return ex
+	}
+	callerCode := func(ex ops.AccessExplainResult) string {
+		for _, c := range ex.Checks {
+			if c.ID == ops.AccessCheckCaller {
+				return c.Code
+			}
+		}
+		return ""
+	}
+
+	// No lease for the incarnation: the verified grant is not in effect.
+	got, _ := cells(f)
+	if got["B:b1>C:c1"] != "view//g-ver/source_incarnation" {
+		t.Errorf("verified grant without a lease: %v", got)
+	}
+	// The incarnation holds a lease: View in effect, Verified, and a Control
+	// grant gives what the master catalog serves (Message).
+	f.Leases = map[[3]string]bool{{"B", "b1", "inc-1"}: true}
+	got, proofs := cells(f)
+	if got["B:b1>C:c1"] != "view/view/g-ver/" || got["B:b1>C:c3"] != "message/message/g-ver-c3/" || proofs["B:b1"] != ops.AccessProofVerified {
+		t.Errorf("verified grant with a lease: %v %v", got, proofs)
+	}
+	if ex := explain(f, "b1", "C", "c1"); ex.InEffect != ops.AccessLevelView || ex.Source.Proof != ops.AccessProofVerified ||
+		callerCode(ex) != ops.AccessCodeCallerVerified {
+		t.Errorf("explain of a verified grant: %+v", ex)
+	}
+	// A lease of another incarnation of the same session does not help.
+	f.Leases = map[[3]string]bool{{"B", "b1", "inc-2"}: true}
+	if got, _ := cells(f); got["B:b1>C:c1"] != "view//g-ver/source_incarnation" {
+		t.Errorf("verified grant with another incarnation's lease: %v", got)
+	}
+
+	// The grant by name from the session-bound master B:lead to E (whose
+	// owner rule refuses master reach) is Claimed; the master's own reach
+	// to C stays Verified; the row holds both, so it is Claimed.
+	got, proofs = cells(f)
+	if got["B:lead>E:e1"] != "view/view/g-claim/" || got["B:lead>C:c1"] != "message/message/master/" {
+		t.Errorf("claimed grant from a bound master: %v", got)
+	}
+	if proofs["B:lead"] != ops.AccessProofClaimed {
+		t.Errorf("row of a source with a claimed route: %v", proofs)
+	}
+	if ex := explain(f, "lead", "E", "e1"); ex.Via != "g-claim" || ex.Source.Proof != ops.AccessProofClaimed ||
+		callerCode(ex) != ops.AccessCodeCallerClaimed {
+		t.Errorf("explain of a claimed grant from a bound master: %+v", ex)
+	}
+	if ex := explain(f, "lead", "C", "c1"); ex.Via != ops.AccessViaMaster || ex.Source.Proof != ops.AccessProofVerified ||
+		callerCode(ex) != ops.AccessCodeCallerVerified {
+		t.Errorf("explain of the bound master's reach: %+v", ex)
+	}
+}

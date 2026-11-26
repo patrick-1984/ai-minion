@@ -102,15 +102,17 @@ func initMinionControl(_ context.Context, env *Env) error {
 
 // accessFacts reads what the access matrix is computed from: the durable
 // rows in one read-only transaction (one commit, never the write lock) and
-// the live state: who is connected, the sessions the Hub lists, and which
-// session-bound masters hold a lease now.
+// the live state: who is connected, the sessions the Hub lists, which
+// session-bound masters hold a lease now, and which terminal incarnations
+// (Worker, session, incarnation) are live eligible candidates of a master
+// lane, so a verified grant bound to one of them holds a lease.
 func accessFacts(ctx context.Context, env *Env, st *store.Store, svc *workers.Service) (api.AccessFacts, error) {
 	snap, err := st.AccessSnapshot(ctx)
 	if err != nil {
 		return api.AccessFacts{}, err
 	}
 	live := api.AccessLive{Online: map[string]bool{}, AgentOnly: map[string]bool{}, Sessions: map[string][]string{},
-		Attached: map[[2]string]bool{}}
+		Attached: map[[2]string]bool{}, Leases: map[[3]string]bool{}}
 	for _, o := range svc.Registry().List() {
 		live.Online[o.WorkerID] = true
 		live.AgentOnly[o.WorkerID] = o.HasFeature(proto.FeatureSendTextAgentOnly)
@@ -132,6 +134,10 @@ func accessFacts(ctx context.Context, env *Env, st *store.Store, svc *workers.Se
 				if b.Master && b.Attachment == "active" {
 					live.Attached[[2]string{id, b.SessionName}] = true
 				}
+			}
+			// MasterView lists only the eligible candidates of a live lane.
+			for _, c := range v.Candidates {
+				live.Leases[[3]string{id, c.SessionName, c.IncarnationID}] = true
 			}
 		}
 	}
