@@ -8,7 +8,7 @@ package store
 // The identity of a session is its instance id when the Worker reports one
 // (tmux, v0.22.0): the number then follows a rename, and a session created
 // again under the same name gets a new number. Without an instance id (psmux,
-// older Workers, the Hub's event stream) the name is the identity: a session
+// older Workers) the name is the identity: a session
 // created again under the same name keeps its number. A sighting with an
 // instance id adopts the row an earlier sighting of the same name without one
 // made, so both sources agree on the number.
@@ -16,6 +16,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -29,6 +30,11 @@ const SessionCodeTouchEvery = time.Hour
 // SessionCodeRetention is how long a mapping is kept after its session was
 // last seen. Its number is not given again after the prune.
 const SessionCodeRetention = 30 * 24 * time.Hour
+
+// MaxSessionCodesPerWorker bounds the mappings kept for one Worker: beyond
+// it the ones seen least recently go (their numbers are not given again). It
+// is the Hub's limit on the sessions of a Worker, twice.
+const MaxSessionCodesPerWorker = 8192
 
 // SessionSighting is one session of a Worker's listing.
 type SessionSighting struct {
@@ -50,7 +56,8 @@ type codeRow struct {
 // each sighting (aligned with seen), giving numbers to the sessions seen for
 // the first time. It writes only when a number is given, a mapping changes or
 // a mapping's last_seen is older than [SessionCodeTouchEvery]; a write also
-// prunes the mappings not seen for [SessionCodeRetention].
+// prunes the mappings not seen for [SessionCodeRetention] and those of the
+// Worker beyond [MaxSessionCodesPerWorker].
 func (s *Store) SessionCodes(ctx context.Context, workerID string, seen []SessionSighting, now time.Time) (worker int64, codes []int64, err error) {
 	worker, codes, dirty, err := s.assignCodes(ctx, s.db, workerID, seen, now, false)
 	if err != nil || !dirty {
@@ -62,13 +69,31 @@ func (s *Store) SessionCodes(ctx context.Context, workerID string, seen []Sessio
 		if e != nil {
 			return e
 		}
-		_, e = tx.ExecContext(ctx, `DELETE FROM session_codes WHERE last_seen < ?`, UnixMS(now.Add(-SessionCodeRetention)))
-		return e
+		if _, e = tx.ExecContext(ctx, `DELETE FROM session_codes WHERE last_seen < ?`, UnixMS(now.Add(-SessionCodeRetention))); e != nil {
+			return e
+		}
+		return boundSessionCodes(ctx, tx, workerID)
 	})
 	if err != nil {
 		return 0, nil, fmt.Errorf("store: session codes: %w", err)
 	}
 	return worker, codes, nil
+}
+
+// boundSessionCodes drops the mappings of the Worker beyond
+// [MaxSessionCodesPerWorker], the ones seen least recently first.
+func boundSessionCodes(ctx context.Context, tx *sql.Tx, workerID string) error {
+	var n int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM session_codes WHERE worker_id = ?`, workerID).Scan(&n); err != nil {
+		return err
+	}
+	if n <= MaxSessionCodesPerWorker {
+		return nil
+	}
+	_, err := tx.ExecContext(ctx, `DELETE FROM session_codes WHERE worker_id = ?1 AND number NOT IN
+		(SELECT number FROM session_codes WHERE worker_id = ?1 ORDER BY last_seen DESC, number DESC LIMIT ?2)`,
+		workerID, MaxSessionCodesPerWorker)
+	return err
 }
 
 type codeQueryer interface {
@@ -100,7 +125,7 @@ func (s *Store) assignCodes(ctx context.Context, q codeQueryer, workerID string,
 	case err != nil:
 		return 0, nil, false, err
 	}
-	rows, err := loadCodeRows(ctx, q, workerID)
+	rows, err := loadCodeRows(ctx, q, workerID, seen)
 	if err != nil {
 		return 0, nil, false, err
 	}
@@ -181,8 +206,34 @@ func (s *Store) assignCodes(ctx context.Context, q codeQueryer, workerID string,
 	return worker, codes, true, nil
 }
 
-func loadCodeRows(ctx context.Context, q codeQueryer, workerID string) ([]*codeRow, error) {
-	rs, err := q.QueryContext(ctx, `SELECT number, COALESCE(instance_id, ''), name, last_seen FROM session_codes WHERE worker_id = ? ORDER BY number`, workerID)
+// loadCodeRows reads the mappings of the Worker that a sighting of seen can
+// match or take a name from: those of a seen name or instance id. No other
+// mapping takes part in [Store.assignCodes].
+func loadCodeRows(ctx context.Context, q codeQueryer, workerID string, seen []SessionSighting) ([]*codeRow, error) {
+	names, iids := []string{}, []string{}
+	for _, sg := range seen {
+		if sg.Name == "" {
+			continue
+		}
+		names = append(names, sg.Name)
+		if sg.InstanceID != "" {
+			iids = append(iids, sg.InstanceID)
+		}
+	}
+	if len(names) == 0 {
+		return nil, nil
+	}
+	nj, err := json.Marshal(names)
+	if err != nil {
+		return nil, err
+	}
+	ij, err := json.Marshal(iids)
+	if err != nil {
+		return nil, err
+	}
+	rs, err := q.QueryContext(ctx, `SELECT number, COALESCE(instance_id, ''), name, last_seen FROM session_codes
+		WHERE worker_id = ?1 AND (name IN (SELECT value FROM json_each(?2)) OR instance_id IN (SELECT value FROM json_each(?3)))
+		ORDER BY number`, workerID, string(nj), string(ij))
 	if err != nil {
 		return nil, err
 	}

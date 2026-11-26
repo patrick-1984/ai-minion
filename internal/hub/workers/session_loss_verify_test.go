@@ -8,6 +8,8 @@ package workers
 import (
 	"context"
 	"encoding/json"
+	"maps"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -383,5 +385,65 @@ func TestVerifyLossBoundMasterDoesNotPassToANewIncarnationOfTheName(t *testing.T
 	}
 	if b := view[r.source.ID].Bound; len(b) != 1 || b[0].Attachment != "retired" {
 		t.Fatalf("bound view with no candidates = %+v, want retired", b)
+	}
+}
+
+// savesInstances records every write of an [InstanceStore].
+type savesInstances struct {
+	memInstances
+	saves []map[string]string
+}
+
+func (s *savesInstances) SaveSessionInstances(ctx context.Context, workerID string, in map[string]string) error {
+	s.saves = append(s.saves, maps.Clone(in))
+	return s.memInstances.SaveSessionInstances(ctx, workerID, in)
+}
+
+// A long-lived session that never changes is written again (a new seen_at) at
+// most hourly, with the next change or snapshot, so the store's bound drops
+// the names that are gone first and never the one still listed.
+func TestInstancesOfListedNamesAreTouchedHourly(t *testing.T) {
+	inst := &savesInstances{}
+	now := time.UnixMilli(10_000)
+	h := NewEventHub(EventHubOptions{Now: func() time.Time { return now }, Instances: inst})
+	f, _ := h.Connect("wA", "a").NewFeed()
+	if err := f.Snapshot(0, []SessionState{{Name: "main", InstanceID: "m1"}}); err != nil {
+		t.Fatal(err)
+	}
+	add := func(seq uint64, name string) {
+		t.Helper()
+		if err := f.Apply(Change{Seq: seq, Event: EventSessionAdded, Session: SessionState{Name: name, InstanceID: "i-" + name}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	add(1, "tmp1")
+	now = now.Add(instanceTouchEvery - time.Minute)
+	add(2, "tmp2")
+	now = now.Add(2 * time.Minute)
+	add(3, "tmp3")
+	want := []map[string]string{
+		{"main": "m1"},
+		{"tmp1": "i-tmp1"},
+		{"tmp2": "i-tmp2"},
+		{"main": "m1", "tmp1": "i-tmp1", "tmp2": "i-tmp2", "tmp3": "i-tmp3"},
+	}
+	if !reflect.DeepEqual(inst.saves, want) {
+		t.Fatalf("saves = %v, want %v", inst.saves, want)
+	}
+	// A snapshot that changes nothing writes only once the touch is due.
+	all := []SessionState{{Name: "main", InstanceID: "m1"}}
+	if err := f.Snapshot(0, all); err != nil {
+		t.Fatal(err)
+	}
+	if len(inst.saves) != 4 {
+		t.Fatalf("an unchanged snapshot wrote: %v", inst.saves[4:])
+	}
+	now = now.Add(instanceTouchEvery)
+	f2, _ := h.Connect("wA", "a").NewFeed()
+	if err := f2.Snapshot(0, all); err != nil {
+		t.Fatal(err)
+	}
+	if len(inst.saves) != 5 || !reflect.DeepEqual(inst.saves[4], map[string]string{"main": "m1"}) {
+		t.Fatalf("saves = %v", inst.saves)
 	}
 }

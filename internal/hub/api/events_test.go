@@ -4,11 +4,13 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -16,6 +18,7 @@ import (
 	"time"
 
 	"github.com/patrick-1984/ai-minion/internal/hub/authz"
+	"github.com/patrick-1984/ai-minion/internal/hub/store"
 	"github.com/patrick-1984/ai-minion/internal/hub/workers"
 	"github.com/patrick-1984/ai-minion/internal/ops"
 	"github.com/patrick-1984/ai-minion/internal/proto"
@@ -315,6 +318,32 @@ func TestSessionsListsTheCallersSessionsWithAllFields(t *testing.T) {
 	_, body := r.get("bob", "/api/v1/sessions?worker=pi-1")
 	if !strings.Contains(string(body), `"sessions":[]`) {
 		t.Fatalf("body = %s", body)
+	}
+}
+
+// The lister looks codes up with the instance id the event hub holds (as a
+// routed sessions_list does), and by name for a Worker that reports none.
+func TestSessionsCodesUseTheInstanceIDs(t *testing.T) {
+	r := newEvRig(t, nil)
+	var got []store.SessionSighting
+	r.lister.Codes = func(_ context.Context, workerID string, seen []store.SessionSighting) map[string]string {
+		got = append(got, seen...)
+		out := map[string]string{}
+		for i, sg := range seen {
+			out[sg.Name] = fmt.Sprintf("%s-%d", workerID, i+1)
+		}
+		return out
+	}
+	a := ss("a", "shell", "stable", "")
+	a.InstanceID = "$7"
+	r.feed(wAlice, a, ss("b", "shell", "stable", ""))
+	list := r.sessions("alice", "")
+	if len(list) != 2 || list[0].Code != wAlice+"-1" || list[1].Code != wAlice+"-2" {
+		t.Fatalf("list = %+v", list)
+	}
+	want := []store.SessionSighting{{Name: "a", InstanceID: "$7"}, {Name: "b"}}
+	if !slices.Equal(got, want) {
+		t.Fatalf("sightings = %+v, want %+v", got, want)
 	}
 }
 
