@@ -198,8 +198,17 @@ func TestATransportCutDuringAWriteIsUnknownAtTheRealRouterAndIsNeverRetried(t *t
 	// Only the caller may decide to ask again, with the same request id: the
 	// pane then has the text exactly once, whether the Worker had applied the
 	// first request (cache) or not (applied now).
-	again := writeResult(t, hubWrite(t, h.service(), id, ops.OpSendText, operateRead, args))
-	if again.Outcome != ops.OutcomeDelivered {
+	// The replay comes from the same caller through the same Router: since
+	// v0.22.0 the Worker answers a request id reused by another caller with a
+	// conflict, never with that caller's cached result.
+	replayed, err := rt.Call(context.Background(), workers.CallRequest{
+		Principal: authz.NewSessionPrincipal("owner-1"), Op: ops.OpSendText, WorkerID: id, Session: "catwork", Args: args,
+	})
+	if err != nil {
+		t.Fatalf("the explicit replay: %v", err)
+	}
+	again, ok := replayed.(ops.WriteResult)
+	if !ok || again.Outcome != ops.OutcomeDelivered {
 		t.Fatalf("the explicit replay = %+v", again)
 	}
 	w.srv.WaitFor(w.target, "cutmark", 10*time.Second)
