@@ -94,6 +94,7 @@ func initRoute(ctx context.Context, env *Env) error {
 		UserManaged:    userManaged(st),
 		ContentManaged: contentManaged(st),
 		HiddenSessions: hiddenSessionsPolicy(hubPolicy, st),
+		Codes:          &workers.SessionCodes{Store: st, Log: cfg.logger()},
 	})
 	if err != nil {
 		return fmt.Errorf("route: %w", err)

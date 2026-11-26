@@ -47,6 +47,9 @@ var _ LiveState = (*workers.EventHub)(nil)
 // SessionInfo is one entry of the aggregated list and of the snapshot that
 // opens an event stream.
 type SessionInfo struct {
+	// Code is the session's short code ("5-667", ops.SessionCode); absent
+	// when the Hub could not give one.
+	Code     string `json:"code,omitempty"`
 	WorkerID string `json:"worker_id"`
 	// Worker is the Worker's name.
 	Worker  string `json:"worker"`
@@ -103,6 +106,9 @@ type SessionLister struct {
 	// control, v0.9.0); a Worker that is not user-managed is left out. Nil
 	// means always.
 	UserManaged func(ctx context.Context, workerID string) (bool, error)
+	// Codes returns the session codes of the named sessions of a Worker, by
+	// name (workers.SessionCodes.ByName); nil: no codes.
+	Codes func(ctx context.Context, workerID string, names []string) map[string]string
 }
 
 type sessionItem struct {
@@ -182,6 +188,7 @@ func (l *SessionLister) List(ctx context.Context, p authz.Principal, q SessionQu
 			Online: it.on, ScreenHash: it.st.ScreenHash, PaneStateDetail: it.st.PaneStateDetail, HarnessName: it.st.HarnessName,
 		})
 	}
+	l.addCodes(ctx, out)
 	sort.SliceStable(out, func(i, j int) bool {
 		a, b := out[i], out[j]
 		switch {
@@ -195,6 +202,29 @@ func (l *SessionLister) List(ctx context.Context, p authz.Principal, q SessionQu
 		return ops.NaturalCompare(a.Session, b.Session) < 0
 	})
 	return out, nil
+}
+
+// addCodes sets the session codes of list, one lookup per Worker. Only the
+// sessions the principal may read are looked up.
+func (l *SessionLister) addCodes(ctx context.Context, list []SessionInfo) {
+	if l.Codes == nil || len(list) == 0 {
+		return
+	}
+	names := map[string][]string{}
+	var order []string
+	for _, s := range list {
+		if _, ok := names[s.WorkerID]; !ok {
+			order = append(order, s.WorkerID)
+		}
+		names[s.WorkerID] = append(names[s.WorkerID], s.Session)
+	}
+	codes := make(map[string]map[string]string, len(order))
+	for _, id := range order {
+		codes[id] = l.Codes(ctx, id, names[id])
+	}
+	for i := range list {
+		list[i].Code = codes[list[i].WorkerID][list[i].Session]
+	}
 }
 
 // matchClass reports whether got matches want; an empty want matches all. For

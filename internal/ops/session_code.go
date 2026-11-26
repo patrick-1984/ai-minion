@@ -70,3 +70,25 @@ func codeNumber(s string) (int64, bool) {
 	}
 	return n, true
 }
+
+// SessionCodeTarget returns the code form ("5-667" or "5-667:0.1") of a target
+// object that names no Worker and whose session name is a session code: how a
+// client that writes targets as objects (the CLI's --target 5-667, an MCP
+// tool) names a session by its code. ok is false for any other target. Only
+// the Hub reads it so: a target through the Hub always names its Worker,
+// while on a Worker's own socket a target without a Worker is a local
+// session name.
+func SessionCodeTarget(t Target) (string, bool) {
+	if t.WorkerID != "" {
+		return "", false
+	}
+	code, pane, ok := ParseSessionCode(t.SessionName)
+	if !ok || pane != "" {
+		return "", false
+	}
+	s := code.String()
+	if t.Pane != "" {
+		s += ":" + t.Pane
+	}
+	return s, true
+}

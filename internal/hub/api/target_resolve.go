@@ -113,8 +113,9 @@ func humanTargetsFromQuery(op ops.Op, q url.Values, obj rawObject) url.Values {
 	return out
 }
 
-// resolveTargets replaces every target member of obj that is a JSON string
-// by the canonical object the resolver returns for the caller.
+// resolveTargets replaces every target member of obj that is a JSON string,
+// or an object that names a session by its code (ops.SessionCodeTarget), by
+// the canonical object the resolver returns for the caller.
 func resolveTargets(ctx context.Context, tr TargetResolver, p authz.Principal, op ops.Op, obj rawObject) error {
 	if tr == nil || op.Scope != ops.ScopeWorker {
 		return nil
@@ -125,11 +126,23 @@ func resolveTargets(ctx context.Context, tr TargetResolver, p authz.Principal, o
 	}
 	for _, name := range targetMembers(op.Args) {
 		raw, ok := obj[name]
-		if !ok || !bytes.HasPrefix(bytes.TrimSpace(raw), []byte(`"`)) {
+		if !ok {
 			continue
 		}
 		var s string
-		if err := json.Unmarshal(raw, &s); err != nil {
+		if !bytes.HasPrefix(bytes.TrimSpace(raw), []byte(`"`)) {
+			// An object that names no Worker and a session code as its
+			// session ({"session_name":"5-667"}) is the code.
+			var t ops.Target
+			code, isCode := "", false
+			if json.Unmarshal(raw, &t) == nil {
+				code, isCode = ops.SessionCodeTarget(t)
+			}
+			if !isCode {
+				continue
+			}
+			s = code
+		} else if err := json.Unmarshal(raw, &s); err != nil {
 			return invalidArg(name, "has the wrong type, expected an object or a string")
 		}
 		t, err := tr.Resolve(ctx, p, s, all)
