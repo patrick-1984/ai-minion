@@ -187,7 +187,7 @@ func (h grantHandlers) info(g store.SessionGrantRow, ws map[string]GrantWorker) 
 		TargetWorkerID: g.TargetWorkerID, TargetSession: g.TargetSession, Level: level, Authority: g.Authority,
 		GrantedBy: g.GrantedBy, Revision: g.Revision,
 		CreatedAt: ops.Timestamp(time.UnixMilli(g.CreatedAt)), UpdatedAt: ops.Timestamp(time.UnixMilli(g.UpdatedAt)),
-		Suspended: g.SuspendedAt != nil, SuspendCause: g.SuspendCause, Note: g.Note,
+		Suspended: g.SuspendedAt != nil, SuspendCause: g.SuspendCause, Note: g.Note, CommandShell: g.CommandShell,
 		SourceWorkerName: ws[g.SourceWorkerID].Name, TargetWorkerName: ws[g.TargetWorkerID].Name,
 		SourceOwner: ws[g.SourceWorkerID].Owner, TargetOwner: ws[g.TargetWorkerID].Owner,
 		State: ops.GrantStateActive,
@@ -361,12 +361,18 @@ func grantSetEvent(a ops.GrantSetArgs, old, now *store.SessionGrantRow) audit.Ev
 		}
 		if now != nil {
 			ev.Detail += " rev=" + strconv.FormatUint(now.Revision, 10)
+			if old != nil && old.CommandShell != now.CommandShell {
+				ev.Detail += " command_shell=" + strconv.FormatBool(now.CommandShell)
+			}
 		}
 	case now != nil:
 		ev.GrantID = now.ID
 		ev.Detail = "level=" + newLevel + " authority=" + now.Authority + " expires=none"
 		if now.ExpiresAt != nil {
 			ev.Detail = "level=" + newLevel + " authority=" + now.Authority + " expires=" + strconv.FormatInt(*now.ExpiresAt, 10)
+		}
+		if now.CommandShell {
+			ev.Detail += " command_shell=true"
 		}
 	default:
 		ev.Detail = "level=" + newLevel
@@ -457,6 +463,14 @@ func (h grantHandlers) doSet(ctx context.Context, c *Call, a ops.GrantSetArgs, o
 			return none, NewError(proto.CodeConflict, "the grant is suspended; an administrator must approve it first")
 		}
 		cur.Level, cur.ExpiresAt, cur.Note, cur.UpdatedAt = level, exp, a.Note, 0
+		// A116: an absent flag keeps the stored one; a command shell needs
+		// Control on one named session, so a lower level clears it.
+		if a.CommandShell != nil {
+			cur.CommandShell = *a.CommandShell
+		}
+		if level != authz.LevelControl || cur.TargetSession == "" {
+			cur.CommandShell = false
+		}
 		g, err := h.st.PutSessionGrant(ctx, cur, a.IfRevision, write)
 		if err != nil {
 			return none, grantStoreErr(err)
@@ -484,6 +498,7 @@ func (h grantHandlers) doSet(ctx context.Context, c *Call, a ops.GrantSetArgs, o
 		SourceWorkerID: a.SourceWorkerID, SourceSession: a.SourceSession, TargetWorkerID: a.TargetWorkerID,
 		TargetSession: a.TargetSession, Level: level, Authority: authority, GrantedBy: p.UserID,
 		SourceOwnerID: src.OwnerID, TargetOwnerID: tgt.OwnerID, Note: a.Note, ExpiresAt: exp,
+		CommandShell: a.CommandShell != nil && *a.CommandShell,
 	}, 0, write)
 	if err != nil {
 		return none, grantStoreErr(err)

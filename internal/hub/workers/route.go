@@ -618,6 +618,11 @@ type CallRequest struct {
 	// (a verified bound master lease, or a session named on a call stream);
 	// it only attributes the request in its origin.
 	source originSource
+	// commandShell, when set, is told the command shell grant (A116) that let
+	// the origin carry shell_ok, "" for none, each time the request is decided
+	// (before the dispatch and at the final admission); for the audit of the
+	// caller.
+	commandShell func(grantID string)
 }
 
 // Call routes a non-streaming op and returns its result as a value of the
@@ -817,6 +822,11 @@ type call struct {
 	accepted ops.ActionSet
 	res      authz.Resource
 	granted  func(ids []string)
+	// shell is set for a request that may carry shell_ok (shellCandidate);
+	// the final admission decides it again. report is
+	// CallRequest.commandShell.
+	shell  bool
+	report func(grantID string)
 	// dispatched is set when the Worker's connection took the op (the
 	// stream opened): from then on it counts as an op sent to that Worker.
 	dispatched atomic.Bool
@@ -985,6 +995,12 @@ func (rt *Router) prepare(ctx context.Context, req CallRequest, wantStream bool)
 	if req.granted != nil {
 		req.granted(grantIDs)
 	}
+	shell := shellCandidate(op.Name, req)
+	if shell {
+		if err := rt.decideShell(ctx, &origin, req.Principal, res, req.commandShell); err != nil {
+			return nil, err
+		}
+	}
 	id := ops.NewUUIDv7()
 	if op.Write {
 		var w struct {
@@ -1004,6 +1020,8 @@ func (rt *Router) prepare(ctx context.Context, req CallRequest, wantStream bool)
 		accepted: accepted,
 		res:      res,
 		granted:  req.granted,
+		shell:    shell,
+		report:   req.commandShell,
 		frame: OpRequest{
 			Type: proto.TypeOpRequest, Op: op.WireName(), RequestID: id,
 			Args: args, Actions: actions, Origin: origin, TargetWorkerID: routedTargetWorker(op.Name, args, req.WorkerID),
@@ -1136,6 +1154,13 @@ func (rt *Router) admit(ctx context.Context, c *call, destination Online) error 
 		// The origin names the grant this final admission found, not a
 		// grant of the earlier decision.
 		rt.originGrant(&c.frame.Origin, p, ids)
+	}
+	if c.shell {
+		// A command shell grant revoked or changed since the first decision
+		// no longer lets the request skip the shell_pane guard (A116).
+		if err := rt.decideShell(ctx, &c.frame.Origin, p, c.res, c.report); err != nil {
+			return err
+		}
 	}
 	return nil
 }

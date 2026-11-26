@@ -422,6 +422,13 @@ func (e *accessEval) grantVerdict(g store.SessionGrantRow, src, t AccessWorker, 
 	return v
 }
 
+// commandShell reports whether the verdict comes from a direct grant by name
+// that marks its target as a command shell of the source (A116). A grant
+// bound to an incarnation never types into a shell (the master catalog).
+func (v accessVerdict) commandShell() bool {
+	return v.grant != nil && v.grant.CommandShell && v.grant.SourceIncarnation == "" && v.grant.Level == authz.LevelControl
+}
+
 // pair is the one evaluator: the best reach session on src has to the live
 // session name on t. A master reach and a grant may both cover the pair; the
 // higher level in effect wins, then the higher level the Hub would authorize
@@ -536,7 +543,7 @@ func AccessMatrix(f AccessFacts, viewer string, all bool, only string) ops.Acces
 					continue
 				}
 				cells = append(cells, found{t.ID, name, ops.AccessCell{Source: len(res.Sources), Granted: v.Granted,
-					InEffect: v.InEffect, Via: v.Via, BlockedBy: v.Blocked}, v.Proof})
+					InEffect: v.InEffect, Via: v.Via, BlockedBy: v.Blocked, CommandShell: v.commandShell()}, v.Proof})
 			}
 		}
 		// A source that covers nothing is still a row for its owner, unless

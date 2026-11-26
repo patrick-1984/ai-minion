@@ -132,6 +132,26 @@ The grant has the authority `admin` and names you as the person who decided. The
 
 On **Grants**, each row has **Change level** (View, Message, Control, then **Save**) and **Revoke**. A change is made for the revision you looked at: if someone else changed the grant meanwhile, the page says so and shows the current state. A revoked grant is gone; to give the access back, add it again.
 
+### Mark a command shell
+
+A Worker refuses typed input into a pane that runs a plain shell (`shell_pane`) unless the caller sets `force`: an agent should not type into a shell by accident. When a master session really drives a shell on another Worker (a "command shell"), the owner can say so once instead of the master forcing every call.
+
+1. Open **Access > Grants**. The grant must be **Control** and name **one** target session (not every shared session of a Worker).
+2. Press **Mark as command shell** on its row. The row then shows **Command shell**: typing there from the source session is allowed without force.
+
+Who may mark or unmark: the same people who may change the level of the grant (the owner of both Workers, or an administrator). `grant_set` takes `"command_shell": true` or `false`; without the member a change keeps the flag, and a level below Control clears it.
+
+What it changes, and nothing else:
+
+- A `send_text` or `send_keys` from the source session into exactly that target session is a normal write: the Worker skips the `shell_pane` guard and the result is not marked `forced`. Every other guard stays: an open dialog, a busy agent, a pane that changed, sharing, the local policy of the Worker, the level of the grant.
+- Any other caller, any other session, and every local caller on the target Worker still get `shell_pane` and still need `force`.
+- The Hub decides it on every call (when it sends the request), from the grant as stored then: unmark or revoke and the next call is an ordinary one again.
+- The audit event of such a write has the detail `command_shell=<grant id>` and names the grant.
+- Nothing is shown or sent to the target session: it is not told that it is a command shell.
+- The target Worker must know the flag (this release or later). An older Worker ignores it and refuses with `shell_pane` as before; the master then still needs `force`.
+
+Trade-off in plain words: a command shell lets the master session run any command in that shell without a second "are you sure". Mark only a shell you would let that master use anyway, prefer an end date on the grant, and keep the master Verified where you can.
+
 ### Find out why a call is refused
 
 1. Open **Access > Why?**, pick the source session and the target session, **Check**. Or click the cell of the pair in the matrix.

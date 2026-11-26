@@ -1,6 +1,8 @@
 package workers
 
 import (
+	"context"
+
 	"github.com/patrick-1984/ai-minion/internal/hub/authz"
 	"github.com/patrick-1984/ai-minion/internal/ops"
 	"github.com/patrick-1984/ai-minion/internal/proto"
@@ -85,4 +87,46 @@ func (rt *Router) originGrant(o *proto.Origin, p authz.Principal, grantIDs []str
 		return
 	}
 	o.GrantID = grantIDs[0]
+}
+
+// shellCandidate reports whether a request may carry shell_ok (A116): typed
+// input (send_text, send_keys) into one session from a Worker session
+// principal, never a prompt-only send (a Message grant or a bound master).
+func shellCandidate(op string, req CallRequest) bool {
+	return (op == ops.OpSendText || op == ops.OpSendKeys) && req.Session != "" && !req.PromptOnly &&
+		req.Principal.Kind == authz.KindWorker
+}
+
+// originShell sets shell_ok on the worker origin o from shellID, the command
+// shell grant ([authz.Authorizer.CommandShellGrant]) that the admission found
+// for the request: then o names that grant as its grant_id. Without one, or
+// on an origin that is not marked Grant, shell_ok is cleared and grant_id
+// stays as [Router.originGrant] set it. It reports whether shell_ok is set.
+func (rt *Router) originShell(o *proto.Origin, p authz.Principal, shellID string) bool {
+	o.ShellOK = false
+	if shellID == "" || !o.Grant || o.Kind != proto.OriginWorker {
+		return false
+	}
+	if !ops.ValidUUIDv7(shellID) {
+		rt.log.Warn("workers: the id of a command shell grant cannot be named in the origin", "worker_id", p.WorkerID)
+		return false
+	}
+	o.ShellOK, o.GrantID = true, shellID
+	return true
+}
+
+// decideShell reads the command shell grant of a candidate request on res for
+// p, sets shell_ok on o and tells report the grant that set it ("" for none).
+func (rt *Router) decideShell(ctx context.Context, o *proto.Origin, p authz.Principal, res authz.Resource, report func(string)) error {
+	id, err := rt.az.CommandShellGrant(ctx, p, res)
+	if err != nil {
+		return err
+	}
+	if !rt.originShell(o, p, id) {
+		id = ""
+	}
+	if report != nil {
+		report(id)
+	}
+	return nil
 }

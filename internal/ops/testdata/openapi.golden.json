@@ -569,6 +569,9 @@
           "blocked_by": {
             "type": "string"
           },
+          "command_shell": {
+            "type": "boolean"
+          },
           "granted": {
             "type": "string"
           },
@@ -1480,6 +1483,9 @@
           "authority": {
             "type": "string"
           },
+          "command_shell": {
+            "type": "boolean"
+          },
           "created_at": {
             "format": "date-time",
             "type": "string"
@@ -1701,6 +1707,9 @@
       },
       "GrantSetArgs": {
         "properties": {
+          "command_shell": {
+            "type": "boolean"
+          },
           "expires_at": {
             "type": "string"
           },
@@ -9190,7 +9199,7 @@
             "sessionCookie": []
           }
         ],
-        "summary": "Create a session grant, or change the level, expiry or note of an existing one (owner of the Workers or administrator). Browser session with a fresh sign-in only.",
+        "summary": "Create a session grant, or change the level, expiry, note or command shell flag of an existing one (owner of the Workers or administrator). Browser session with a fresh sign-in only.",
         "x-minion-actions": [
           "operate"
         ],
