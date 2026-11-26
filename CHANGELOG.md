@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Added
+
+- Android app: optional **Hub address override** in **Pair with a Hub** and **Use a join token** for networks whose DNS cannot resolve the Hub (for example `minion.example` at `10.3.3.6`). Only the dial address changes; TLS SNI, the certificate name check and the HTTP Host stay the hostname. Saved in the app and passed to the Worker on every start (`MINION_HUB_DIAL_ADDRESS`), shown on the status screen, cleared with **Clear Hub address override** or **Forget this Hub**. Android only: other builds ignore the variable.
+
 ## v0.21.0
 
 ### Added

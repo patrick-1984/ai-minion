@@ -46,6 +46,7 @@ class MainActivity : Activity() {
     private lateinit var status: TextView
     private lateinit var notice: TextView
     private lateinit var hub: TextView
+    private lateinit var dialOverride: TextView
     private lateinit var workerWords: TextView
     private lateinit var hubWords: TextView
     private lateinit var pairing: TextView
@@ -60,6 +61,7 @@ class MainActivity : Activity() {
     private lateinit var pause: Button
     private lateinit var stop: Button
     private lateinit var forget: Button
+    private lateinit var clearOverride: Button
     private lateinit var reviewUsage: Button
 
     private val service = object : ServiceConnection {
@@ -129,6 +131,8 @@ class MainActivity : Activity() {
         page.addView(details, row(20))
         hub = label("", 16f, ink)
         details.addView(hub)
+        dialOverride = label("", 16f, ink)
+        details.addView(dialOverride, row(8))
         pairing = label("", if (television) 32f else 26f, mint, true).apply { typeface = Typeface.MONOSPACE }
         details.addView(pairing, row(8))
         expires = label("", 15f, ink)
@@ -183,6 +187,14 @@ class MainActivity : Activity() {
                 .setPositiveButton("Forget") { _, _ -> worker?.forget() }.show()
         }
         page.addView(forget, row(6))
+        clearOverride = button("Clear Hub address override") {
+            AlertDialog.Builder(this)
+                .setTitle("Clear the Hub address override?")
+                .setMessage("The Worker looks up the Hub's name with this network's DNS again from its next start.")
+                .setNegativeButton("Cancel", null)
+                .setPositiveButton("Clear") { _, _ -> worker?.clearDialOverride() }.show()
+        }
+        page.addView(clearOverride, row(6))
         return scroll
     }
 
@@ -192,6 +204,8 @@ class MainActivity : Activity() {
         status.text = value.status
         notice.show(value.message)
         hub.show(if (value.hub.isBlank()) "No Hub configured" else "Hub\n${value.hub}")
+        dialOverride.show(if (value.dialOverride.isBlank()) "" else
+            "Hub address override\n${HubDialOverride.describe(value.dialOverride)} (TLS still checks the name)")
         if (value.code.isBlank()) {
             pairing.show("")
             expires.show("")
@@ -226,7 +240,8 @@ class MainActivity : Activity() {
         boot.visible(configured && !value.busy)
         reviewUsage.visible(value.usage?.accepted == false && !value.busy)
         forget.visible(configured && !value.wanted && !value.busy)
-        val controls = listOf(pair, token, start, pause, stop, share, boot, reviewUsage, forget)
+        clearOverride.visible(value.dialOverride.isNotBlank() && !value.wanted && !value.busy)
+        val controls = listOf(pair, token, start, pause, stop, share, boot, reviewUsage, forget, clearOverride)
         for (control in controls) control.isEnabled = worker != null
         if (television && currentFocus == null) {
             controls.firstOrNull { it.isEnabled && it.visibility == View.VISIBLE }?.requestFocus()
@@ -261,6 +276,24 @@ class MainActivity : Activity() {
             isSaveEnabled = false
             setOnCheckedChangeListener { _, checked -> if (checked) error = null }
         }
+        val overrideHelp = TextView(this).apply {
+            text = "Advanced: Hub address override (optional)\n" +
+                "Use only when this network's DNS cannot find the Hub. Enter the Hub's IP address, such as 10.3.3.6. " +
+                "TLS still checks the Hub's certificate name."
+            textSize = 16f
+        }
+        // A plain text field: the D-pad reaches it in form order and the
+        // on-screen keyboard of a TV remote can type it.
+        val overrideInput = EditText(this).apply {
+            id = View.generateViewId()
+            hint = "IP address (leave empty for none)"
+            setSingleLine()
+            filters = arrayOf(InputFilter.LengthFilter(64))
+            isSaveEnabled = false
+            importantForAutofill = View.IMPORTANT_FOR_AUTOFILL_NO
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
+            imeOptions = EditorInfo.IME_ACTION_DONE or EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING
+        }
         val form = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(22), dp(12), dp(22), 0)
@@ -268,6 +301,8 @@ class MainActivity : Activity() {
             addView(disclosure, row(12))
             addView(usage, row(8))
             addView(selection, row(12))
+            addView(overrideHelp, row(16))
+            addView(overrideInput, row(4))
         }
         val dialog = AlertDialog.Builder(this)
             .setTitle(if (byToken) "Join a Hub" else "Pair with a Hub")
@@ -286,6 +321,23 @@ class MainActivity : Activity() {
                     input.error = if (byToken) "Paste a Minion join token from the Hub." else "Enter a full Hub URL, such as https://hub.example"
                     return@setOnClickListener
                 }
+                val wanted = overrideInput.text.toString().trim()
+                var dialOverride = ""
+                if (wanted.isNotEmpty()) {
+                    val host = if (byToken) HubDialOverride.hostOfToken(value) else HubDialOverride.hostOfServer(value)
+                    val address = HubDialOverride.address(wanted)
+                    if (host == null) {
+                        overrideInput.error = "The Hub address has no hostname to override. Leave this field empty."
+                        overrideInput.requestFocus()
+                        return@setOnClickListener
+                    }
+                    if (address == null) {
+                        overrideInput.error = "Enter an IPv4 or IPv6 address, such as 10.3.3.6, without a port."
+                        overrideInput.requestFocus()
+                        return@setOnClickListener
+                    }
+                    dialOverride = "$host=$address"
+                }
                 if (!usage.isChecked) {
                     usage.error = getString(R.string.usage_enrollment_required)
                     usage.requestFocus()
@@ -293,8 +345,8 @@ class MainActivity : Activity() {
                 }
                 val target = worker ?: return@setOnClickListener
                 val selectionValue = if (selection.isChecked) "all" else "none"
-                if (byToken) target.join(value, selectionValue, usage.isChecked)
-                else target.pair(value, selectionValue, usage.isChecked)
+                if (byToken) target.join(value, selectionValue, usage.isChecked, dialOverride)
+                else target.pair(value, selectionValue, usage.isChecked, dialOverride)
                 input.text.clear()
                 dialog.dismiss()
                 if (!television && Build.VERSION.SDK_INT >= 33 &&
@@ -304,12 +356,14 @@ class MainActivity : Activity() {
                     requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1)
                 }
             }
-            input.setOnEditorActionListener { _, action, _ ->
+            val done = TextView.OnEditorActionListener { _, action, _ ->
                 if (action != EditorInfo.IME_ACTION_DONE) false else {
                     submit.performClick()
                     true
                 }
             }
+            input.setOnEditorActionListener(done)
+            overrideInput.setOnEditorActionListener(done)
         }
         dialog.setOnDismissListener { input.text.clear() }
         dialog.show()

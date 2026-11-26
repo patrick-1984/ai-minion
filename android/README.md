@@ -37,6 +37,18 @@ or the device vendor may suspend or stop the service. A system force-stop
 requires opening the app and starting the Worker again. The Worker's Go
 connection uses its own TLS and proxy settings.
 
+**Hub address override.** On a network whose DNS cannot resolve the Hub's
+name, enter the Hub's IP address (for example `10.3.3.6`) in the optional
+**Advanced: Hub address override** field of **Pair with a Hub** or **Use a
+join token**. The app takes the hostname from the Hub URL or the join token
+and passes `MINION_HUB_DIAL_ADDRESS=<hostname>=<address>` to the Worker on
+every start, so it survives Worker, app and device restarts. Only the dial
+address changes, with the same port: TLS SNI, the certificate name check and
+the HTTP Host stay the hostname, and other hosts and a configured proxy are
+dialled as before. The status screen shows the active override; **Clear Hub
+address override** (while the Worker is stopped) and **Forget this Hub**
+remove it. Only the Android build of the Worker reads this variable.
+
 ## Rooted devices
 
 The Worker, terminal server and initial shells run under the Minion app UID.
