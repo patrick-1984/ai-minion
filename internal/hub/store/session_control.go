@@ -148,6 +148,8 @@ func (s *Store) DeleteSessionControlOfWorker(ctx context.Context, ex Execer, wor
 		`DELETE FROM worker_control WHERE worker_id = ?1`,
 		`DELETE FROM control_accept WHERE target_worker_id = ?1 OR source_worker_id = ?1`,
 		`DELETE FROM session_control WHERE worker_id = ?1`,
+		// The Worker's own hidden-sessions choice was the old owner's (v0.23.0).
+		`DELETE FROM worker_hidden_sessions WHERE worker_id = ?1`,
 	} {
 		res, err := ex.ExecContext(ctx, q, workerID)
 		if err != nil {
