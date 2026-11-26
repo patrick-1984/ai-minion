@@ -139,3 +139,26 @@ func TestCommandShellOnTheCallStreamAndItsAudit(t *testing.T) {
 		t.Fatal("a send after the revoke was allowed")
 	}
 }
+
+// A write into a command shell sent under a standing client rule (A116a and
+// A116b together): the audit detail names both, the client rule first.
+func TestCommandShellWriteUnderAClientRuleAuditsBoth(t *testing.T) {
+	r := newSCRig(t)
+	g := aliceGrant(authz.LevelControl)
+	g.ID, g.CommandShell = ops.NewUUIDv7(), true
+	r.grants.setDirect(wAlicePi1.ID, "agent", g)
+	rule := ops.NewUUIDv7()
+	req := scRequest(ops.OpSendText, scArgs(ops.OpSendText, grantedBuild), "", "agent")
+	req["client_rule"] = rule
+	frames, sent := r.call(t, wAlicePi1.ID, req, ops.WriteResult{Outcome: ops.OutcomeDelivered})
+	var wr ops.WriteResult
+	resultOf(t, frames, &wr)
+	if o := sent.request(t).Origin; !o.ShellOK || o.GrantID != g.ID {
+		t.Fatalf("origin = %+v, want shell_ok with the grant", o)
+	}
+	evs := r.audit.all()
+	want := "client_rule=" + rule + " command_shell=" + g.ID
+	if len(evs) != 1 || evs[0].GrantID != g.ID || evs[0].Detail != want {
+		t.Fatalf("audit = %+v, want grant %s and detail %q", evs, g.ID, want)
+	}
+}
