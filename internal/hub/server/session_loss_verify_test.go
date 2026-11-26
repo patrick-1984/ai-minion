@@ -1,12 +1,13 @@
 package server
 
 // Verification of "a lost session loses its permission" (owner question,
-// v0.22.0), on the session purge module. A test named ...Gap asserts the
-// current, unwanted behaviour so that a fix makes it fail and is noticed.
+// v0.22.0), on the session purge module; since v0.23.0 (A115) the instance
+// of a session tells a recreated name from the terminal it replaced.
 
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"io"
 	"log/slog"
 	"testing"
@@ -62,70 +63,92 @@ func TestVerifyLossReplacedSessionLosesItsClaimedMasterNomination(t *testing.T) 
 // A Worker that was offline while its master session was killed and a new
 // one was created under the same name (or its tmux server restarted and the
 // name was recreated) reconnects with a snapshot that lists the name again.
-// The Hub keeps the first-seen time of a name it listed before the
-// disconnect, so the purge sees nothing to do: the name-only master
-// nomination stays and serves the new terminal (the name-only grant: see
-// workers.TestVerifyLossReconnectSnapshotKeepsTheOldTerminalsGrantGap).
-func TestVerifyLossOfflineRecreateKeepsClaimedMasterGap(t *testing.T) {
-	st, err := store.Open(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = st.Close() })
-	ctx := context.Background()
-	now := time.UnixMilli(10_000)
-	hub := workers.NewEventHub(workers.EventHubOptions{Now: func() time.Time { return now }})
-	snapshot := func(names ...string) *workers.Link {
-		t.Helper()
-		l := hub.Connect("wA", "a")
-		f, err := l.NewFeed()
-		if err != nil {
-			t.Fatal(err)
-		}
-		var s []workers.SessionState
-		for _, n := range names {
-			s = append(s, workers.SessionState{Name: n})
-		}
-		if err := f.Snapshot(0, s); err != nil {
-			t.Fatal(err)
-		}
-		return l
-	}
-	snapshot()
-	now = now.Add(time.Second)
-	l := snapshot("boss") // first seen now: a real generation
-	if at, _ := hub.FirstSeen("wA", "boss"); at != now.UnixMilli() {
-		t.Fatalf("setup: first seen %d", at)
-	}
-	created := now.Add(time.Second).UnixMilli()
-	if err := st.PutMasterSession(ctx, store.MasterRow{WorkerID: "wA", SessionName: "boss", CreatedBy: "u", CreatedAt: created}); err != nil {
-		t.Fatal(err)
-	}
-	p := &sessionPurger{st: st, hub: hub, sessions: hub, seen: hub, log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+// With another instance the name is a new terminal: the resync purges the
+// name-only master nomination made for the old one. The same instance keeps
+// it, and so does a Worker that reports no instance (the name-only rule of
+// older Workers and psmux). The same holds across a Hub restart, by the
+// stored last instance: restart is true for a Hub that restarted while the
+// Worker was offline.
+func TestVerifyLossOfflineRecreateLosesClaimedMaster(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		before, after string
+		restart       bool
+		purged        bool
+	}{
+		{"new instance", "i1", "i2", false, true},
+		{"new instance, Hub restarted", "i1", "i2", true, true},
+		{"same instance", "i1", "i1", false, false},
+		{"same instance, Hub restarted", "i1", "i1", true, false},
+		{"no instance", "", "", false, false},
+		{"no instance, Hub restarted", "", "", true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			st, err := store.Open(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = st.Close() })
+			ctx := context.Background()
+			now := time.UnixMilli(10_000)
+			clock := func() time.Time { return now }
+			hub := workers.NewEventHub(workers.EventHubOptions{Now: clock, Instances: st})
+			snapshot := func(names ...string) *workers.Link {
+				t.Helper()
+				l := hub.Connect("wA", "a")
+				f, err := l.NewFeed()
+				if err != nil {
+					t.Fatal(err)
+				}
+				var s []workers.SessionState
+				for i := 0; i < len(names); i += 2 {
+					s = append(s, workers.SessionState{Name: names[i], InstanceID: names[i+1]})
+				}
+				if err := f.Snapshot(0, s); err != nil {
+					t.Fatal(err)
+				}
+				return l
+			}
+			snapshot()
+			now = now.Add(time.Second)
+			l := snapshot("boss", tc.before) // first seen now: a real generation
+			if at, _ := hub.FirstSeen("wA", "boss"); at != now.UnixMilli() {
+				t.Fatalf("setup: first seen %d", at)
+			}
+			created := now.Add(time.Second).UnixMilli()
+			if err := st.PutMasterSession(ctx, store.MasterRow{WorkerID: "wA", SessionName: "boss", CreatedBy: "u", CreatedAt: created}); err != nil {
+				t.Fatal(err)
+			}
 
-	now = now.Add(time.Minute)
-	l.Disconnect()
-	// Offline: "boss" is killed, a new "boss" is created. Reconnect.
-	now = now.Add(time.Hour)
-	sub := hub.Subscribe(16)
-	defer sub.Close()
-	snapshot("boss")
-	var resync workers.Event
-	for resync.Type != workers.EventWorkerResynced {
-		select {
-		case resync = <-sub.C():
-		case <-time.After(time.Second):
-			t.Fatal("no resync event")
-		}
+			now = now.Add(time.Minute)
+			l.Disconnect()
+			if tc.restart {
+				hub = workers.NewEventHub(workers.EventHubOptions{Now: clock, Instances: st})
+			}
+			p := &sessionPurger{st: st, hub: hub, sessions: hub, seen: hub, log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+			// Offline: "boss" is killed, a new "boss" is created. Reconnect.
+			now = now.Add(time.Hour)
+			sub := hub.Subscribe(16)
+			defer sub.Close()
+			snapshot("boss", tc.after)
+			var resync workers.Event
+			for resync.Type != workers.EventWorkerResynced {
+				select {
+				case resync = <-sub.C():
+				case <-time.After(time.Second):
+					t.Fatal("no resync event")
+				}
+			}
+			if err := p.handle(ctx, resync); err != nil {
+				t.Fatal(err)
+			}
+			p.reconcile(ctx)
+			_, err = st.MasterSession(ctx, "wA", "boss")
+			if gone := errors.Is(err, store.ErrNotFound); gone != tc.purged {
+				t.Fatalf("nomination purged = %t (%v), want %t", gone, err, tc.purged)
+			}
+		})
 	}
-	if err := p.handle(ctx, resync); err != nil {
-		t.Fatal(err)
-	}
-	p.reconcile(ctx)
-	if _, err := st.MasterSession(ctx, "wA", "boss"); err != nil {
-		t.Fatalf("the nomination was purged (gap fixed?): %v", err)
-	}
-	// GAP: the nomination made for the old terminal stands for the new one.
 }
 
 // Removing a Worker ends every permission held by or given to its sessions:

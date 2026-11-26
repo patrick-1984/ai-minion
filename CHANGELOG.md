@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Fixed
+
+- A lost session loses its permissions also when a new session takes its name quickly. The Worker reports each session's instance id on its event stream (`instance_id` in `events.snapshot` and `session_added`/`state_changed`), and a session killed and created again under its name between two polls (also by a tmux server restart) is now reported as removed and added, so the Hub purges its name-only master nomination and its grants. The Hub stores the last instance of every session name (migration `0037_session_instance.sql`): a name listed again with another instance after a disconnect, or in the first snapshot after a Hub restart, is a new terminal (first seen now, old grants purged) instead of keeping the old first-seen time or the 0 that passed every grant. Workers and hosts without instance ids (older Workers, macOS, psmux, ConPTY) keep the name-only rule; an older Hub ignores the new member.
+- The Hub checks a name-only (Claimed) master nomination at call time like a direct grant: a source session that is not listed or was first seen after the nomination has no grant, also before the purge has deleted it; a session target of a session-limited acceptance first seen after the acceptance (or not listed) is left out.
+- A session-bound master whose incarnation is no longer reported shows `retired` also when the Worker reports no candidates at all (it showed `waiting`).
+- Docs: the architecture record no longer says that a session recreated under the same name inherits a grant.
+
 ## v0.22.0
 
 ### Added

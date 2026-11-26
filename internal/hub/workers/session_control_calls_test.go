@@ -22,6 +22,8 @@ type fakeGrants struct {
 	direct map[[2]string][]store.SessionGrantRow
 	// directErr, when set, fails every read of the direct grants.
 	directErr error
+	// meta holds CreatedAt and SessionTargets of a session-control row.
+	meta map[[2]string]store.SessionControlRow
 }
 
 func (g *fakeGrants) failDirect(err error) {
@@ -56,7 +58,22 @@ func (g *fakeGrants) SessionControl(_ context.Context, workerID, session string)
 	if !ok {
 		return store.SessionControlRow{}, store.ErrNotFound
 	}
-	return store.SessionControlRow{WorkerID: workerID, SessionName: session, TargetsJSON: t}, nil
+	row := store.SessionControlRow{WorkerID: workerID, SessionName: session, TargetsJSON: t}
+	if m, ok := g.meta[[2]string{workerID, session}]; ok {
+		row.CreatedAt, row.SessionTargets = m.CreatedAt, m.SessionTargets
+	}
+	return row, nil
+}
+
+// setMeta sets the nomination time and the named session targets of the
+// session-control grant of a source session.
+func (g *fakeGrants) setMeta(workerID, session string, createdAt int64, named ...store.ControlSessionTarget) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.meta == nil {
+		g.meta = map[[2]string]store.SessionControlRow{}
+	}
+	g.meta[[2]string{workerID, session}] = store.SessionControlRow{CreatedAt: createdAt, SessionTargets: named}
 }
 
 func (g *fakeGrants) set(t *testing.T, workerID, session string, targets ...ops.KeyResource) {

@@ -341,7 +341,9 @@ func (m *MasterControl) MasterView(ctx context.Context) (map[string]MasterWorker
 			} else if l := m.lanes[r.WorkerID]; l != nil && l.ctx.Err() == nil && m.currentLink(l.info) && m.now().Before(l.expires) {
 				if lease := l.leases[r.IncarnationID]; lease.binding.Generation == r.Generation && m.eligible(l, r.SessionName, r.IncarnationID) {
 					state = "active"
-				} else if len(l.report.Candidates) != 0 && !m.eligible(l, r.SessionName, r.IncarnationID) {
+				} else if l.report.Seq > 0 && !m.eligible(l, r.SessionName, r.IncarnationID) {
+					// The lane reported and the incarnation is not among its
+					// candidates (also a report with none: the terminal ended).
 					state = "retired"
 				}
 			}
