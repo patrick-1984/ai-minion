@@ -3473,6 +3473,9 @@
             "format": "date-time",
             "type": "string"
           },
+          "instance_id": {
+            "type": "string"
+          },
           "name": {
             "type": "string"
           },
