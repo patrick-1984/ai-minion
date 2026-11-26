@@ -8,7 +8,7 @@ import (
 )
 
 // The last instance of every session name of a Worker
-// (0037_session_instance.sql): see workers.EventHub.FirstSeen.
+// (0041_session_instance.sql): see workers.EventHub.FirstSeen.
 
 // MaxSessionInstancesPerWorker bounds the rows kept for one Worker: the names
 // seen least recently go first. It is the Hub's limit on the sessions of a

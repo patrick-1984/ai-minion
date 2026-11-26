@@ -200,7 +200,7 @@ type EventHubOptions struct {
 }
 
 // InstanceStore keeps the last reported instance of every session name of a
-// Worker (0037_session_instance.sql); *store.Store implements it.
+// Worker (0041_session_instance.sql); *store.Store implements it.
 type InstanceStore interface {
 	LoadSessionInstances(ctx context.Context, workerID string) (map[string]string, error)
 	SaveSessionInstances(ctx context.Context, workerID string, instances map[string]string) error

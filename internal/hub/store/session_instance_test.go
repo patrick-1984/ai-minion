@@ -32,7 +32,7 @@ func TestSessionInstancesRoundTrip(t *testing.T) {
 	if got, _ := s.LoadSessionInstances(ctx, f.a.ID); len(got) != 0 {
 		t.Fatalf("after delete = %+v", got)
 	}
-	// A removed Worker's rows go with it (trigger of 0037).
+	// A removed Worker's rows go with it (trigger of 0041).
 	f.exec(t, `DELETE FROM workers WHERE id=?`, f.b.ID)
 	if got, _ := s.LoadSessionInstances(ctx, f.b.ID); len(got) != 0 {
 		t.Fatalf("instances of a removed Worker = %+v", got)
