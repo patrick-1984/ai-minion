@@ -644,22 +644,21 @@ func accessAuthority(e *accessEval, v accessVerdict) (code, text, fix string) {
 }
 
 // AccessExplain answers one pair from the same evaluator as the matrix. It
-// is false when a Worker is unknown or the viewer owns neither end, and also
-// when the viewer does not own both ends and nothing covers the pair: a
-// session of another owner is then answered the same whether it exists or
-// not, and whether or not it is a master.
+// is false when a Worker is unknown or when the viewer may not see both ends
+// (they own one end, or neither): the request names the sessions in clear,
+// so any answer about a hidden end, a covered pair or a suspended grant
+// included, would confirm a name the matrix masks. A session of another
+// owner is then answered the same whether it exists or not, whether a grant
+// covers it or not, and whether or not it is a master.
 func AccessExplain(f AccessFacts, viewer string, all bool, a ops.AccessExplainArgs) (ops.AccessExplainResult, bool) {
 	e := newAccessEval(f)
 	src, ok := e.workers[a.SourceWorkerID]
 	t, ok2 := e.workers[a.TargetWorkerID]
 	own := func(w AccessWorker) bool { return all || viewer != "" && w.OwnerID == viewer }
-	if !ok || !ok2 || !own(src) && !own(t) {
+	if !ok || !ok2 || !own(src) || !own(t) {
 		return ops.AccessExplainResult{}, false
 	}
 	v := e.pair(src, a.SourceSession, t, a.TargetSession)
-	if !v.Covered && (!own(src) || !own(t)) {
-		return ops.AccessExplainResult{}, false
-	}
 	_, master := e.masters[[2]string{src.ID, a.SourceSession}]
 	// The proof of the route that covers the pair; without one, how the Hub
 	// knows the source session.
@@ -670,12 +669,6 @@ func AccessExplain(f AccessFacts, viewer string, all bool, a ops.AccessExplainAr
 	res := ops.AccessExplainResult{
 		Source: ops.AccessSource{WorkerID: src.ID, WorkerName: src.Name, Owner: src.Owner, Session: a.SourceSession, Proof: proof, Master: master},
 		Target: ops.AccessTarget{WorkerID: t.ID, WorkerName: t.Name, Owner: t.Owner, Online: t.Online, Session: a.TargetSession},
-	}
-	if !own(src) {
-		res.Source.Session, res.Source.Masked = accessMask(src.Owner), true
-	}
-	if !own(t) {
-		res.Target.Session, res.Target.Masked = accessMask(t.Owner), true
 	}
 	res.InEffect, res.Via = v.InEffect, v.Via
 

@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/patrick-1984/ai-minion/internal/hub/audit"
+	"github.com/patrick-1984/ai-minion/internal/hub/authz"
 	"github.com/patrick-1984/ai-minion/internal/hub/store"
 	"github.com/patrick-1984/ai-minion/internal/ops"
 	"github.com/patrick-1984/ai-minion/internal/proto"
@@ -405,5 +406,56 @@ func TestGrantWriteAnswerCommitsWithTheChange(t *testing.T) {
 	if err := json.Unmarshal([]byte(twice(ops.OpGrantApprove, map[string]any{"id": g.ID, "if_revision": g.Revision})), &appr); err != nil ||
 		appr.Grant.Suspended || appr.Grant.Revision != g.Revision+1 {
 		t.Fatalf("grant_approve = %+v (%v)", appr, err)
+	}
+}
+
+// A stored grant_approve answer carries both session names, although the
+// request names only the grant. When the approving administrator is demoted
+// before repeating the request, the repeat is decided again like a new
+// request and refused: the names are not given out again. The data-free
+// acknowledgement of a revoke stays replayable after its grant is gone.
+func TestRepeatAfterDemotionDoesNotReturnGrantDetails(t *testing.T) {
+	k := newStrictStack(t)
+	ctx := context.Background()
+	a, b := k.worker(k.u1, "a", store.WorkerKindPrivate), k.worker(k.u2, "b", store.WorkerKindPrivate)
+	k.as(k.admin)
+	g := k.setGrant(grantArgs(a, b, ops.GrantLevelView)) // a:agent -> b:build
+	if _, err := k.st.DB().ExecContext(ctx, `UPDATE session_grant SET suspended_at = 1, suspend_cause = 'test', revision = revision + 1 WHERE id = ?`, g.ID); err != nil {
+		t.Fatal(err)
+	}
+	args := map[string]any{"request_id": ops.NewUUIDv7(), "id": g.ID, "if_revision": g.Revision + 1}
+	code, body := k.call(ops.OpGrantApprove, args)
+	if code != http.StatusOK || !strings.Contains(body, `"build"`) {
+		t.Fatalf("grant_approve = %d %s", code, body)
+	}
+	if code2, body2 := k.call(ops.OpGrantApprove, args); code2 != code || body2 != body {
+		t.Fatalf("the repeat by the administrator = %d %s", code2, body2)
+	}
+	// The administrator becomes a plain user, in the store and for authz.
+	if _, err := k.st.DB().ExecContext(ctx, `UPDATE user_roles SET role = 'user' WHERE user_id = ?`, k.admin); err != nil {
+		t.Fatal(err)
+	}
+	users := map[string]authz.UserState{k.admin: {Role: authz.RoleUser, Active: true},
+		k.u1: {Role: authz.RoleUser, Active: true}, k.u2: {Role: authz.RoleUser, Active: true}}
+	k.az.inner = authz.New(lookups{users, k.st}, lookups{users, k.st})
+	code3, body3 := k.call(ops.OpGrantApprove, args)
+	if code3 == http.StatusOK || strings.Contains(body3, "build") || strings.Contains(body3, "agent") {
+		t.Fatalf("the repeat after the demotion = %d %s", code3, body3)
+	}
+
+	// A revoke by the source owner, repeated after the grant is gone, is
+	// answered with the same bare acknowledgement.
+	k.as(k.u1)
+	cur, err := k.st.SessionGrant(ctx, g.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rev := map[string]any{"request_id": ops.NewUUIDv7(), "id": g.ID, "if_revision": cur.Revision}
+	code4, body4 := k.call(ops.OpGrantRevoke, rev)
+	if code4 != http.StatusOK {
+		t.Fatalf("grant_revoke = %d %s", code4, body4)
+	}
+	if code5, body5 := k.call(ops.OpGrantRevoke, rev); code5 != code4 || body5 != body4 {
+		t.Fatalf("the repeated revoke = %d %s, want %d %s", code5, body5, code4, body4)
 	}
 }

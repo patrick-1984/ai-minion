@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -190,13 +191,17 @@ func (d *Dispatcher) serve(w http.ResponseWriter, r *http.Request, rt route) {
 		d.refused(w, op.Name, "arguments", id.Principal.Kind, err)
 		return
 	}
-	// A repeated request of a de-duplicated write is answered here, before
-	// the resource is derived (a repeated revoke names a grant that is gone):
-	// the caller is authenticated as the one that was authorised for exactly
-	// this request and gets the answer it was given then. Nothing runs and
-	// no audit row is added.
+	// A repeated request of a de-duplicated write gets the answer it was
+	// given then, and nothing runs again. The caller is authenticated as the
+	// one that was authorised for exactly this request, but that authority
+	// may be gone since: a stored answer that carries data (a grant with its
+	// session names) is given only after the same decision as a new request
+	// allows it now. Only the data-free acknowledgement is answered at once,
+	// before the resource is derived (a repeated revoke names a grant that is
+	// gone). An answer given here adds no audit row.
 	dedup, deduped := d.dedupKeyOf(op, ent, args, id)
 	reused := false
+	var replay *storedAnswer
 	if deduped {
 		// Two requests with one id run one after the other, so the second
 		// finds the answer of the first instead of running beside it.
@@ -211,6 +216,10 @@ func (d *Dispatcher) serve(w http.ResponseWriter, r *http.Request, rt route) {
 		}
 		switch state {
 		case requestRepeated:
+			if !dataFreeAnswer(answer) {
+				replay = &answer
+				break
+			}
 			writeStored(w, answer)
 			d.logger().Debug("api request done", "request_id", audit.RequestID(r.Context()), "op", op.Name, "principal_kind", string(id.Principal.Kind),
 				"outcome", "replayed", "duration", time.Since(start).String())
@@ -248,6 +257,13 @@ func (d *Dispatcher) serve(w http.ResponseWriter, r *http.Request, rt route) {
 			e = NewError(proto.CodeForbidden, "not allowed: "+op.Name+" needs one of the actions ("+op.Actions.String()+") in this API key's effective permissions, which are the key's actions limited by its owner's current role and its resources; check them in the Hub")
 		}
 		d.refused(w, op.Name, "authorize", id.Principal.Kind, e)
+		return
+	}
+
+	if replay != nil {
+		writeStored(w, *replay)
+		d.logger().Debug("api request done", "request_id", audit.RequestID(r.Context()), "op", op.Name, "principal_kind", string(id.Principal.Kind),
+			"outcome", "replayed", "duration", time.Since(start).String())
 		return
 	}
 
@@ -443,6 +459,19 @@ func (d *Dispatcher) recall(ctx context.Context, op ops.Op, k dedupKey) (storedA
 		return storedAnswer{}, requestNew, errors.New("api: the stored answer of a request_id is incomplete")
 	}
 	return a, requestRepeated, nil
+}
+
+// dataFreeAnswer reports whether a stored answer is the bare acknowledgement
+// of a write (outcome delivered, nothing else), which tells a repeat of the
+// request nothing it did not know. Every other stored answer, an error
+// envelope included, is given again only to a caller the same decision as a
+// new request allows now.
+func dataFreeAnswer(a storedAnswer) bool {
+	var ack ops.WriteResult
+	dec := json.NewDecoder(bytes.NewReader(a.Body))
+	dec.DisallowUnknownFields()
+	return a.Status == http.StatusOK && dec.Decode(&ack) == nil && ack.Outcome == ops.OutcomeDelivered && ack.Reason == "" &&
+		len(ack.Warnings) == 0 && ack.Pane == nil && ack.Note == ""
 }
 
 // writeStored writes a stored answer as WriteJSON and WriteError wrote it.
