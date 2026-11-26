@@ -156,6 +156,10 @@ func initPipe(ctx context.Context, env *Env) error {
 	// the grants behind an allowed call in memory, the recorder writes them to
 	// the store once a minute and once more when the Hub stops.
 	grantUse := workers.NewGrantUse(st)
+	// The Verified path (bound masters) counts the use of its grants too.
+	if master, err := Require[*workers.MasterControl](env); err == nil {
+		master.SetGrantUse(grantUse)
+	}
 	// Worker call streams: the ops join the call loop of the connect handler.
 	cs := workers.NewCallServer(workers.CallServerConfig{
 		Telemetry: svc.Telemetry,
@@ -165,6 +169,7 @@ func initPipe(ctx context.Context, env *Env) error {
 		Authz:     az,
 		Auditor:   alog,
 		Grants:    st,
+		Sessions:  events,
 		GrantUse:  grantUse,
 		Logger:    log,
 	})

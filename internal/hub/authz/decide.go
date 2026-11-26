@@ -182,10 +182,13 @@ func (a *Authorizer) DecideOwner(ctx context.Context, p Principal, accepted ops.
 
 // Valid reports whether p still has any permission at all (see subject):
 // its account is active and holds a grant, its act-as session is live, its
-// Worker exists and its owner has access. It reads the current state.
+// Worker exists and its owner has access. It reads the current state. A
+// Worker identity whose owner is active but holds no effective role is not
+// valid here, also when its direct grants still decide single calls: a
+// running call does not say which rule admitted it, so it ends (fail closed).
 func (a *Authorizer) Valid(ctx context.Context, p Principal) (bool, error) {
-	_, ok, err := a.subject(ctx, p, a.ports())
-	return ok, err
+	sub, ok, err := a.subject(ctx, p, a.ports())
+	return ok && (sub.p.Kind != KindWorker || sub.role != ""), err
 }
 
 // EffectiveActions returns the actions p currently holds on res, sorted. It is
@@ -300,9 +303,12 @@ func (a *Authorizer) subject(ctx context.Context, p Principal, pt ports) (sub su
 
 // workerSubject resolves a Worker identity: the Worker must exist and its
 // owner must be an active user. The subject keeps the owner's role: the
-// own-Worker rule ignores it, and a session-control grant (Principal.Scope)
-// is intersected with the owner's base permission, exactly as for an API key
-// of that owner.
+// own-Worker rule and a session-control grant (Principal.Scope, intersected
+// with the owner's base permission, exactly as for an API key of that owner)
+// need an effective role of the owner. A direct grant does not (D4): the
+// authority behind it is judged per grant, so an active owner without a role
+// still has a subject when the principal carries direct grants, and then
+// holds only what those grants authorize.
 func (a *Authorizer) workerSubject(ctx context.Context, p Principal, pt ports) (subject, bool, error) {
 	owner, err := pt.workers.WorkerOwner(ctx, p.WorkerID)
 	if errors.Is(err, ErrNotFound) {
@@ -312,10 +318,17 @@ func (a *Authorizer) workerSubject(ctx context.Context, p Principal, pt ports) (
 		return subject{}, false, fmt.Errorf("authz: look up worker owner: %w", err)
 	}
 	u, found, err := user(ctx, pt, owner)
-	if err != nil || !found || !u.Active || (u.Role != RoleUser && u.Role != RoleAdmin) {
+	if err != nil || !found || !u.Active {
 		return subject{}, false, err
 	}
-	sub := subject{p: p, role: u.Role, ownerID: owner, now: a.now()}
+	role := u.Role
+	if !u.hasAccess() {
+		if len(p.directList()) == 0 {
+			return subject{}, false, nil
+		}
+		role = ""
+	}
+	sub := subject{p: p, role: role, ownerID: owner, now: a.now()}
 	if sub.admins, err = sub.liveAdmins(ctx, pt); err != nil {
 		return subject{}, false, err
 	}
@@ -343,7 +356,7 @@ func (s subject) actions(res ResolvedResource) ops.ActionSet {
 		// Worker-bound API key with a scope (AD-12, call_api_key_file) and the
 		// receiver's pipe_accept_from.
 		var held []ops.Action
-		if !s.p.boundMaster && res.Kind != ResourceUser && res.WorkerID == s.p.WorkerID && res.OwnerID == s.ownerID {
+		if !s.p.boundMaster && s.role != "" && res.Kind != ResourceUser && res.WorkerID == s.p.WorkerID && res.OwnerID == s.ownerID {
 			held = slices.Clone(workerActions)
 		}
 		// A session-control grant adds what it authorizes on its own, and so

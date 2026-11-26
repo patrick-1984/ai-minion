@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -177,9 +178,10 @@ func (d *Dispatcher) serve(w http.ResponseWriter, r *http.Request, rt route) {
 		return
 	}
 
-	if op.SessionOnly && (id.Via != ViaSession || id.Principal.Kind != authz.KindBrowserSession) {
+	if op.SessionOnly && !sessionOnlyAllows(op, id) {
 		// Only a browser session acting as itself may run these (the Hub
-		// identity operations); an API key and an act-as session may not.
+		// identity operations); an API key may not, and an act-as session only
+		// where sessionOnlyActAs says so.
 		d.refused(w, op.Name, "session_only", id.Principal.Kind, NewError(proto.CodeForbidden, "this operation is available only to a signed-in browser session"))
 		return
 	}
@@ -189,13 +191,17 @@ func (d *Dispatcher) serve(w http.ResponseWriter, r *http.Request, rt route) {
 		d.refused(w, op.Name, "arguments", id.Principal.Kind, err)
 		return
 	}
-	// A repeated request of a de-duplicated write is answered here, before
-	// the resource is derived (a repeated revoke names a grant that is gone):
-	// the caller is authenticated as the one that was authorised for exactly
-	// this request and gets the answer it was given then. Nothing runs and
-	// no audit row is added.
+	// A repeated request of a de-duplicated write gets the answer it was
+	// given then, and nothing runs again. The caller is authenticated as the
+	// one that was authorised for exactly this request, but that authority
+	// may be gone since: a stored answer that carries data (a grant with its
+	// session names) is given only after the same decision as a new request
+	// allows it now. Only the data-free acknowledgement is answered at once,
+	// before the resource is derived (a repeated revoke names a grant that is
+	// gone). An answer given here adds no audit row.
 	dedup, deduped := d.dedupKeyOf(op, ent, args, id)
 	reused := false
+	var replay *storedAnswer
 	if deduped {
 		// Two requests with one id run one after the other, so the second
 		// finds the answer of the first instead of running beside it.
@@ -210,6 +216,10 @@ func (d *Dispatcher) serve(w http.ResponseWriter, r *http.Request, rt route) {
 		}
 		switch state {
 		case requestRepeated:
+			if !dataFreeAnswer(answer) {
+				replay = &answer
+				break
+			}
 			writeStored(w, answer)
 			d.logger().Debug("api request done", "request_id", audit.RequestID(r.Context()), "op", op.Name, "principal_kind", string(id.Principal.Kind),
 				"outcome", "replayed", "duration", time.Since(start).String())
@@ -250,6 +260,13 @@ func (d *Dispatcher) serve(w http.ResponseWriter, r *http.Request, rt route) {
 		return
 	}
 
+	if replay != nil {
+		writeStored(w, *replay)
+		d.logger().Debug("api request done", "request_id", audit.RequestID(r.Context()), "op", op.Name, "principal_kind", string(id.Principal.Kind),
+			"outcome", "replayed", "duration", time.Since(start).String())
+		return
+	}
+
 	if reused {
 		// The id belongs to another request (another operation, caller or
 		// arguments): nothing runs. It is said only now, to a caller that
@@ -265,7 +282,13 @@ func (d *Dispatcher) serve(w http.ResponseWriter, r *http.Request, rt route) {
 		pending = false
 		return
 	}
-	result, err := ent.handler(r.Context(), call)
+	hctx := r.Context()
+	if deduped {
+		// A handler that writes in a store transaction can commit the answer
+		// of the request_id with its change (requestReceipt).
+		hctx = context.WithValue(hctx, receiptKey{}, receiptRequest{op: op.Name, key: dedup})
+	}
+	result, err := ent.handler(hctx, call)
 	pending = false
 	if err != nil {
 		e := ErrorOf(err)
@@ -299,6 +322,29 @@ func (d *Dispatcher) serve(w http.ResponseWriter, r *http.Request, rt route) {
 	if err := WriteJSON(w, http.StatusOK, result); err != nil {
 		d.logger().Error("operation result cannot be encoded", "op", op.Name, "error", err)
 	}
+}
+
+// sessionOnlyActAs names the SessionOnly operations that an administrator
+// acting as a user may run in a browser session. grant_set: D4 lets an
+// administrator acting as a user create owner grants for that user only; the
+// handler refuses every other grant (the acted user must own both Workers),
+// and the audit row names the administrator as the actor.
+var sessionOnlyActAs = map[string]bool{ops.OpGrantSet: true}
+
+// sessionOnlyAllows reports whether id may run the SessionOnly operation op:
+// a browser session acting as itself, or an act-as browser session for an
+// operation in sessionOnlyActAs. An API key never may.
+func sessionOnlyAllows(op ops.Op, id Identity) bool {
+	if id.Via != ViaSession {
+		return false
+	}
+	switch id.Principal.Kind {
+	case authz.KindBrowserSession:
+		return true
+	case authz.KindActAs:
+		return sessionOnlyActAs[op.Name]
+	}
+	return false
 }
 
 // dedupKey identifies one request for the de-duplication: the id the caller
@@ -341,6 +387,42 @@ func (d *Dispatcher) dedupKeyOf(op ops.Op, ent entry, args any, id Identity) (de
 	return dedupKey{id: head.RequestID, actor: actor, argsHash: hex.EncodeToString(sum[:])}, true
 }
 
+// receiptKey is the context key of the de-duplicated request a handler runs
+// for; receiptRequest its value.
+type receiptKey struct{}
+
+type receiptRequest struct {
+	op  string
+	key dedupKey
+}
+
+// requestReceipt is the stored answer of the de-duplicated request of ctx
+// when the handler answers it with result: the row the dispatcher would store
+// after the handler returned, for a handler that writes it in the transaction
+// of its change, so that the change and its answer commit together. It is nil
+// when the request is not de-duplicated or the result is not kept (see
+// definiteResult). The dispatcher still stores its own row afterwards; the
+// first one written stays.
+func requestReceipt(ctx context.Context, result any) (*store.OpRequestRow, error) {
+	req, ok := ctx.Value(receiptKey{}).(receiptRequest)
+	if !ok {
+		return nil, nil
+	}
+	b, err := json.Marshal(result)
+	if err != nil {
+		return nil, fmt.Errorf("api: the answer of a request_id cannot be encoded: %w", err)
+	}
+	if !definiteResult(b) {
+		return nil, nil
+	}
+	ans, err := json.Marshal(storedAnswer{Status: http.StatusOK, Body: b})
+	if err != nil {
+		return nil, fmt.Errorf("api: the answer of a request_id cannot be encoded: %w", err)
+	}
+	return &store.OpRequestRow{RequestID: req.key.id, Op: req.op, Actor: req.key.actor, ArgsSHA256: req.key.argsHash,
+		ResultJSON: string(ans), CreatedAt: time.Now().UnixMilli()}, nil
+}
+
 // storedAnswer is what the de-duplication keeps of an answer: the HTTP status
 // and the body, a result or an error envelope.
 type storedAnswer struct {
@@ -377,6 +459,19 @@ func (d *Dispatcher) recall(ctx context.Context, op ops.Op, k dedupKey) (storedA
 		return storedAnswer{}, requestNew, errors.New("api: the stored answer of a request_id is incomplete")
 	}
 	return a, requestRepeated, nil
+}
+
+// dataFreeAnswer reports whether a stored answer is the bare acknowledgement
+// of a write (outcome delivered, nothing else), which tells a repeat of the
+// request nothing it did not know. Every other stored answer, an error
+// envelope included, is given again only to a caller the same decision as a
+// new request allows now.
+func dataFreeAnswer(a storedAnswer) bool {
+	var ack ops.WriteResult
+	dec := json.NewDecoder(bytes.NewReader(a.Body))
+	dec.DisallowUnknownFields()
+	return a.Status == http.StatusOK && dec.Decode(&ack) == nil && ack.Outcome == ops.OutcomeDelivered && ack.Reason == "" &&
+		len(ack.Warnings) == 0 && ack.Pane == nil && ack.Note == ""
 }
 
 // writeStored writes a stored answer as WriteJSON and WriteError wrote it.

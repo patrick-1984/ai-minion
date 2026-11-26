@@ -346,7 +346,7 @@ func TestAccessMatrixAgreesWithTheDecision(t *testing.T) {
 
 // A viewer who does not own a side learns nothing from a guessed session name
 // there: a session that exists and one that does not are answered the same,
-// and so is a guessed master session.
+// and so are a guessed master session and a session a grant covers.
 func TestAccessExplainAnswersForeignGuessesAlike(t *testing.T) {
 	f := grantFixture()
 	ask := func(viewer, sw, ss, tw, ts string) (ops.AccessExplainResult, bool) {
@@ -360,18 +360,22 @@ func TestAccessExplainAnswersForeignGuessesAlike(t *testing.T) {
 		{"A", "boss", "B", "b1"},   // a master of another owner without reach here
 		{"A", "helper", "B", "b1"}, // a session of another owner
 		{"A", "nope", "B", "b1"},
+		{"E", "e1", "B", "lead"},   // covered by a suspended grant
+		{"E", "nope", "B", "lead"}, // the same request with a guessed name
+		{"A", "boss", "C", "c1"},   // covered and in effect, source masked
 	} {
 		if res, ok := ask("u-alice", q[0], q[1], q[2], q[3]); ok {
 			t.Errorf("alice asks %v and is answered: %+v", q, res)
 		}
 	}
-	// A pair of her matrix is answered, the other side without its name.
-	res, ok := ask("u-alice", "A", "boss", "C", "c1")
-	if !ok || !res.Source.Masked || res.Source.Session != "a session of root" || res.InEffect != ops.AccessLevelControl {
-		t.Errorf("alice asks about a pair of her matrix: %+v %v", res, ok)
+	// A pair of her matrix with a masked end is not answered either: the
+	// request names that end in clear, so an answer would confirm it, also
+	// for a covered pair (the matrix shows it masked).
+	if res, ok := ask("u-alice", "A", "boss", "C", "c1"); ok {
+		t.Errorf("alice asks about a covered pair with a masked end: %+v", res)
 	}
 	// Between her own Workers every answer is given, with the reason.
-	res, ok = ask("u-alice", "B", "b1", "C", "nope")
+	res, ok := ask("u-alice", "B", "b1", "C", "nope")
 	if !ok || res.Checks[1].Code != ops.AccessCodeNoSuchSession || res.Checks[1].State != ops.AccessCheckFail {
 		t.Errorf("alice asks about her own Workers: %+v %v", res, ok)
 	}

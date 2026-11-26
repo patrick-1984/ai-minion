@@ -76,6 +76,9 @@ type GrantRow struct {
 	// Admin is true when the viewer is an administrator: Approve and the
 	// History link are offered.
 	Admin bool
+	// Viewer and ViewerID name the viewer (the user acted as, for an
+	// administrator acting as a user): CanEdit and CanRevoke read them.
+	Viewer, ViewerID string
 	// DecidedBy is the name of the user in GrantedBy; empty when the viewer
 	// cannot know it (the id is shown then).
 	DecidedBy string
@@ -117,6 +120,32 @@ func (g GrantRow) EffectLabel() string {
 
 // BlockedText names the blocking layer for people.
 func (g GrantRow) BlockedText() string { return accessBlockText(g.Effect.BlockedBy) }
+
+// CanEdit is the one rule of who may change the level of a grant, for the
+// row and for the handler alike (the Hub's rule of grant_set): an
+// administrator, or the owner of both Workers of a grant of owner authority.
+func (g GrantRow) CanEdit() bool {
+	if g.Masked() {
+		return false
+	}
+	if g.Admin {
+		return true
+	}
+	return g.Authority == ops.GrantAuthorityOwner && g.Viewer != "" && g.SourceOwner == g.Viewer && g.TargetOwner == g.Viewer
+}
+
+// CanRevoke is the one rule of who may revoke a grant: an administrator, the
+// owner of either Worker, and the person who decided the grant (the Hub lets
+// them withdraw it).
+func (g GrantRow) CanRevoke() bool {
+	if g.Admin {
+		return true
+	}
+	if g.Viewer != "" && (g.SourceOwner == g.Viewer || g.TargetOwner == g.Viewer) {
+		return true
+	}
+	return g.ViewerID != "" && g.GrantedBy == g.ViewerID
+}
 
 // Masked is true when the grant names a session the viewer may not see: the
 // row shows the name as the Hub gives it and offers nothing but Revoke.
@@ -245,20 +274,23 @@ var grantTemplates = sync.OnceValue(func() *template.Template {
 	return template.Must(template.ParseFS(templateFiles, "templates/access_grants.html", "templates/_grant_row.html"))
 })
 
-// grantEffect looks the pair of a grant up in the access matrix. m is nil
-// when the matrix could not be read. A suspended or expired grant is blocked
-// whatever the matrix says; an active one is "unknown" without a cell.
+// grantEffect looks a grant up in the access matrix. m is nil when the matrix
+// could not be read. A suspended or expired grant is blocked whatever the
+// matrix says. Only the cells the matrix credits to this grant (Via is its id)
+// count: a cell of the same endpoints reached through another grant or a
+// master says nothing about this one. An active grant without such a cell is
+// "unknown".
 func grantEffect(g GrantRow, m *ops.AccessMatrixResult) GrantEffect {
+	switch g.StateKey() {
+	case ops.GrantStateSuspended:
+		return GrantEffect{Known: true, BlockedBy: ops.AccessBlockedSuspended}
+	case ops.GrantStateExpired:
+		return GrantEffect{Known: true, BlockedBy: ops.AccessBlockedExpired}
+	}
 	var e GrantEffect
-	if m != nil {
+	if m != nil && g.ID != "" {
 		for _, c := range m.Cells {
-			if c.Source < 0 || c.Source >= len(m.Sources) || c.Target < 0 || c.Target >= len(m.Targets) {
-				continue
-			}
-			s, t := m.Sources[c.Source], m.Targets[c.Target]
-			pair := s.WorkerID == g.SourceWorkerID && s.Session == g.SourceSession && t.WorkerID == g.TargetWorkerID &&
-				(g.TargetSession == "" || t.Session == g.TargetSession)
-			if c.Via != g.ID && (!pair || c.Via == ops.AccessViaMaster) {
+			if c.Via != g.ID || c.Source < 0 || c.Source >= len(m.Sources) || c.Target < 0 || c.Target >= len(m.Targets) {
 				continue
 			}
 			e.Known = true
@@ -278,12 +310,6 @@ func grantEffect(g GrantRow, m *ops.AccessMatrixResult) GrantEffect {
 		return e
 	}
 	if !e.Known || e.BlockedBy == "" {
-		switch g.StateKey() {
-		case ops.GrantStateSuspended:
-			return GrantEffect{Known: true, BlockedBy: ops.AccessBlockedSuspended}
-		case ops.GrantStateExpired:
-			return GrantEffect{Known: true, BlockedBy: ops.AccessBlockedExpired}
-		}
 		// Nothing says that it works, and nothing names a blocking layer.
 		return GrantEffect{}
 	}
@@ -339,7 +365,7 @@ func grantRows(r *http.Request, c OpCaller, u pageUser, workerID string) ([]Gran
 	names := grantUserNames(r, c, u, res.Grants)
 	rows := make([]GrantRow, 0, len(res.Grants))
 	for _, g := range res.Grants {
-		row := GrantRow{Grant: g, Admin: admin, DecidedBy: names[g.GrantedBy]}
+		row := GrantRow{Grant: g, Admin: admin, Viewer: u.Username, ViewerID: u.ID, DecidedBy: names[g.GrantedBy]}
 		row.Effect = grantEffect(row, matrix)
 		rows = append(rows, row)
 	}
@@ -560,6 +586,8 @@ func handleGrantChange(w http.ResponseWriter, r *http.Request, c OpCaller, u pag
 			return
 		case cur.Masked():
 			cur.Error = "This grant names a session you may not see: it can only be revoked."
+		case !cur.CanEdit():
+			cur.Error = "Nothing was changed: only an administrator, or the owner of both Workers of a grant an owner decided, can change its level."
 		case cur.Revision != rev:
 			cur.Error = grantConflictText
 		case f.Get("confirm") != "1" && grantRank(level) > grantRank(cur.Level) && grantWidens(level, cur.TargetSession, cur.SourceOwner, cur.TargetOwner):
@@ -583,6 +611,23 @@ func handleGrantChange(w http.ResponseWriter, r *http.Request, c OpCaller, u pag
 		var res ops.GrantSetResult
 		callErr = c.CallOp(r, ops.OpGrantSet, a, &res)
 	case "revoke":
+		// The same rule as the row: the grant as the Hub lists it says who
+		// may revoke it.
+		rows, err := grantRows(r, c, u, "")
+		if err != nil {
+			writeGrantNote(w, id, "Nothing was changed: "+failureText(err), false)
+			return
+		}
+		cur, ok := findGrantRow(rows, id)
+		switch {
+		case !ok:
+			writeFragmentTemplate(w, grantTemplates(), "grant_row", GrantRow{Grant: ops.Grant{ID: id}, Gone: true, Error: "Nothing was changed."})
+			return
+		case !cur.CanRevoke():
+			cur.Error = "Nothing was changed: only an administrator or the owner of one of its Workers can revoke this grant."
+			writeFragmentTemplate(w, grantTemplates(), "grant_row", cur)
+			return
+		}
 		var res ops.WriteResult
 		callErr = c.CallOp(r, ops.OpGrantRevoke, ops.GrantRevokeArgs{WriteArgs: newWriteArgs(), ID: id, IfRevision: rev}, &res)
 		saved = "Revoked"

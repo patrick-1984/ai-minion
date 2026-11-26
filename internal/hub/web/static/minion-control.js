@@ -36,6 +36,11 @@
     if (status) { status.textContent = "The answer was lost: reloading what the Hub has saved."; }
     setTimeout(function () { window.location.reload(); }, 1200);
   }
+  // A click whose row could not be read back: the Hub's words are already in
+  // the status region; the page reloads the rows and checkboxes from the Hub.
+  document.addEventListener("control-reload", function () {
+    setTimeout(function () { window.location.reload(); }, 1200);
+  });
   document.addEventListener("htmx:sendError", lost);
   document.addEventListener("htmx:timeout", lost);
   document.addEventListener("htmx:responseError", function (e) {

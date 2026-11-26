@@ -12,6 +12,31 @@ import (
 	"github.com/patrick-1984/ai-minion/internal/proto"
 )
 
+// listSessions opens an event stream of the Worker that shares everything
+// and lists the named sessions, and waits until the Hub lists them.
+func listSessions(t *testing.T, ph *pipeHub, pw *pipeWorker, names ...string) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	evs, err := pw.sess.OpenEvents(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { evs.Reset() })
+	sessions := make([]map[string]any, 0, len(names))
+	for _, n := range names {
+		sessions = append(sessions, map[string]any{"name": n, "kind": "agent:claude", "state": "stable"})
+	}
+	if err := evs.WriteFrame(map[string]any{"type": proto.TypeEventsSnap, "seq": 0, "sessions": sessions,
+		"share": map[string]any{"rule": map[string]any{"mode": "all"}, "revision": 1}}); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, pw.name+" sessions listed", func() bool {
+		_, ok := ph.events.FirstSeen(pw.id, names[0])
+		return ok
+	})
+}
+
 // callFrom is one forwarded call of the Worker's session source: a call
 // stream with one op.request that names the source session. It returns the
 // type and the body of the answer.
@@ -112,6 +137,8 @@ func TestSessionGrantsOnTheRealHub(t *testing.T) {
 		return ph.connect(t, name)
 	}
 	a1, a2, b := connect("a1", alice, false), connect("a2", alice, true), connect("b", bob, true)
+	// The source session of a name-only grant is one the Hub lists (D6).
+	listSessions(t, ph, a1, "agent")
 
 	op := func(as map[string]string, name string, args map[string]any) (int, string) {
 		t.Helper()
@@ -174,7 +201,7 @@ func TestSessionGrantsOnTheRealHub(t *testing.T) {
 	}
 
 	// After grant_revoke the next call is refused.
-	if code, body := op(asAlice, ops.OpGrantRevoke, map[string]any{"id": g.ID}); code != 200 {
+	if code, body := op(asAlice, ops.OpGrantRevoke, map[string]any{"id": g.ID, "if_revision": g.Revision}); code != 200 {
 		t.Fatalf("grant_revoke = %d %s", code, body)
 	}
 	refused("revoked", a2, "minion-1")

@@ -19,7 +19,7 @@
       <input type="hidden" name="id" value="{{.ID}}">
       <button type="submit" class="btn btn-secondary" id="grant-{{.ID}}-cancel">Cancel</button>
     </form></div></div>{{else}}<div class="row-actions">
-    {{if .Masked}}<span class="muted">Names a session you may not see: only Revoke.</span>{{else}}<form hx-post="/access/grants/set-level" hx-target="closest tr" hx-swap="outerHTML" hx-sync="#grant-panel:queue all" hx-disabled-elt="find button">
+    {{if .Masked}}<span class="muted">Names a session you may not see: only Revoke.</span>{{else}}{{if .CanEdit}}<form hx-post="/access/grants/set-level" hx-target="closest tr" hx-swap="outerHTML" hx-sync="#grant-panel:queue all" hx-disabled-elt="find button">
       <input type="hidden" name="id" value="{{.ID}}"><input type="hidden" name="if_revision" value="{{.Revision}}">
       <label for="grant-{{.ID}}-level" class="sr-only">Change level of {{.SourceSession}} to {{.TargetText}}</label>
       <select name="level" id="grant-{{.ID}}-level">
@@ -28,15 +28,15 @@
           <option value="control"{{if eq .Level "control"}} selected{{end}}>Control</option>
         </select>
       <button type="submit" class="btn btn-secondary" id="grant-{{.ID}}-save">Save</button>
-    </form>
+    </form>{{end}}
     {{if and .IsSuspended .Admin}}<form hx-post="/access/grants/approve" hx-target="closest tr" hx-swap="outerHTML" hx-sync="#grant-panel:queue all" hx-disabled-elt="find button">
       <input type="hidden" name="id" value="{{.ID}}"><input type="hidden" name="if_revision" value="{{.Revision}}">
       <button type="submit" class="btn btn-secondary" id="grant-{{.ID}}-approve">Approve</button>
     </form>{{end}}{{end}}
-    <form hx-post="/access/grants/revoke" hx-target="closest tr" hx-swap="outerHTML" hx-sync="#grant-panel:queue all" hx-disabled-elt="find button">
+    {{if .CanRevoke}}<form hx-post="/access/grants/revoke" hx-target="closest tr" hx-swap="outerHTML" hx-sync="#grant-panel:queue all" hx-disabled-elt="find button">
       <input type="hidden" name="id" value="{{.ID}}"><input type="hidden" name="if_revision" value="{{.Revision}}">
       <button type="submit" class="btn btn-secondary" id="grant-{{.ID}}-revoke">Revoke</button>
-    </form>{{if .Admin}}
+    </form>{{end}}{{if .Admin}}
     <a href="{{.HistoryURL}}" class="grant-history" id="grant-{{.ID}}-history">History</a>{{end}}</div>{{end}}
     {{if .Error}}<p id="grant-{{.ID}}-status" tabindex="-1" class="grant-status grant-error" role="alert">{{.Error}}</p>{{else if .Saved}}<p id="grant-{{.ID}}-status" tabindex="-1" class="grant-status" role="status">{{.Saved}}</p>{{end}}</td>
 </tr>{{end}}{{end}}

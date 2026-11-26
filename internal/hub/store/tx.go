@@ -48,7 +48,12 @@ func Tx(ctx context.Context, db *sql.DB, fn func(tx *sql.Tx) error) (err error) 
 }
 
 // Tx runs fn in one immediate transaction of the store; see the package
-// function [Tx].
+// function [Tx]. After a commit it forwards the audit rows that SQL triggers
+// wrote in it to the audit observer ([Store.forwardSQLAudit]).
 func (s *Store) Tx(ctx context.Context, fn func(tx *sql.Tx) error) error {
-	return Tx(ctx, s.db, fn)
+	if err := Tx(ctx, s.db, fn); err != nil {
+		return err
+	}
+	s.forwardSQLAudit()
+	return nil
 }

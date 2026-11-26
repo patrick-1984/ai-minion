@@ -19,14 +19,16 @@
 {{if .Data.Worker}}<p class="grant-scope" id="grant-scope">Showing grants of <strong>{{.Data.WorkerName}}</strong> - <a href="/access/grants">show all</a></p>{{end}}
 <section class="panel" id="grant-panel" aria-labelledby="grants-h">
   <h2 id="grants-h">Grants</h2>
+  <div id="grant-body" hx-get="{{.Data.ListURL}}" hx-select="#grant-body" hx-swap="outerHTML" hx-trigger="grants-changed from:body" hx-sync="#grant-panel:queue last">
   {{if .Data.Rows}}<div class="table-wrap table-wrap-full" id="grant-list"><table class="rtable grant-table">
     <thead><tr><th scope="col">Source</th><th scope="col">Target</th><th scope="col">Granted</th><th scope="col">State</th><th scope="col">In effect</th><th scope="col">Decided by</th><th scope="col">Until</th><th scope="col"><span class="sr-only">Actions</span></th></tr></thead>
-    <tbody id="grant-rows" hx-get="{{.Data.ListURL}}" hx-select="#grant-rows" hx-swap="outerHTML" hx-trigger="grants-changed from:body" hx-sync="#grant-panel:queue last">{{range .Data.Rows}}{{template "grant_row" .}}{{end}}</tbody>
+    <tbody id="grant-rows">{{range .Data.Rows}}{{template "grant_row" .}}{{end}}</tbody>
   </table></div>
-  <p class="muted" id="grant-none" hidden>No grant matches the filter.</p>{{else}}<div class="empty-state" id="grant-list" hx-get="{{.Data.ListURL}}" hx-select="#grant-panel" hx-target="#grant-panel" hx-swap="outerHTML" hx-trigger="grants-changed from:body">
+  <p class="muted" id="grant-none" hidden>No grant matches the filter.</p>{{else}}<div class="empty-state" id="grant-list">
     <p>There is no grant yet: no session reaches a session on another Worker.</p>
     <p><button type="button" class="btn" data-grant-add hidden>Add grant</button></p>
   </div>{{end}}
+  </div>
 </section>
 <script src="/static/access-grants.js" defer></script>
 {{end}}

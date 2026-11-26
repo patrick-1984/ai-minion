@@ -54,6 +54,9 @@ type AccessPanelRow struct {
 	Worker      string
 	Owner       string
 	Level       string
+	// Effective is the level in effect (from the matrix) when it differs from
+	// the granted Level; empty when they are the same or nothing is in effect.
+	Effective string
 	// State is the grant's state or what the matrix says is in effect; Tone is its badge tone.
 	State, Tone string
 	// Via is "grant" or "master".
@@ -95,27 +98,32 @@ func accessGrantsOf(workerID string) string {
 	return pathAccessGrants + "?" + url.Values{"worker": {workerID}}.Encode()
 }
 
-// panelCellState is the state of a pair the matrix knows.
-func panelCellState(c ops.AccessCell) (state, tone string) {
+// panelCellState is the state of a pair the matrix knows. effective is the
+// level in effect when it differs from granted (a label): the granted level
+// is not always the one that works.
+func panelCellState(c ops.AccessCell, granted string) (state, tone, effective string) {
 	if c.InEffect != "" {
-		return "In effect", "positive"
+		if eff := accessLevelLabel(c.InEffect); eff != granted {
+			return "In effect: " + eff, "positive", eff
+		}
+		return "In effect", "positive", ""
 	}
-	return "Blocked: " + accessBlockText(c.BlockedBy), "warning"
+	return "Blocked: " + accessBlockText(c.BlockedBy), "warning", ""
 }
 
 // accessGrantState is the state of a grant row: the grant's own state, made
 // exact by the matrix cell of that grant when there is one.
-func accessGrantState(g ops.Grant, cell *ops.AccessCell) (state, tone string) {
+func accessGrantState(g ops.Grant, cell *ops.AccessCell) (state, tone, effective string) {
 	switch (GrantRow{Grant: g}).StateKey() {
 	case ops.GrantStateSuspended:
-		return "Suspended", "danger"
+		return "Suspended", "danger", ""
 	case ops.GrantStateExpired:
-		return "Expired", "info"
+		return "Expired", "info", ""
 	}
 	if cell != nil {
-		return panelCellState(*cell)
+		return panelCellState(*cell, grantLevelLabel(g.Level))
 	}
-	return "Active", "positive"
+	return "Active", "positive", ""
 }
 
 // sessionAccessView reads the two lists of one session. ok is false when the
@@ -165,14 +173,14 @@ func sessionAccessView(r *http.Request, c OpCaller, s SessionContext) (v Session
 				cell = cellOf(g.ID, s.WorkerID, s.Session, g.TargetWorkerID, g.TargetSession)
 				row.WhyURL = accessPairWhy(s.WorkerID, s.Session, g.TargetWorkerID, g.TargetSession)
 			}
-			row.State, row.Tone = accessGrantState(g, cell)
+			row.State, row.Tone, row.Effective = accessGrantState(g, cell)
 			v.Reach = append(v.Reach, row)
 		}
 		if g.TargetWorkerID == s.WorkerID && (g.TargetSession == "" || g.TargetSession == s.Session) {
 			row := AccessPanelRow{Session: g.SourceSession, Worker: gr.SourceWorker(), Owner: g.SourceOwner,
 				Level: grantLevelLabel(g.Level), Via: accessRowGrant, GrantsURL: link,
 				WhyURL: accessPairWhy(g.SourceWorkerID, g.SourceSession, s.WorkerID, s.Session)}
-			row.State, row.Tone = accessGrantState(g, cellOf(g.ID, g.SourceWorkerID, g.SourceSession, s.WorkerID, s.Session))
+			row.State, row.Tone, row.Effective = accessGrantState(g, cellOf(g.ID, g.SourceWorkerID, g.SourceSession, s.WorkerID, s.Session))
 			v.ReachedBy = append(v.ReachedBy, row)
 		}
 	}
@@ -182,7 +190,7 @@ func sessionAccessView(r *http.Request, c OpCaller, s SessionContext) (v Session
 		}
 		src, tg := m.Sources[cell.Source], m.Targets[cell.Target]
 		row := AccessPanelRow{Level: accessLevelLabel(cell.Granted), Via: accessRowMaster, GrantsURL: accessGrantsOf(s.WorkerID), WhyURL: accessWhyHref(src, tg)}
-		row.State, row.Tone = panelCellState(cell)
+		row.State, row.Tone, row.Effective = panelCellState(cell, row.Level)
 		if !src.Masked && src.WorkerID == s.WorkerID && src.Session == s.Session {
 			row.Session, row.Masked, row.Worker, row.Owner = tg.Session, tg.Masked, cmp.Or(tg.WorkerName, tg.WorkerID), tg.Owner
 			v.Reach = append(v.Reach, row)

@@ -133,9 +133,12 @@ func TestLiveStreamH2InitialHeadersBehindAStalledConnection(t *testing.T) {
 		t.Fatal("the second stream ended at once: its initial flush was not behind a stalled connection")
 	case <-time.After(200 * time.Millisecond):
 	}
+	// The release needs the connection write timeout plus the bounded TLS
+	// close (up to five seconds); about 7 s idle, much more on a loaded race
+	// runner. The test asks that the flush is released, not how fast.
 	select {
 	case <-secondDone:
-	case <-time.After(15 * time.Second):
+	case <-time.After(45 * time.Second):
 		t.Fatal("the second stream's initial flush stayed blocked behind the stalled connection")
 	}
 	waitFor(t, 15*time.Second, func() bool { return feedCancelled(src) })

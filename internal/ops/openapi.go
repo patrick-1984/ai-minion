@@ -374,7 +374,7 @@ func (g *apiGen) object(t reflect.Type) map[string]any {
 type apiField struct {
 	name     string
 	typ      reflect.Type
-	optional bool // omitempty, omitzero or a pointer
+	optional bool // omitempty, omitzero or a pointer, unless tagged openapi:"required"
 	quoted   bool // the ",string" option
 }
 
@@ -423,10 +423,11 @@ func structFields(t reflect.Type) []apiField {
 			}
 			o := strings.Split(opts, ",")
 			depthOf[name] = depth
+			optional := f.Type.Kind() == reflect.Pointer || slices.Contains(o, "omitempty") || slices.Contains(o, "omitzero")
 			best[name] = apiField{
 				name:     name,
 				typ:      f.Type,
-				optional: f.Type.Kind() == reflect.Pointer || slices.Contains(o, "omitempty") || slices.Contains(o, "omitzero"),
+				optional: optional && f.Tag.Get("openapi") != "required",
 				quoted:   slices.Contains(o, "string"),
 			}
 		}

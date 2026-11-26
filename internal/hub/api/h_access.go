@@ -55,23 +55,31 @@ type AccessFacts struct {
 	// whether its terminal holds a lease for the nominated incarnation now.
 	// A missing entry is "not attached": the broker would refuse.
 	Attached map[[2]string]bool
+	// Leases tells, per (Worker, session, incarnation), whether the terminal
+	// incarnation is a live, eligible candidate of its Worker's master lane
+	// now: the lane then holds a lease for it as soon as a verified grant
+	// (source_incarnation) names it. A missing entry is "no lease": the
+	// master broker refuses every call of that incarnation.
+	Leases map[[3]string]bool
 	// Now (Unix milliseconds) decides expiry; 0 means the current time.
 	Now int64
 }
 
 // AccessLive is the part of the facts that is not in the store, by Worker id
-// (Attached: by Worker id and session name).
+// (Attached: by Worker id and session name; Leases: by Worker id, session
+// name and incarnation id).
 type AccessLive struct {
 	Online    map[string]bool
 	AgentOnly map[string]bool
 	Sessions  map[string][]string
 	Attached  map[[2]string]bool
+	Leases    map[[3]string]bool
 }
 
 // AccessFactsFrom joins one store snapshot with the live state.
 func AccessFactsFrom(s store.AccessSnapshot, live AccessLive) AccessFacts {
 	f := AccessFacts{Masters: s.Masters, Bound: s.Bound, Accepts: s.Accepts, Control: s.Control, Shares: s.Shares,
-		Pending: s.Pending, Grants: s.Grants, Admins: map[string]bool{}, Attached: live.Attached}
+		Pending: s.Pending, Grants: s.Grants, Admins: map[string]bool{}, Attached: live.Attached, Leases: live.Leases}
 	for id, u := range s.Users {
 		if u.Admin {
 			f.Admins[id] = true
@@ -199,6 +207,11 @@ type accessVerdict struct {
 	// Limited: a Message level that works as View, because the target Worker
 	// cannot deliver a prompt to an agent pane only.
 	Limited bool
+	// Proof is how the route that gives this verdict knows the source
+	// session: Verified for a session-bound master and for a grant bound to
+	// one terminal incarnation (both served by the master broker), Claimed
+	// for a name-only master and a grant by name.
+	Proof string
 	// grant is the row behind a grant verdict.
 	grant *store.SessionGrantRow
 }
@@ -238,9 +251,9 @@ func newAccessEval(f AccessFacts) *accessEval {
 			e.masters[[2]string{m.WorkerID, m.SessionName}] = accessMaster{m.WorkerID, m.SessionName, ops.AccessProofClaimed, "", legacyLimit(m.LegacyTargetsJSON)}
 		}
 	}
-	// Direct grants, also the ones bound to one incarnation of the source:
-	// the call path does not read those (store.SessionGrantsFor), so they
-	// are shown and never in effect.
+	// Direct grants by name (the call path of the Worker's socket) and the
+	// ones bound to one incarnation of the source (the master broker, while
+	// that incarnation holds a lease).
 	for _, g := range f.Grants {
 		if g.SourceWorkerID != g.TargetWorkerID {
 			k := [2]string{g.SourceWorkerID, g.SourceSession}
@@ -272,7 +285,8 @@ func (e *accessEval) accepted(source, target, session string) bool {
 	return e.f.Control[target].AcceptAll
 }
 
-// proof tells how the Hub knows a source session.
+// proof tells how the Hub knows a source session when no route covers a
+// pair: by its master nomination, else by name.
 func (e *accessEval) proof(worker, session string) string {
 	if m, ok := e.masters[[2]string{worker, session}]; ok {
 		return m.proof
@@ -346,7 +360,7 @@ func (v *accessVerdict) settle(order ...string) {
 // a prompt to an agent pane: the Message level) and only while its terminal
 // holds a lease for the nominated incarnation.
 func (e *accessEval) masterVerdict(m accessMaster, src, t AccessWorker, name string) accessVerdict {
-	v := accessVerdict{Via: ops.AccessViaMaster, Granted: ops.AccessLevelControl}
+	v := accessVerdict{Via: ops.AccessViaMaster, Granted: ops.AccessLevelControl, Proof: m.proof}
 	verified := m.proof == ops.AccessProofVerified
 	if verified {
 		v.Granted = ops.AccessLevelMessage
@@ -369,8 +383,20 @@ func (e *accessEval) masterVerdict(m accessMaster, src, t AccessWorker, name str
 // grantVerdict judges a direct grant as authz does (directUsable and
 // directFor): the owner of the source Worker is an active account, both
 // Workers still have the owners of decision time, and the authority stands.
+// A grant by name is used on the Worker's socket (Claimed). A grant bound to
+// one incarnation (Verified) is used by the master broker only, while that
+// incarnation holds a lease (its source session is then shared), and within
+// the master catalog: list, snapshot and a prompt to an agent pane, so at
+// most Message.
 func (e *accessEval) grantVerdict(g store.SessionGrantRow, src, t AccessWorker, name string) accessVerdict {
-	v := accessVerdict{Via: g.ID, Granted: accessGrantLevel(g.Level), grant: &g}
+	v := accessVerdict{Via: g.ID, Granted: accessGrantLevel(g.Level), Proof: ops.AccessProofClaimed, grant: &g}
+	verified := g.SourceIncarnation != ""
+	if verified {
+		v.Proof = ops.AccessProofVerified
+		if accessRank(v.Granted) > accessRank(ops.AccessLevelMessage) {
+			v.Granted = ops.AccessLevelMessage
+		}
+	}
 	switch {
 	case g.SuspendedAt != nil:
 		v.Time = ops.AccessBlockedSuspended
@@ -378,7 +404,7 @@ func (e *accessEval) grantVerdict(g store.SessionGrantRow, src, t AccessWorker, 
 		v.Time = ops.AccessBlockedExpired
 	}
 	switch {
-	case g.SourceIncarnation != "":
+	case verified && !e.f.Leases[[3]string{src.ID, g.SourceSession, g.SourceIncarnation}]:
 		v.Authority = ops.AccessBlockedSourceIncarnation
 	case !src.OwnerActive:
 		v.Authority = ops.AccessBlockedOwnerInactive
@@ -391,7 +417,7 @@ func (e *accessEval) grantVerdict(g store.SessionGrantRow, src, t AccessWorker, 
 	case g.Authority != store.GrantAuthorityOwner || g.SourceOwnerID != g.TargetOwnerID:
 		v.Authority = ops.AccessBlockedAuthority
 	}
-	e.workerLayers(&v, src, t, g.SourceSession, name, false)
+	e.workerLayers(&v, src, t, g.SourceSession, name, verified)
 	v.settle(v.Time, v.Authority, v.Pending, v.Sharing, v.Offline)
 	return v
 }
@@ -427,6 +453,21 @@ func (e *accessEval) pair(src AccessWorker, session string, t AccessWorker, name
 		}
 	}
 	return best
+}
+
+// grantsProof is the proof of a source that only holds grants: Verified when
+// every one of them is bound to an incarnation.
+func (e *accessEval) grantsProof(worker, session string) string {
+	gs := e.grants[[2]string{worker, session}]
+	for _, g := range gs {
+		if g.SourceIncarnation == "" {
+			return ops.AccessProofClaimed
+		}
+	}
+	if len(gs) == 0 {
+		return ops.AccessProofClaimed
+	}
+	return ops.AccessProofVerified
 }
 
 func accessMask(owner string) string { return "a session of " + owner }
@@ -475,6 +516,7 @@ func AccessMatrix(f AccessFacts, viewer string, all bool, only string) ops.Acces
 	type found struct {
 		worker, session string
 		cell            ops.AccessCell
+		proof           string
 	}
 	var covered []found
 	used := map[[2]string]bool{}
@@ -494,7 +536,7 @@ func AccessMatrix(f AccessFacts, viewer string, all bool, only string) ops.Acces
 					continue
 				}
 				cells = append(cells, found{t.ID, name, ops.AccessCell{Source: len(res.Sources), Granted: v.Granted,
-					InEffect: v.InEffect, Via: v.Via, BlockedBy: v.Blocked}})
+					InEffect: v.InEffect, Via: v.Via, BlockedBy: v.Blocked}, v.Proof})
 			}
 		}
 		// A source that covers nothing is still a row for its owner, unless
@@ -502,8 +544,19 @@ func AccessMatrix(f AccessFacts, viewer string, all bool, only string) ops.Acces
 		if len(cells) == 0 && (!own(src) || only != "" && only != src.ID) {
 			continue
 		}
+		// The proof of a row is the weakest proof of the routes its cells
+		// use: Verified only when every cell is served by a verified route.
+		proof := e.proof(src.ID, s.session)
+		if len(cells) == 0 && !s.master {
+			proof = e.grantsProof(src.ID, s.session)
+		}
+		for i, c := range cells {
+			if i == 0 || c.proof == ops.AccessProofClaimed {
+				proof = c.proof
+			}
+		}
 		row := ops.AccessSource{WorkerID: src.ID, WorkerName: src.Name, Owner: src.Owner,
-			Session: s.session, Proof: e.proof(src.ID, s.session), Master: s.master}
+			Session: s.session, Proof: proof, Master: s.master}
 		if !own(src) {
 			row.Session, row.Masked = accessMask(src.Owner), true
 		}
@@ -579,7 +632,7 @@ func accessAuthority(e *accessEval, v accessVerdict) (code, text, fix string) {
 	case ops.AccessBlockedMasterNotAttached:
 		return v.Authority, "the terminal this master session was nominated on is not attached now", fix
 	case ops.AccessBlockedSourceIncarnation:
-		return v.Authority, "the grant is bound to one incarnation of the source session, which the Hub cannot check yet", fix
+		return v.Authority, "the grant is bound to one terminal incarnation of the source session, which holds no lease of its Worker's master lane now", fix
 	}
 	if master {
 		return v.Authority, "the source Worker changed its owner since this master session was nominated", fix
@@ -591,33 +644,31 @@ func accessAuthority(e *accessEval, v accessVerdict) (code, text, fix string) {
 }
 
 // AccessExplain answers one pair from the same evaluator as the matrix. It
-// is false when a Worker is unknown or the viewer owns neither end, and also
-// when the viewer does not own both ends and nothing covers the pair: a
-// session of another owner is then answered the same whether it exists or
-// not, and whether or not it is a master.
+// is false when a Worker is unknown or when the viewer may not see both ends
+// (they own one end, or neither): the request names the sessions in clear,
+// so any answer about a hidden end, a covered pair or a suspended grant
+// included, would confirm a name the matrix masks. A session of another
+// owner is then answered the same whether it exists or not, whether a grant
+// covers it or not, and whether or not it is a master.
 func AccessExplain(f AccessFacts, viewer string, all bool, a ops.AccessExplainArgs) (ops.AccessExplainResult, bool) {
 	e := newAccessEval(f)
 	src, ok := e.workers[a.SourceWorkerID]
 	t, ok2 := e.workers[a.TargetWorkerID]
 	own := func(w AccessWorker) bool { return all || viewer != "" && w.OwnerID == viewer }
-	if !ok || !ok2 || !own(src) && !own(t) {
+	if !ok || !ok2 || !own(src) || !own(t) {
 		return ops.AccessExplainResult{}, false
 	}
 	v := e.pair(src, a.SourceSession, t, a.TargetSession)
-	if !v.Covered && (!own(src) || !own(t)) {
-		return ops.AccessExplainResult{}, false
-	}
 	_, master := e.masters[[2]string{src.ID, a.SourceSession}]
+	// The proof of the route that covers the pair; without one, how the Hub
+	// knows the source session.
 	proof := e.proof(src.ID, a.SourceSession)
+	if v.Covered {
+		proof = v.Proof
+	}
 	res := ops.AccessExplainResult{
 		Source: ops.AccessSource{WorkerID: src.ID, WorkerName: src.Name, Owner: src.Owner, Session: a.SourceSession, Proof: proof, Master: master},
 		Target: ops.AccessTarget{WorkerID: t.ID, WorkerName: t.Name, Owner: t.Owner, Online: t.Online, Session: a.TargetSession},
-	}
-	if !own(src) {
-		res.Source.Session, res.Source.Masked = accessMask(src.Owner), true
-	}
-	if !own(t) {
-		res.Target.Session, res.Target.Masked = accessMask(t.Owner), true
 	}
 	res.InEffect, res.Via = v.InEffect, v.Via
 

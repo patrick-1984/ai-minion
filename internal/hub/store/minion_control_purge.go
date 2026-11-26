@@ -128,8 +128,10 @@ func (s *Store) purgeSessions(ctx context.Context, workerID string, gone func(st
 		if err != nil {
 			return err
 		}
-		// Direct grants that name a gone session, under the same fence.
-		n, err = purgeSessionGrants(ctx, tx, workerID, gone, asOf)
+		// Direct grants that name a gone session, under the same fence, each
+		// with its audit row in this transaction (a failed insert rolls the
+		// whole purge back).
+		n, err = s.endGoneSessionGrants(ctx, tx, workerID, gone, asOf)
 		total += n
 		return err
 	})

@@ -41,58 +41,151 @@ type GrantWrite struct {
 	// and active state again in the writing transaction; an empty id is
 	// refused there.
 	ActorID string
+	// ActAs is the act-as period of the browser session through which an
+	// administrator (ActAs.ActorID) acts as ActorID, as the request observed
+	// it; nil when nobody acts as ActorID. In the writing transaction that
+	// very period must still be stored and not expired, its target must be
+	// ActorID, and its administrator must still be an active administrator; a
+	// period that ended or was replaced cannot commit a change. The authority
+	// of the change is still that of ActorID.
+	ActAs *ActAsRow
 	// Audit builds the audit row of the change: old is the stored grant before
 	// it (nil for a create), now the grant as stored (for a revoke the deleted
 	// grant). An error refuses the change. A nil Audit writes no row. An empty
 	// ID and a zero TS are filled in.
 	Audit func(old *SessionGrantRow, now SessionGrantRow) (AuditRow, error)
+	// Receipt builds the stored answer of the request_id of the change from
+	// the grant as stored (for a revoke the deleted grant); it is written in
+	// the transaction of the change, so that a repeat of a request that
+	// committed finds its answer even when the Hub stopped right after the
+	// commit. A nil Receipt, or a nil row, stores none; an error refuses the
+	// change.
+	Receipt func(now SessionGrantRow) (*OpRequestRow, error)
 }
 
-// audit writes the audit row of a change inside tx.
+// audit writes the audit row and the request receipt of a change inside tx.
 func (w GrantWrite) audit(ctx context.Context, s *Store, tx *sql.Tx, old *SessionGrantRow, now SessionGrantRow) error {
-	if w.Audit == nil {
+	if w.Audit != nil {
+		row, err := w.Audit(old, now)
+		if err != nil {
+			return err
+		}
+		if row.ID == "" {
+			row.ID = NewID()
+		}
+		if row.TS == 0 {
+			row.TS = time.Now().UnixMilli()
+		}
+		if err := s.InsertAudit(ctx, tx, row); err != nil {
+			return err
+		}
+	}
+	if w.Receipt == nil {
 		return nil
 	}
-	row, err := w.Audit(old, now)
-	if err != nil {
+	r, err := w.Receipt(now)
+	if err != nil || r == nil {
 		return err
 	}
-	if row.ID == "" {
-		row.ID = NewID()
+	if r.CreatedAt == 0 {
+		r.CreatedAt = time.Now().UnixMilli()
 	}
-	if row.TS == 0 {
-		row.TS = time.Now().UnixMilli()
-	}
-	return s.InsertAudit(ctx, tx, row)
+	_, err = putOpRequestTx(ctx, tx, *r)
+	return err
 }
 
-// grantActorMay checks inside the writing transaction that actorID may decide
-// g now (D4): an active administrator always; otherwise, unless adminOnly, the
-// active owner of both Workers of an owner grant. The caller has pinned the
-// owners of g to the current ones.
-func grantActorMay(ctx context.Context, tx *sql.Tx, actorID string, g SessionGrantRow, adminOnly bool) error {
+// grantUserRole reads, inside tx, whether userID is active, holds any
+// effective role (user or admin) and holds the administrator role. A missing
+// user holds nothing.
+func grantUserRole(ctx context.Context, tx *sql.Tx, userID string) (active, anyRole, admin bool, err error) {
+	var a, r, ad int
+	err = tx.QueryRowContext(ctx, `SELECT u.active,
+		EXISTS (SELECT 1 FROM user_roles r WHERE r.user_id = u.id),
+		EXISTS (SELECT 1 FROM user_roles r WHERE r.user_id = u.id AND r.role = 'admin')
+		FROM users u WHERE u.id = ?`, userID).Scan(&a, &r, &ad)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, false, false, nil
+	}
+	if err != nil {
+		return false, false, false, fmt.Errorf("store: session grant authority: %w", err)
+	}
+	return a != 0, r != 0, ad != 0, nil
+}
+
+// grantActAsLive reports, inside tx, whether the act-as period a is still the
+// stored period of its browser session and has not expired at now (unix
+// milliseconds).
+func grantActAsLive(ctx context.Context, tx *sql.Tx, a ActAsRow, now int64) (bool, error) {
+	var live bool
+	err := tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM act_as_sessions WHERE session_id = ? AND actor_id = ?
+		AND target_id = ? AND started_at = ? AND expires_at = ? AND expires_at > ?)`,
+		a.SessionID, a.ActorID, a.TargetID, a.StartedAt, a.ExpiresAt, now).Scan(&live)
+	if err != nil {
+		return false, fmt.Errorf("store: session grant act-as: %w", err)
+	}
+	return live, nil
+}
+
+// grantActorMay checks inside the writing transaction that the actor of w may
+// decide g now (D4): an active administrator always; otherwise, unless
+// adminOnly, the active owner of both Workers of an owner grant who still
+// holds an effective role (an account without one has no access at all). When
+// w names an act-as period, that period must still be live and its
+// administrator must still be an active administrator too. The caller has
+// pinned the owners of g to the current ones.
+func grantActorMay(ctx context.Context, tx *sql.Tx, w GrantWrite, g SessionGrantRow, adminOnly bool) error {
+	actorID := w.ActorID
 	if actorID == "" {
 		return ErrGrantAuthority
 	}
-	var active, admin int
-	err := tx.QueryRowContext(ctx, `SELECT u.active,
-		EXISTS (SELECT 1 FROM user_roles r WHERE r.user_id = u.id AND r.role = 'admin')
-		FROM users u WHERE u.id = ?`, actorID).Scan(&active, &admin)
-	if errors.Is(err, sql.ErrNoRows) {
-		return ErrGrantAuthority
+	if a := w.ActAs; a != nil {
+		if a.SessionID == "" || a.ActorID == "" || a.TargetID != actorID {
+			return ErrGrantAuthority
+		}
+		live, err := grantActAsLive(ctx, tx, *a, time.Now().UnixMilli())
+		if err != nil {
+			return err
+		}
+		if !live {
+			return ErrGrantAuthority
+		}
+		active, _, admin, err := grantUserRole(ctx, tx, a.ActorID)
+		if err != nil {
+			return err
+		}
+		if !active || !admin {
+			return ErrGrantAuthority
+		}
 	}
+	active, anyRole, admin, err := grantUserRole(ctx, tx, actorID)
 	if err != nil {
-		return fmt.Errorf("store: session grant authority: %w", err)
+		return err
 	}
 	switch {
-	case active == 0:
+	case !active || !anyRole:
 		return ErrGrantAuthority
-	case admin != 0:
+	case admin:
 		return nil
 	case adminOnly || g.Authority != GrantAuthorityOwner || g.SourceOwnerID != actorID || g.TargetOwnerID != actorID:
 		return ErrGrantAuthority
 	}
 	return nil
+}
+
+// grantSourceEnrollment checks, inside tx, that the source Worker of a direct
+// grant is enrolled as the caller says (owner, key, approved) and that its
+// owner is an active account. Unlike [masterEnrollment] it asks for no
+// effective role: the authority of a direct grant stands behind the grant
+// (D4), and the owner's role limits only legacy master reach.
+func grantSourceEnrollment(ctx context.Context, tx *sql.Tx, workerID, owner string, pub []byte) error {
+	var ok bool
+	err := tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM workers w JOIN users u ON u.id = w.owner_id
+		WHERE w.id = ? AND w.owner_id = ? AND w.worker_pub = ? AND w.approval = 'approved' AND u.active = 1)`,
+		workerID, owner, pub).Scan(&ok)
+	if err == nil && !ok {
+		err = ErrWorkerOwnerChanged
+	}
+	return err
 }
 
 // Grant authorities.
@@ -225,7 +318,7 @@ func (s *Store) PutSessionGrant(ctx context.Context, row SessionGrantRow, ifRevi
 				return err
 			}
 			row.GrantedBy = w.ActorID
-			if err := grantActorMay(ctx, tx, w.ActorID, row, false); err != nil {
+			if err := grantActorMay(ctx, tx, w, row, false); err != nil {
 				return err
 			}
 			created := row.CreatedAt
@@ -257,7 +350,7 @@ func (s *Store) PutSessionGrant(ctx context.Context, row SessionGrantRow, ifRevi
 			if err := pinGrantOwners(ctx, tx, cur); err != nil {
 				return err
 			}
-			if err := grantActorMay(ctx, tx, w.ActorID, cur, false); err != nil {
+			if err := grantActorMay(ctx, tx, w, cur, false); err != nil {
 				return err
 			}
 			old = &cur
@@ -299,21 +392,25 @@ func (s *Store) DeleteSessionGrant(ctx context.Context, id string) (bool, error)
 }
 
 // RevokeSessionGrant deletes one grant and writes the audit row of w in the
-// same transaction. A non-zero ifRevision must be the stored revision, which
-// the DELETE itself checks: a grant changed meanwhile stays and the answer is
+// same transaction. ifRevision is required (D2: every write carries it) and
+// must be the stored revision, which the DELETE itself checks: a zero
+// revision, or a grant changed meanwhile, leaves the grant and the answer is
 // [ErrGrantRevision]. A missing grant is [ErrNotFound]. It returns the deleted
 // row. Revoking only narrows, so the acting user's role is not read here.
 func (s *Store) RevokeSessionGrant(ctx context.Context, id string, ifRevision uint64, w GrantWrite) (SessionGrantRow, error) {
+	if ifRevision == 0 {
+		return SessionGrantRow{}, ErrGrantRevision
+	}
 	var out SessionGrantRow
 	err := s.Tx(ctx, func(tx *sql.Tx) error {
 		cur, err := sessionGrantByID(ctx, tx, id)
 		if err != nil {
 			return err
 		}
-		if ifRevision != 0 && cur.Revision != ifRevision {
+		if cur.Revision != ifRevision {
 			return ErrGrantRevision
 		}
-		res, err := tx.ExecContext(ctx, `DELETE FROM session_grant WHERE id = ? AND revision = ?`, id, int64(cur.Revision))
+		res, err := tx.ExecContext(ctx, `DELETE FROM session_grant WHERE id = ? AND revision = ?`, id, int64(ifRevision))
 		if err != nil {
 			return fmt.Errorf("store: revoke session grant: %w", err)
 		}
@@ -346,7 +443,7 @@ func (s *Store) ApproveSessionGrant(ctx context.Context, id string, ifRevision u
 		if err := pinGrantOwners(ctx, tx, cur); err != nil {
 			return err
 		}
-		if err := grantActorMay(ctx, tx, w.ActorID, cur, true); err != nil {
+		if err := grantActorMay(ctx, tx, w, cur, true); err != nil {
 			return err
 		}
 		// Said only to an administrator, after the authority check.

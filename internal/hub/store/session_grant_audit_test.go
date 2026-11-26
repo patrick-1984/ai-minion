@@ -230,3 +230,67 @@ func TestListAuditByGrant(t *testing.T) {
 		t.Fatalf("unknown grant = %d, %v", len(rows), err)
 	}
 }
+
+// The session purge is one audited transaction under the created_at fence: a
+// grant edited after the removal evidence (but created before it) still ends
+// with its audit row, and an audit insert that fails rolls the whole purge
+// back (the grant and the master nomination stay, no silent delete).
+func TestSessionPurgeEndsEditedGrantWithAuditOrRollsBack(t *testing.T) {
+	f := newGrantFixture(t)
+	ctx := t.Context()
+	g := f.put(t, f.ownerGrant("gone")) // created at 100
+	edit := g
+	edit.Level = 2
+	edit.UpdatedAt = 500 // after the evidence at 300
+	if _, err := f.s.PutSessionGrant(ctx, edit, g.Revision, GrantWrite{ActorID: "alice"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.s.PutMasterSession(ctx, MasterRow{WorkerID: f.a.ID, SessionName: "gone", CreatedBy: "alice"}); err != nil {
+		t.Fatal(err)
+	}
+	f.exec(t, `UPDATE master_session SET created_at = 100`)
+
+	// The audit store refuses the row: nothing is deleted.
+	f.exec(t, `CREATE TRIGGER test_audit_down BEFORE INSERT ON audit_events WHEN NEW.action = 'grant.end'
+		BEGIN SELECT RAISE(ABORT, 'audit down'); END`)
+	if _, err := f.s.PurgeGoneSessions(ctx, f.a.ID, []string{"gone"}, 300); err == nil {
+		t.Fatal("purge succeeded although the audit insert failed")
+	}
+	if _, err := f.s.SessionGrant(ctx, g.ID); err != nil {
+		t.Fatalf("grant deleted without its audit row: %v", err)
+	}
+	if _, err := f.s.MasterSession(ctx, f.a.ID, "gone"); err != nil {
+		t.Fatalf("the failed purge was not rolled back: %v", err)
+	}
+	if _, err := f.s.PurgeSessionsNotIn(ctx, f.a.ID, nil, 300); err == nil {
+		t.Fatal("resync purge succeeded although the audit insert failed")
+	}
+	if _, err := f.s.SessionGrant(ctx, g.ID); err != nil {
+		t.Fatalf("grant deleted by the resync purge without its audit row: %v", err)
+	}
+
+	// The audit store is back: the edited grant ends, with its row.
+	f.exec(t, `DROP TRIGGER test_audit_down`)
+	if _, err := f.s.PurgeGoneSessions(ctx, f.a.ID, []string{"gone"}, 300); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.s.SessionGrant(ctx, g.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("an edit after the evidence kept the grant of a gone session: %v", err)
+	}
+	rows := grantAudit(t, f.s, g.ID)
+	var ends int
+	for _, r := range rows {
+		if r.Action == AuditActionGrantEnd {
+			ends++
+			if r.Detail != "cause=session_gone" || r.Actor != AuditActorSystem {
+				t.Fatalf("end row = %+v", r)
+			}
+		}
+	}
+	if ends != 1 {
+		t.Fatalf("%d grant.end rows, want 1: %+v", ends, rows)
+	}
+	if _, err := f.s.MasterSession(ctx, f.a.ID, "gone"); err == nil {
+		t.Fatal("master nomination of a gone session survived")
+	}
+}

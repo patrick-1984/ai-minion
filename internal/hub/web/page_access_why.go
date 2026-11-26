@@ -159,6 +159,13 @@ func accessWhyFix(raw json.RawMessage) (href, label string) {
 	return href, label
 }
 
+// minionControlLink reports whether href leads to Minion control, a page for
+// administrators only.
+func minionControlLink(href string) bool {
+	rest, ok := strings.CutPrefix(href, pathMinionControl)
+	return ok && (rest == "" || strings.ContainsRune("/?#", rune(rest[0])))
+}
+
 func accessWhyVerb(level string) string {
 	switch level {
 	case ops.AccessLevelControl:
@@ -314,6 +321,11 @@ func accessWhyData(r *http.Request, c OpCaller, u pageUser) (any, error) {
 		plain.Checks = append(plain.Checks, ops.AccessCheck{ID: ch.ID, State: ch.State, Text: ch.Text})
 		v := AccessWhyCheck{ID: ch.ID, State: ch.State, Text: ch.Text, Code: ch.Code}
 		v.FixHref, v.FixLabel = accessWhyFix(ch.Fix)
+		if !u.Admin && minionControlLink(v.FixHref) {
+			// Minion control is for administrators (404 for anyone else): the
+			// check keeps its text, without a link that cannot work.
+			v.FixHref, v.FixLabel = "", ""
+		}
 		p.Checks = append(p.Checks, v)
 	}
 	for i := range p.Checks {

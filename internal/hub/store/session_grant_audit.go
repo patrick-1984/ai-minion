@@ -6,7 +6,8 @@ package store
 // ago leaves one audit row "grant.end" (actor "system"), written in the
 // transaction that deletes it. The causes that SQL decides (a Worker changes
 // owner or is removed, the authority behind an admin grant is lost) are
-// recorded by the triggers of migration 0034 in the same form.
+// recorded by the triggers of migration 0034 in the same form; those rows reach
+// the audit observer and the log sinks through [Store.forwardSQLAudit].
 
 import (
 	"context"
@@ -41,7 +42,10 @@ func grantAuditTarget(g SessionGrantRow) string {
 
 // endSessionGrants deletes the given grants in tx and writes one "grant.end"
 // row for each grant that was really deleted. fence, when positive, deletes
-// only a grant last saved strictly before it (the purge fence).
+// only a grant created strictly before it (the purge fence: created_at is
+// when the named sessions were bound, an edit or an approval does not move
+// it). An audit insert that fails returns the error, so the caller's
+// transaction rolls the delete back.
 func (s *Store) endSessionGrants(ctx context.Context, tx *sql.Tx, grants []SessionGrantRow, cause string, fence int64) (int64, error) {
 	var total int64
 	now := time.Now().UnixMilli()
@@ -51,7 +55,7 @@ func (s *Store) endSessionGrants(ctx context.Context, tx *sql.Tx, grants []Sessi
 			err error
 		)
 		if fence > 0 {
-			res, err = tx.ExecContext(ctx, `DELETE FROM session_grant WHERE id = ? AND updated_at < ?`, g.ID, fence)
+			res, err = tx.ExecContext(ctx, `DELETE FROM session_grant WHERE id = ? AND created_at < ?`, g.ID, fence)
 		} else {
 			res, err = tx.ExecContext(ctx, `DELETE FROM session_grant WHERE id = ?`, g.ID)
 		}
@@ -91,9 +95,11 @@ func queryGrantsTx(ctx context.Context, tx *sql.Tx, where string, args ...any) (
 }
 
 // endGoneSessionGrants is [purgeSessionGrants] with an audit row per deleted
-// grant (cause session_gone): same selection, same fence, same transaction.
+// grant (cause session_gone): same selection, same created_at fence, same
+// transaction. The session purge ([Store.PurgeGoneSessions]) uses it, so a
+// grant never leaves without its audit row.
 func (s *Store) endGoneSessionGrants(ctx context.Context, tx *sql.Tx, workerID string, gone func(string) bool, asOf int64) (int64, error) {
-	all, err := queryGrantsTx(ctx, tx, `WHERE (source_worker_id = ? OR target_worker_id = ?) AND updated_at < ?`, workerID, workerID, asOf)
+	all, err := queryGrantsTx(ctx, tx, `WHERE (source_worker_id = ? OR target_worker_id = ?) AND created_at < ?`, workerID, workerID, asOf)
 	if err != nil {
 		return 0, err
 	}
@@ -108,7 +114,7 @@ func (s *Store) endGoneSessionGrants(ctx context.Context, tx *sql.Tx, workerID s
 }
 
 // EndGoneSessionGrants deletes the grants that name one of the gone sessions
-// of workerID as source or target and were last saved strictly before asOf,
+// of workerID as source or target and were created strictly before asOf,
 // and writes one audit row "grant.end" (cause session_gone) for each, all in
 // one transaction. It returns the number of grants deleted. A grant on the
 // whole target Worker names no session and stays.
@@ -172,7 +178,7 @@ type SessionGrantUse struct {
 // TouchSessionGrants records that the grants were used: last_used_at becomes
 // at (unix milliseconds) unless a later time is stored, and use_count grows
 // by n[id], or by 1 for an id that n does not name. A grant that is gone is
-// skipped. Neither the revision nor updated_at (the purge fence) changes.
+// skipped. Neither the revision nor updated_at changes.
 func (s *Store) TouchSessionGrants(ctx context.Context, ids []string, at int64, n map[string]int64) error {
 	if len(ids) == 0 {
 		return nil

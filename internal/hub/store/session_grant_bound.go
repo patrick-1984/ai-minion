@@ -39,7 +39,7 @@ func (s *Store) BindSessionGrant(ctx context.Context, id, incarnation string, if
 		// behind the grant: binding changes the proof of the source only.
 		may := cur
 		may.Authority = GrantAuthorityOwner
-		if err := grantActorMay(ctx, tx, w.ActorID, may, false); err != nil {
+		if err := grantActorMay(ctx, tx, w, may, false); err != nil {
 			return err
 		}
 		if _, err := tx.ExecContext(ctx, `UPDATE session_grant SET source_incarnation = ?, revision = revision + 1,
@@ -115,7 +115,7 @@ func (s *Store) VerifiedSessionGrants(ctx context.Context, c VerifiedGrantCaller
 	var out []SessionGrantRow
 	err := s.Tx(ctx, func(tx *sql.Tx) error {
 		out = nil
-		if _, err := masterEnrollment(ctx, tx, c.WorkerID, c.OwnerID, c.WorkerPub); err != nil {
+		if err := grantSourceEnrollment(ctx, tx, c.WorkerID, c.OwnerID, c.WorkerPub); err != nil {
 			return err
 		}
 		if c.IncarnationID == "" {

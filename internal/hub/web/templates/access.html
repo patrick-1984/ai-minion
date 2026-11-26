@@ -12,7 +12,7 @@
     <button type="button" id="access-refresh" class="btn btn-secondary" data-control="refresh" hx-get="{{$p.Self}}" hx-target="#access-matrix" hx-select="#access-matrix" hx-swap="outerHTML" hx-disabled-elt="this" aria-label="Refresh the matrix">{{template "icon" "i-refresh"}}<span class="refresh-idle">Refresh</span><span class="refresh-busy">Refreshing…</span></button>
     <button type="button" class="btn btn-secondary" data-access="print">Print</button>{{if not $p.Empty}}
     <a class="btn btn-secondary" href="{{$p.CSV}}" download="access.csv">CSV</a>{{end}}</div></div>
-  {{if $p.Empty}}<p class="muted">No session reaches another Worker yet. Master sessions and the Workers that accept them are set in <a href="/access/control">Minion control</a>.</p>{{else}}
+  {{if $p.Empty}}<p class="muted">No session reaches another Worker yet. Master sessions and the Workers that accept them are set in {{if $p.Admin}}<a href="/access/control">Minion control</a>{{else}}Minion control, by an administrator{{end}}.</p>{{else}}
   <form id="access-form" method="get" action="/access" class="settings-tools access-tools access-form">
     <label class="settings-filter"><span class="sr-only">Filter rows by session or Worker</span><input type="search" id="access-filter" name="q" value="{{$p.Q}}" placeholder="Filter rows by session or Worker" autocomplete="off" spellcheck="false"></label>
     <label class="access-field">Owner <select name="owner"><option value="">all</option>{{range $p.Owners}}<option value="{{.}}"{{if eq . $p.Owner}} selected{{end}}>{{.}}</option>{{end}}</select></label>

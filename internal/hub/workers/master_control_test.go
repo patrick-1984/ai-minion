@@ -272,7 +272,7 @@ func TestMasterFinalAdmissionDoesNotOutliveLeaseWhileStoreWaits(t *testing.T) {
 	}
 	call := r.call(ops.OpSendText)
 	admitted := make(chan error, 1)
-	go func() { admitted <- m.admitMaster(ctx, call, nil, r.backend.on, "build", masterAuth{}) }()
+	go func() { _, err := m.admitMaster(ctx, call, nil, r.backend.on, "build", masterAuth{}); admitted <- err }()
 	select {
 	case <-checked:
 	case <-ctx.Done():

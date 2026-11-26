@@ -54,27 +54,37 @@ func (s *Store) PutOpRequest(ctx context.Context, r OpRequestRow) (stored bool, 
 		return false, errors.New("store: an op request needs an id, an operation, an arguments hash and a result")
 	}
 	err = s.Tx(ctx, func(tx *sql.Tx) error {
-		if _, err := tx.ExecContext(ctx, `DELETE FROM op_requests WHERE created_at <= ?`, opRequestCutoff(r.CreatedAt)); err != nil {
-			return fmt.Errorf("store: sweep op requests: %w", err)
-		}
-		res, err := tx.ExecContext(ctx,
-			`INSERT INTO op_requests (request_id, op, actor, args_sha256, result_json, created_at) VALUES (?, ?, ?, ?, ?, ?)
-			 ON CONFLICT (request_id) DO NOTHING`,
-			r.RequestID, r.Op, r.Actor, r.ArgsSHA256, r.ResultJSON, r.CreatedAt)
-		if err != nil {
-			return fmt.Errorf("store: put op request: %w", err)
-		}
-		n, err := res.RowsAffected()
-		if err != nil {
-			return fmt.Errorf("store: put op request: %w", err)
-		}
-		stored = n == 1
-		return nil
+		var err error
+		stored, err = putOpRequestTx(ctx, tx, r)
+		return err
 	})
 	if err != nil {
 		return false, err
 	}
 	return stored, nil
+}
+
+// putOpRequestTx is [Store.PutOpRequest] inside tx, so that the answer of a
+// request commits with the change it answers.
+func putOpRequestTx(ctx context.Context, tx *sql.Tx, r OpRequestRow) (stored bool, err error) {
+	if r.RequestID == "" || r.Op == "" || r.ArgsSHA256 == "" || r.ResultJSON == "" {
+		return false, errors.New("store: an op request needs an id, an operation, an arguments hash and a result")
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM op_requests WHERE created_at <= ?`, opRequestCutoff(r.CreatedAt)); err != nil {
+		return false, fmt.Errorf("store: sweep op requests: %w", err)
+	}
+	res, err := tx.ExecContext(ctx,
+		`INSERT INTO op_requests (request_id, op, actor, args_sha256, result_json, created_at) VALUES (?, ?, ?, ?, ?, ?)
+		 ON CONFLICT (request_id) DO NOTHING`,
+		r.RequestID, r.Op, r.Actor, r.ArgsSHA256, r.ResultJSON, r.CreatedAt)
+	if err != nil {
+		return false, fmt.Errorf("store: put op request: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("store: put op request: %w", err)
+	}
+	return n == 1, nil
 }
 
 // opRequestCutoff is the newest creation time that is no longer kept at now.

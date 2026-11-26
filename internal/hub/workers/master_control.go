@@ -25,6 +25,12 @@ type MasterControl struct {
 	router   *Router
 	auditor  *audit.Log
 	now      func() time.Time
+	// readRecheck is the re-check interval of a running verified read;
+	// zero means masterReadRecheck.
+	readRecheck time.Duration
+	// grantUse is told the verified grants behind an answered call (nil:
+	// nothing is recorded); see SetGrantUse.
+	grantUse *GrantUse
 
 	mu    sync.Mutex
 	lanes map[string]*masterLane
@@ -64,6 +70,11 @@ func NewMasterControl(db *store.Store, registry *Registry, events *EventHub, rou
 	return &MasterControl{db: db, registry: registry, events: events, router: router, auditor: auditor,
 		now: time.Now, lanes: map[string]*masterLane{}}
 }
+
+// SetGrantUse makes the MasterControl tell u the verified session grants that
+// authorized an answered call (usage count and last use), as the call server
+// does for Claimed grants. Call it before the Hub serves calls.
+func (m *MasterControl) SetGrantUse(u *GrantUse) { m.grantUse = u }
 
 func (m *MasterControl) Bind(ingest *Ingest, service *Service) error {
 	if !ingest.OnStream(proto.TypeMasterOpen, m.serveLane) ||
@@ -363,6 +374,34 @@ func (m *MasterControl) MasterView(ctx context.Context) (map[string]MasterWorker
 		out[id] = v
 	}
 	return out, nil
+}
+
+// LiveLease names a terminal incarnation that holds a master lease now. It
+// carries no lease id or generation.
+type LiveLease struct {
+	WorkerID, SessionName, IncarnationID string
+}
+
+// LiveLeases lists the leases that authorizeLocked would accept right now:
+// the leases of every live, unexpired lane on the current link whose
+// incarnation is still an eligible candidate. An eligible candidate without a
+// lease (a share snapshot that arrived before the next report) is not listed.
+func (m *MasterControl) LiveLeases() []LiveLease {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []LiveLease
+	for id, l := range m.lanes {
+		if l.ctx.Err() != nil || !m.currentLink(l.info) || !m.now().Before(l.expires) {
+			continue
+		}
+		for inc, lease := range l.leases {
+			if lease.binding.LeaseID == "" || !m.eligible(l, lease.row.SessionName, inc) {
+				continue
+			}
+			out = append(out, LiveLease{WorkerID: id, SessionName: lease.row.SessionName, IncarnationID: inc})
+		}
+	}
+	return out
 }
 
 type MasterWorkerView struct {

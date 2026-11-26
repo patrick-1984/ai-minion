@@ -54,19 +54,21 @@
   }
 
   var status = document.getElementById("grant-status");
+  // The list (#grant-body) is in the page with rows and without: a reload
+  // after the last revoke keeps its trigger for the next one.
   // While the list is replaced no row action can start: a write from a row
   // that is about to go would answer into nothing.
   document.addEventListener("htmx:beforeRequest", function (e) {
     var t = e.detail && e.detail.target;
-    if (t && t.id === "grant-rows") { t.inert = true; t.setAttribute("aria-busy", "true"); }
+    if (t && t.id === "grant-body") { t.inert = true; t.setAttribute("aria-busy", "true"); }
   });
   document.addEventListener("htmx:afterRequest", function (e) {
     var t = e.detail && e.detail.target;
-    if (t && t.id === "grant-rows" && document.contains(t)) { t.inert = false; t.removeAttribute("aria-busy"); }
+    if (t && t.id === "grant-body" && document.contains(t)) { t.inert = false; t.removeAttribute("aria-busy"); }
   });
   document.addEventListener("htmx:afterSwap", function (e) {
     var t = e.detail && e.detail.target;
-    if (t && t.id === "grant-rows" && status) { status.textContent = ""; }
+    if (t && t.id === "grant-body" && status) { status.textContent = ""; }
     apply();
     wire();
     confirmShown();

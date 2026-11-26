@@ -51,6 +51,9 @@ type AccessPage struct {
 	GroupState []string
 	// Self is this view's address (Refresh), CSV the same view as a file.
 	Self, CSV string
+	// Admin: the viewer is an administrator, so Minion control (an
+	// administrator page) is a link.
+	Admin bool
 }
 
 // AccessColumnGroup is one Worker on the column axis and its sessions. A
@@ -316,8 +319,10 @@ func (g *accessGrid) view(row, col int) AccessCellView {
 		if g.swap {
 			what = " for " + src.name()
 		}
+		// The glyph and the words follow the level in effect: a master can
+		// hold Message or View, not only Control.
 		if c.Via == ops.AccessViaMaster {
-			v.Glyph, v.Title, v.Spoken = "C★", label+what+", via master", "control via master"
+			v.Glyph, v.Title, v.Spoken = label[:1]+"★", label+what+", via master", strings.ToLower(label)+" via master"
 		} else {
 			v.Glyph, v.Title, v.Spoken = label[:1], label+what+", by a grant", strings.ToLower(label)+" by a grant"
 		}
@@ -470,12 +475,14 @@ func accessPage(res ops.AccessMatrixResult, q accessQuery) AccessPage {
 	return p
 }
 
-func accessData(r *http.Request, c OpCaller, _ pageUser) (any, error) {
+func accessData(r *http.Request, c OpCaller, u pageUser) (any, error) {
 	var res ops.AccessMatrixResult
 	if err := c.CallOp(r, ops.OpAccessMatrix, ops.AccessMatrixArgs{}, &res); err != nil {
 		return nil, err
 	}
-	return accessPage(res, parseAccessQuery(r.URL.Query())), nil
+	p := accessPage(res, parseAccessQuery(r.URL.Query()))
+	p.Admin = u.Admin
+	return p, nil
 }
 
 // accessCSVHeader names the columns of the export, one line per pair.
