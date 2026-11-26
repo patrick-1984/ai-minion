@@ -206,8 +206,8 @@ func TestWorkerPageOffersTheSharePanelOutsideTheLiveFragment(t *testing.T) {
 	shared := Dashboard{Workers: []WorkerRow{wPrivate}}
 	s2, _ := workerPageServer(t, shared, shared, func() ops.WorkerInfo { w := wAliceInfo; w.OwnerID = "u-other"; return w }())
 	_, other := page(t, s2, "/workers/w1", "alice:user")
-	mustNotHave(t, other, `id="share-panel"`, `/w/w1/share`, `data-unasked-worker`, `data-control="forget"`)
-	// An administrator operates every Worker.
+	mustNotHave(t, other, `id="share-panel"`, `/w/w1/share`, `data-unasked-worker`, `data-control="forget"`, `/w/w1/hidden-sessions`)
+	// An administrator operates every Worker, and sets its hidden-sessions choice (v0.23.0).
 	_, adm := page(t, s2, "/workers/w1?scope=all", "root:admin")
-	mustHave(t, adm, `hx-get="/w/w1/share"`)
+	mustHave(t, adm, `hx-get="/w/w1/share"`, `hx-get="/w/w1/hidden-sessions"`)
 }

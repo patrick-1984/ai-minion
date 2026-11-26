@@ -95,6 +95,9 @@ type WorkerPage struct {
 	// DebugURL is the Debug panel of the Worker (v0.10.0); empty when this
 	// person may not operate the Worker.
 	DebugURL string
+	// HiddenURL is the Hidden sessions panel of the Worker (v0.23.0); empty
+	// when this person may not operate the Worker.
+	HiddenURL string
 	// Name is the heading (the Worker's name; the id when it has none).
 	Name    string
 	Context string
@@ -231,6 +234,7 @@ func workerData(get func() LiveSource) func(*http.Request) (any, error) {
 			p.ShareURL = SharePath(id)
 			p.AccessURL = WorkerAccessPath(id)
 			p.DebugURL = DebugPath(id)
+			p.HiddenURL = WorkerHiddenPath(id)
 		}
 		if all {
 			p.Scope = scopeAll

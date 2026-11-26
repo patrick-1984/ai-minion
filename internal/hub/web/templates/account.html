@@ -29,8 +29,9 @@
     {{if and .Data.Prefs (not .Data.PrefsURL)}}<p class="help" id="hidden-effective" data-prefs-readonly>{{if .Data.Prefs.HiddenSessionsAllowed}}New sessions are created for {{.Data.ActingAs}} even where they would be hidden.{{else}}New sessions that would be hidden are refused for {{.Data.ActingAs}}.{{end}} While you act as another user, this choice cannot be changed; they change it in their own Account page.</p>
     {{else if .Data.Prefs}}<form method="post" action="{{.Data.PrefsURL}}" hx-post="{{.Data.PrefsURL}}" hx-target="#sessions-result" hx-swap="innerHTML" hx-disabled-elt="find button">
       <input type="hidden" name="for_user" value="{{.Data.PrefsFor}}">
-      <div class="field"><label><input type="checkbox" name="allow_hidden_sessions" id="allow-hidden-sessions"{{if .Data.Prefs.AllowHiddenSessions}} checked{{end}} aria-describedby="hidden-effective"> Allow creating hidden sessions</label></div>
+      <div class="field"><label><input type="checkbox" name="allow_hidden_sessions" id="allow-hidden-sessions"{{if .Data.Prefs.AllowHiddenSessions}} checked{{end}} aria-describedby="hidden-effective hidden-per-worker"> Allow creating hidden sessions (default for workers without their own choice)</label></div>
       <p class="help" id="hidden-effective">{{if .Data.HiddenSessionsHub}}{{.Data.HiddenSessionsHub}}{{else if .Data.Prefs.HiddenSessionsAllowed}}New sessions are created even where they would be hidden.{{else}}New sessions that would be hidden are refused, with the reason and the fix (off by default).{{end}}</p>
+      <p class="help" id="hidden-per-worker" data-hidden-per-worker>Each worker can have its own choice, which wins over this default: its owner or an administrator sets it on the worker's page (Hidden sessions).</p>
       <button type="submit" class="btn btn-secondary">{{template "icon" "i-save"}}<span>Save</span></button>
       <div id="sessions-result" aria-live="polite"></div>
     </form>

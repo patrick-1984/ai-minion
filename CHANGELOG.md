@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Changed
+
+- **Hidden sessions per Worker.** Whether new hidden sessions (Windows ConPTY inside the Worker, a tmux server that is not the person's default one, the Android app) may be created is now a choice of each Worker: Allow, Refuse, or each person's account setting (the default, so nothing changes on upgrade). The owner sets it on their own Workers, an administrator on any Worker, main and infrastructure Workers of other users included, from the Worker's page (panel **Hidden sessions**) or with the new operation `worker_hidden_sessions_set` (`hidden_sessions`: `allow`, `refuse` or `default`; audited with `hidden_sessions=<choice>`). `workers_list` reports the Worker's own choice as `allow_hidden_sessions` (absent without one). The account-wide **Account > Sessions** setting and `account_prefs_set` stay and are the default for Workers without their own choice. The Hub setting `hidden_sessions` (`allowed`, `disabled`) still decides for everybody. Hub-only: no Worker update is needed (migration 0037, table `worker_hidden_sessions`; the choice is dropped when the Worker is reassigned to another owner).
+
 ## v0.22.0
 
 ### Added
