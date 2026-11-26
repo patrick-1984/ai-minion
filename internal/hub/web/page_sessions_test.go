@@ -900,7 +900,8 @@ func TestHandlerSourceSnapshotDegradesWhenNotServed(t *testing.T) {
 	mustHave(t, body, `<p class="notice notice-info" role="status">This Hub does not serve the live Worker and session lists.</p>`, "No workers connected.")
 }
 
-// A114: the session code and the Worker number come first in their rows.
+// A114: the session code and the Worker number come first in their rows. The
+// row header still sorts by name (data-sort-value), not by the badge.
 func TestDashboardShowsSessionCodesFirst(t *testing.T) {
 	w := wPrivate
 	w.Number = 5
@@ -912,6 +913,6 @@ func TestDashboardShowsSessionCodesFirst(t *testing.T) {
 		t.Fatalf("GET / = %d\n%s", code, body)
 	}
 	mustHave(t, body,
-		`<th scope="row"><code class="session-code" data-worker-number="5" title="Worker number: the first part of its session codes">5</code> <a href="/workers/w1"`,
-		`<th scope="row"><code class="session-code" data-session-code="5-667" title="Session code: name the session by it, for example --target 5-667">5-667</code> <a href="/s/laptop/fix-tests"`)
+		`<th scope="row" data-sort-value="laptop"><code class="session-code" data-worker-number="5" title="Worker number: the first part of its session codes">5</code> <a href="/workers/w1"`,
+		`<th scope="row" data-sort-value="laptop/fix-tests"><code class="session-code" data-session-code="5-667" title="Session code: name the session by it, for example --target 5-667">5-667</code> <a href="/s/laptop/fix-tests"`)
 }

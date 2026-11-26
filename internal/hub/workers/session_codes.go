@@ -3,8 +3,9 @@ package workers
 // Session codes (v0.23.0): the short "<worker number>-<session number>" code
 // of a session ("5-667"), easy to read aloud. The Hub gives the numbers (see
 // store.SessionCodes) when it lists sessions: on every sessions_list it
-// routes (with the instance ids of the Worker, so a number follows a rename)
-// and on the aggregated session list of its event stream (by name). Only the
+// routes and on the aggregated session list of its event stream, both with
+// the instance ids the Worker reports (so a number follows a rename and both
+// lists give a session the same code). Only the
 // Hub resolves a code, in [Router.Resolve]; a Worker knows nothing of it.
 
 import (
@@ -49,8 +50,13 @@ func (c *SessionCodes) warn(msg string, err error) {
 	}
 }
 
-// Annotate sets the Code of every session of a listing of workerID.
+// Annotate sets the Code of every session of a listing of workerID. A code
+// the Worker itself sent is cleared first, on every path: only a code the Hub
+// gave is ever shown.
 func (c *SessionCodes) Annotate(ctx context.Context, workerID string, list []ops.SessionInfo) {
+	for i := range list {
+		list[i].Code = ""
+	}
 	if c == nil || c.Store == nil || len(list) == 0 {
 		return
 	}
@@ -70,25 +76,23 @@ func (c *SessionCodes) Annotate(ctx context.Context, workerID string, list []ops
 	}
 }
 
-// ByName returns the codes of the named sessions of workerID (a listing that
-// carries no instance ids), by name.
-func (c *SessionCodes) ByName(ctx context.Context, workerID string, names []string) map[string]string {
-	if c == nil || c.Store == nil || len(names) == 0 {
+// Sightings returns the codes of the given sessions of workerID, by name. A
+// sighting carries the instance id the Worker reported ("" from a Worker or
+// host that reports none, which is then named by its name), the same input
+// [SessionCodes.Annotate] uses, so both give a session the same code.
+func (c *SessionCodes) Sightings(ctx context.Context, workerID string, seen []store.SessionSighting) map[string]string {
+	if c == nil || c.Store == nil || len(seen) == 0 {
 		return nil
-	}
-	seen := make([]store.SessionSighting, len(names))
-	for i, n := range names {
-		seen[i] = store.SessionSighting{Name: n}
 	}
 	w, nums, err := c.Store.SessionCodes(ctx, workerID, seen, c.now())
 	if err != nil {
 		c.warn("workers: session codes", err)
 		return nil
 	}
-	out := make(map[string]string, len(names))
-	for i, n := range names {
+	out := make(map[string]string, len(seen))
+	for i, sg := range seen {
 		if i < len(nums) && w > 0 && nums[i] > 0 {
-			out[n] = ops.SessionCode{Worker: w, Session: nums[i]}.String()
+			out[sg.Name] = ops.SessionCode{Worker: w, Session: nums[i]}.String()
 		}
 	}
 	return out

@@ -286,8 +286,11 @@ type workerState struct {
 	instances map[string]string
 	// instLoaded is set once instances was loaded.
 	instLoaded bool
-	updated    time.Time
-	synced     bool // the current connection sent its snapshot
+	// instTouched is when the instances of the listed names were last all
+	// written to the instance store (see [instanceTouchEvery]).
+	instTouched time.Time
+	updated     time.Time
+	synced      bool // the current connection sent its snapshot
 	// probe asks this connection for the share rule it has now (see
 	// [Link.SetShareProbe]); nil when the connection has no such port.
 	probe shareProber
@@ -875,11 +878,22 @@ func (h *EventHub) loadInstancesLocked(w *workerState) {
 	w.instLoaded = true
 }
 
+// instanceTouchEvery is how often the stored instances of all the names a
+// Worker lists now are written again, with a new seen_at, along with a
+// change: the store's bound ([store.MaxSessionInstancesPerWorker]) then drops
+// the names that are gone first, never a long-lived session that is still
+// listed.
+const instanceTouchEvery = time.Hour
+
 // rememberInstancesLocked records new last instances of session names, in
-// memory and in the instance store. A failed write is logged: after a restart
-// those names fall back to the name-only rule.
+// memory and in the instance store. At most every [instanceTouchEvery] the
+// write also covers the names listed now (a snapshot writes then even when
+// nothing changed). A failed write is logged: after a restart those names
+// fall back to the name-only rule.
 func (h *EventHub) rememberInstancesLocked(w *workerState, changed map[string]string) {
-	if len(changed) == 0 {
+	at := h.now()
+	touch := h.instStore != nil && (w.instTouched.IsZero() || at.Sub(w.instTouched) >= instanceTouchEvery)
+	if len(changed) == 0 && !touch {
 		return
 	}
 	if w.instances == nil {
@@ -901,10 +915,29 @@ func (h *EventHub) rememberInstancesLocked(w *workerState, changed map[string]st
 	if h.instStore == nil {
 		return
 	}
+	save := changed
+	if touch {
+		save = make(map[string]string, len(w.sessions)+len(changed))
+		for n, s := range w.sessions {
+			if s.InstanceID != "" {
+				save[n] = s.InstanceID
+			}
+		}
+		for n, id := range changed {
+			save[n] = id
+		}
+	}
+	if len(save) == 0 {
+		return
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), instanceSaveTimeout)
 	defer cancel()
-	if err := h.instStore.SaveSessionInstances(ctx, w.id, changed); err != nil {
+	if err := h.instStore.SaveSessionInstances(ctx, w.id, save); err != nil {
 		h.log.Warn("workers: the session instances could not be stored", "worker_id", w.id, "error", err.Error())
+		return
+	}
+	if touch {
+		w.instTouched = at
 	}
 }
 

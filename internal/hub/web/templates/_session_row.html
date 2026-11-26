@@ -1,5 +1,5 @@
 {{define "worker_row"}}<tr data-worker="{{.ID}}" data-key="w-{{.ID}}" data-row-link="worker">
-  <th scope="row">{{if .Number}}<code class="session-code" data-worker-number="{{.Number}}" title="Worker number: the first part of its session codes">{{.Number}}</code> {{end}}<a href="{{.URL}}" data-control="name" data-worker-link>{{.Name}}</a></th>
+  <th scope="row"{{if .Number}} data-sort-value="{{.Name}}"{{end}}>{{if .Number}}<code class="session-code" data-worker-number="{{.Number}}" title="Worker number: the first part of its session codes">{{.Number}}</code> {{end}}<a href="{{.URL}}" data-control="name" data-worker-link>{{.Name}}</a></th>
   {{if .ShowOwner}}<td data-label="Owner"{{if gt (len .Owner) 32}} class="cell-clamp" title="{{.Owner}}" tabindex="0"{{end}}>{{.Owner}}</td>
   {{end}}<td data-label="Status">{{if .Pending}}<span class="badge" data-tone="warning" data-pending="true">pending approval</span>{{if .Online}} <span class="badge" data-online="true">connected</span>{{end}}{{template "worker_pending_facts" .}}{{else if .Online}}<span class="badge" data-online="true">online</span>{{else}}<span class="badge muted" data-online="false">offline</span>{{end}}</td>
   <td data-label="Kind"><span class="badge plain" data-kind="{{.Kind}}">{{.Kind}}</span></td>
@@ -34,7 +34,7 @@
 </tr>{{end}}
 
 {{define "session_row"}}<tr data-worker="{{.WorkerID}}" data-session="{{.Name}}" data-key="s-{{.WorkerID}}-{{.Name}}" data-row-link="session">
-  <th scope="row">{{if .Code}}<code class="session-code" data-session-code="{{.Code}}" title="Session code: name the session by it, for example --target {{.Code}}">{{.Code}}</code> {{end}}<a href="{{.Path}}" data-control="name" data-inspect data-inspect-label="{{.Name}} on {{.Worker}}"><span class="session-worker">{{.Worker}}/</span>{{.Name}}</a></th>
+  <th scope="row"{{if .Code}} data-sort-value="{{.Worker}}/{{.Name}}"{{end}}>{{if .Code}}<code class="session-code" data-session-code="{{.Code}}" title="Session code: name the session by it, for example --target {{.Code}}">{{.Code}}</code> {{end}}<a href="{{.Path}}" data-control="name" data-inspect data-inspect-label="{{.Name}} on {{.Worker}}"><span class="session-worker">{{.Worker}}/</span>{{.Name}}</a></th>
   <td data-label="Name" class="col-name{{if .HarnessName}}" data-harness-name{{else}} empty"{{end}}>{{.HarnessName}}</td>
   <td data-label="Task"{{if gt (len .Task) 32}} class="cell-clamp" title="{{.Task}}" tabindex="0"{{end}}>{{if .Task}}{{.Task}}{{else}}<span class="muted">No task</span>{{end}}</td>
   {{if not .HideWorker}}<td data-label="Worker"><a href="{{.WorkerURL}}" data-control="worker" data-worker-link>{{.Worker}}</a>{{if not .Online}} <span class="badge muted" data-online="false">offline</span>{{end}}</td>

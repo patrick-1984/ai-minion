@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"github.com/patrick-1984/ai-minion/internal/hub/authz"
+	"github.com/patrick-1984/ai-minion/internal/hub/store"
 	"github.com/patrick-1984/ai-minion/internal/hub/workers"
 	"github.com/patrick-1984/ai-minion/internal/ops"
 	"github.com/patrick-1984/ai-minion/internal/proto"
@@ -106,9 +107,11 @@ type SessionLister struct {
 	// control, v0.9.0); a Worker that is not user-managed is left out. Nil
 	// means always.
 	UserManaged func(ctx context.Context, workerID string) (bool, error)
-	// Codes returns the session codes of the named sessions of a Worker, by
-	// name (workers.SessionCodes.ByName); nil: no codes.
-	Codes func(ctx context.Context, workerID string, names []string) map[string]string
+	// Codes returns the session codes of the given sessions of a Worker, by
+	// name (workers.SessionCodes.Sightings): each sighting carries the
+	// instance id the event hub holds, so the codes agree with the ones of a
+	// routed sessions_list. Nil: no codes.
+	Codes func(ctx context.Context, workerID string, seen []store.SessionSighting) map[string]string
 }
 
 type sessionItem struct {
@@ -162,6 +165,7 @@ func (l *SessionLister) List(ctx context.Context, p authz.Principal, q SessionQu
 	}
 	owners := map[string]string{}
 	out := make([]SessionInfo, 0, len(allowed))
+	iids := make([]string, 0, len(allowed)) // aligned with out, never published
 	for _, a := range allowed {
 		it := a.Item
 		// A harness session name is shown only under the owner it was
@@ -187,8 +191,9 @@ func (l *SessionLister) List(ctx context.Context, p authz.Principal, q SessionQu
 			Session: it.st.Name, Kind: it.st.Kind, State: it.st.State, Task: it.st.Task,
 			Online: it.on, ScreenHash: it.st.ScreenHash, PaneStateDetail: it.st.PaneStateDetail, HarnessName: it.st.HarnessName,
 		})
+		iids = append(iids, it.st.InstanceID)
 	}
-	l.addCodes(ctx, out)
+	l.addCodes(ctx, out, iids)
 	sort.SliceStable(out, func(i, j int) bool {
 		a, b := out[i], out[j]
 		switch {
@@ -205,22 +210,27 @@ func (l *SessionLister) List(ctx context.Context, p authz.Principal, q SessionQu
 }
 
 // addCodes sets the session codes of list, one lookup per Worker. Only the
-// sessions the principal may read are looked up.
-func (l *SessionLister) addCodes(ctx context.Context, list []SessionInfo) {
+// sessions the principal may read are looked up. iids holds the instance id
+// of every session of list ("" when its Worker reports none).
+func (l *SessionLister) addCodes(ctx context.Context, list []SessionInfo, iids []string) {
 	if l.Codes == nil || len(list) == 0 {
 		return
 	}
-	names := map[string][]string{}
+	seen := map[string][]store.SessionSighting{}
 	var order []string
-	for _, s := range list {
-		if _, ok := names[s.WorkerID]; !ok {
+	for i, s := range list {
+		if _, ok := seen[s.WorkerID]; !ok {
 			order = append(order, s.WorkerID)
 		}
-		names[s.WorkerID] = append(names[s.WorkerID], s.Session)
+		sg := store.SessionSighting{Name: s.Session}
+		if i < len(iids) {
+			sg.InstanceID = iids[i]
+		}
+		seen[s.WorkerID] = append(seen[s.WorkerID], sg)
 	}
 	codes := make(map[string]map[string]string, len(order))
 	for _, id := range order {
-		codes[id] = l.Codes(ctx, id, names[id])
+		codes[id] = l.Codes(ctx, id, seen[id])
 	}
 	for i := range list {
 		list[i].Code = codes[list[i].WorkerID][list[i].Session]

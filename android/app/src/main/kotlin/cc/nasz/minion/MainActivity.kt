@@ -152,6 +152,9 @@ class MainActivity : Activity() {
             .setPositiveButton("Yes, start automatically") { _, _ -> answer(true) }
             .setOnCancelListener { answer(null) }
             .create()
+        // A stray tap next to the dialog is no answer: only the buttons and
+        // Back close it (the theme would close it on a touch outside).
+        dialog.setCanceledOnTouchOutside(false)
         dialog.setOnShowListener { dialog.getButton(AlertDialog.BUTTON_POSITIVE).requestFocus() }
         bootQuestion = dialog
         dialog.show()
