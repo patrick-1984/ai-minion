@@ -1,4 +1,4 @@
-package proto_test
+package ops_test
 
 import (
 	"strings"
@@ -14,7 +14,7 @@ func workerOriginWith(f func(*proto.Origin)) proto.Origin {
 	return o
 }
 
-// proto cannot import ops, so the origin has its own session-name and UUIDv7
+// proto cannot import ops (AD-1), so this parity test lives in ops. The origin has its own session-name and UUIDv7
 // rules. They must accept exactly what ops accepts: the Hub fills the origin
 // from names and ids that passed the ops rules.
 func TestOriginSessionNameMatchesOps(t *testing.T) {
