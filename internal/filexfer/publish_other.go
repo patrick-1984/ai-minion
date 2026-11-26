@@ -14,8 +14,6 @@ import (
 
 const sysSupported = false
 
-var forceLinkFallback bool
-
 func sysStatAt(int, string) (statInfo, error)           { return statInfo{}, errUnsupported }
 func sysFstat(int) (statInfo, error)                    { return statInfo{}, errUnsupported }
 func sysCreateExcl(int, string) (*os.File, error)       { return nil, errUnsupported }
@@ -32,3 +30,6 @@ func isNotExist(err error) bool { return errors.Is(err, os.ErrNotExist) }
 func isNoSpace(error) bool      { return false }
 func isLoop(error) bool         { return false }
 func isXDev(error) bool         { return false }
+
+// openAbsNoFollow (cleanup.go) is used by the Linux and macOS files only.
+var _ = openAbsNoFollow

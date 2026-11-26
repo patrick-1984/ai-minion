@@ -15,10 +15,6 @@ import (
 // sysSupported reports whether this platform has the engine's primitives.
 const sysSupported = true
 
-// forceLinkFallback has no effect on macOS (renameatx_np RENAME_EXCL is
-// always used); it exists so that the tests build on every platform.
-var forceLinkFallback bool
-
 func statFrom(st *unix.Stat_t) statInfo {
 	si := statInfo{
 		Size: st.Size, Nlink: uint64(st.Nlink), Dev: uint64(uint32(st.Dev)), Ino: st.Ino,
