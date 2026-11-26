@@ -57,10 +57,13 @@ type Gate interface {
 // workers_list. The other Hub ops cannot run on the Solo backend, so they are
 // not tools there; workers_list can, because the local Worker forwards it to its
 // Hub, which answers a session with a session-control grant (SC-5). The tools
-// are the same with a Hub backend.
+// are the same with a Hub backend. An Unreleased op is not a tool yet.
 func DefaultOps() []ops.Op {
 	var out []ops.Op
 	for _, op := range ops.All() {
+		if op.Unreleased {
+			continue
+		}
 		if op.Scope == ops.ScopeWorker || op.Name == ops.OpWorkersList {
 			out = append(out, op)
 		}

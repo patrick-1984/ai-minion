@@ -27,6 +27,9 @@ import (
 //   - pipe_send: proto.FeaturePipeCausal (the Hub names the delivery in
 //     message_id, and a Worker that ignores it emits replies the Hub cannot
 //     match), and proto.FeatureTextVerbatim for a text that is not plain.
+//   - file_list, file_pull, file_push: proto.FeatureFilesV1. A Worker without
+//     it does not announce the ops either; the check also refuses a newer CLI
+//     against an older local daemon.
 //
 // Other ops, reads included, need nothing. An argument that cannot be read
 // requires every feature of the op, so a malformed request never weakens a
@@ -35,6 +38,8 @@ func RequiredFeatures(op string, args json.RawMessage) []string {
 	switch op {
 	case OpAnswer:
 		return []string{proto.FeatureAnswerReviewed}
+	case OpFileList, OpFilePull, OpFilePush:
+		return []string{proto.FeatureFilesV1}
 	case OpSendText:
 		var a struct {
 			Text   string `json:"text"`

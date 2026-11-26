@@ -22,10 +22,20 @@ const (
 	ActionManage Action = "manage"
 )
 
-// Valid reports whether a is one of the four known actions.
+// The file transfer actions (files.v1). They are directional and imply
+// nothing else, and nothing implies them: read does not allow a pull, operate
+// does not allow a push. An API key holds one only when its scope names it.
+const (
+	// ActionFileRead lists a session's folder and pulls files out of it.
+	ActionFileRead Action = "file_read"
+	// ActionFileWrite pushes files into a session's folder.
+	ActionFileWrite Action = "file_write"
+)
+
+// Valid reports whether a is one of the known actions.
 func (a Action) Valid() bool {
 	switch a {
-	case ActionRead, ActionOperate, ActionMessage, ActionManage:
+	case ActionRead, ActionOperate, ActionMessage, ActionManage, ActionFileRead, ActionFileWrite:
 		return true
 	}
 	return false

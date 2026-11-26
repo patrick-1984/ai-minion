@@ -17,7 +17,8 @@
                           "enum": [
                             "invalid_argument",
                             "invite_invalid",
-                            "pairing_code_invalid"
+                            "pairing_code_invalid",
+                            "path_outside_root"
                           ]
                         }
                       }
@@ -28,7 +29,7 @@
             }
           }
         },
-        "description": "Error envelope with one of the codes: invalid_argument, invite_invalid, pairing_code_invalid."
+        "description": "Error envelope with one of the codes: invalid_argument, invite_invalid, pairing_code_invalid, path_outside_root."
       },
       "Error401": {
         "content": {
@@ -83,7 +84,12 @@
                             "reauth_unavailable",
                             "tls_required",
                             "passphrase_invalid",
-                            "new_sessions_blocked"
+                            "new_sessions_blocked",
+                            "files_disabled",
+                            "files_root_refused",
+                            "path_protected",
+                            "path_sensitive",
+                            "file_type_refused"
                           ]
                         }
                       }
@@ -94,7 +100,7 @@
             }
           }
         },
-        "description": "Error envelope with one of the codes: not_enrolled, revoked, forbidden, preview_only, not_shared, untrusted_peer, pipe_origin_refused, worker_pending, reauth_required, reauth_unavailable, tls_required, passphrase_invalid, new_sessions_blocked."
+        "description": "Error envelope with one of the codes: not_enrolled, revoked, forbidden, preview_only, not_shared, untrusted_peer, pipe_origin_refused, worker_pending, reauth_required, reauth_unavailable, tls_required, passphrase_invalid, new_sessions_blocked, files_disabled, files_root_refused, path_protected, path_sensitive, file_type_refused."
       },
       "Error404": {
         "content": {
@@ -175,7 +181,8 @@
                             "schema_too_new",
                             "no_dialog",
                             "dialog_changed",
-                            "view_incomplete"
+                            "view_incomplete",
+                            "files_root_unknown"
                           ]
                         }
                       }
@@ -186,7 +193,7 @@
             }
           }
         },
-        "description": "Error envelope with one of the codes: conflict, pairing_id_collision, already_paired, pane_changed, busy, shell_pane, dialog_open, schema_too_new, no_dialog, dialog_changed, view_incomplete."
+        "description": "Error envelope with one of the codes: conflict, pairing_id_collision, already_paired, pane_changed, busy, shell_pane, dialog_open, schema_too_new, no_dialog, dialog_changed, view_incomplete, files_root_unknown."
       },
       "Error410": {
         "content": {
@@ -203,7 +210,8 @@
                         "code": {
                           "enum": [
                             "invite_expired",
-                            "invite_exhausted"
+                            "invite_exhausted",
+                            "transfer_expired"
                           ]
                         }
                       }
@@ -214,7 +222,7 @@
             }
           }
         },
-        "description": "Error envelope with one of the codes: invite_expired, invite_exhausted."
+        "description": "Error envelope with one of the codes: invite_expired, invite_exhausted, transfer_expired."
       },
       "Error413": {
         "content": {
@@ -231,7 +239,8 @@
                         "code": {
                           "enum": [
                             "frame_too_large",
-                            "message_too_large"
+                            "message_too_large",
+                            "transfer_too_large"
                           ]
                         }
                       }
@@ -242,7 +251,7 @@
             }
           }
         },
-        "description": "Error envelope with one of the codes: frame_too_large, message_too_large."
+        "description": "Error envelope with one of the codes: frame_too_large, message_too_large, transfer_too_large."
       },
       "Error426": {
         "content": {
@@ -369,7 +378,8 @@
                       "properties": {
                         "code": {
                           "enum": [
-                            "connection_lost"
+                            "connection_lost",
+                            "integrity_failed"
                           ]
                         }
                       }
@@ -380,7 +390,7 @@
             }
           }
         },
-        "description": "Error envelope with one of the codes: connection_lost."
+        "description": "Error envelope with one of the codes: connection_lost, integrity_failed."
       },
       "Error503": {
         "content": {
@@ -1022,6 +1032,12 @@
       },
       "ControlAccept": {
         "properties": {
+          "files_pull": {
+            "type": "boolean"
+          },
+          "files_push": {
+            "type": "boolean"
+          },
           "sessions": {
             "items": {
               "type": "string"
@@ -1186,6 +1202,12 @@
       "ControlSetAcceptArgs": {
         "properties": {
           "accept": {
+            "type": "boolean"
+          },
+          "files_pull": {
+            "type": "boolean"
+          },
+          "files_push": {
             "type": "boolean"
           },
           "force": {
@@ -1462,7 +1484,17 @@
           "tls_required",
           "passphrase_invalid",
           "paused",
-          "new_sessions_blocked"
+          "new_sessions_blocked",
+          "files_disabled",
+          "files_root_unknown",
+          "files_root_refused",
+          "path_outside_root",
+          "path_protected",
+          "path_sensitive",
+          "file_type_refused",
+          "transfer_too_large",
+          "integrity_failed",
+          "transfer_expired"
         ],
         "type": "string"
       },
@@ -1475,6 +1507,470 @@
         },
         "required": [
           "error"
+        ],
+        "type": "object"
+      },
+      "FileEntry": {
+        "properties": {
+          "mtime": {
+            "type": "integer"
+          },
+          "name": {
+            "type": "string"
+          },
+          "size": {
+            "type": "integer"
+          },
+          "skipped_reason": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "mtime",
+          "name",
+          "size",
+          "type"
+        ],
+        "type": "object"
+      },
+      "FileListArgs": {
+        "properties": {
+          "cursor": {
+            "type": "string"
+          },
+          "limit": {
+            "type": "integer"
+          },
+          "path": {
+            "type": "string"
+          },
+          "target": {
+            "$ref": "#/components/schemas/Target"
+          }
+        },
+        "required": [
+          "target"
+        ],
+        "type": "object"
+      },
+      "FileListResult": {
+        "properties": {
+          "entries": {
+            "items": {
+              "$ref": "#/components/schemas/FileEntry"
+            },
+            "type": "array"
+          },
+          "next_cursor": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "root": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "entries",
+          "path",
+          "root"
+        ],
+        "type": "object"
+      },
+      "FilePullArgs": {
+        "properties": {
+          "leg_token": {
+            "type": "string"
+          },
+          "max_bytes": {
+            "type": "integer"
+          },
+          "max_entries": {
+            "type": "integer"
+          },
+          "overwrite": {
+            "type": "boolean"
+          },
+          "path": {
+            "type": "string"
+          },
+          "target": {
+            "$ref": "#/components/schemas/Target"
+          },
+          "to": {
+            "type": "string"
+          },
+          "transfer_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "target"
+        ],
+        "type": "object"
+      },
+      "FilePushArgs": {
+        "properties": {
+          "as": {
+            "type": "string"
+          },
+          "entries": {
+            "type": "integer"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "leg_token": {
+            "type": "string"
+          },
+          "max_bytes": {
+            "type": "integer"
+          },
+          "max_entries": {
+            "type": "integer"
+          },
+          "overwrite": {
+            "type": "boolean"
+          },
+          "path": {
+            "type": "string"
+          },
+          "size": {
+            "type": "integer"
+          },
+          "target": {
+            "$ref": "#/components/schemas/Target"
+          },
+          "transfer_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "target"
+        ],
+        "type": "object"
+      },
+      "FileReceiptArgs": {
+        "properties": {
+          "bytes": {
+            "type": "integer"
+          },
+          "entries": {
+            "items": {
+              "$ref": "#/components/schemas/FileTransferEntry"
+            },
+            "type": "array"
+          },
+          "entries_omitted": {
+            "type": "integer"
+          },
+          "files": {
+            "type": "integer"
+          },
+          "leg_token": {
+            "type": "string"
+          },
+          "manifest_digest": {
+            "type": "string"
+          },
+          "outcome": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "transfer_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "bytes",
+          "files",
+          "leg_token",
+          "outcome",
+          "transfer_id"
+        ],
+        "type": "object"
+      },
+      "FileReceiptResult": {
+        "properties": {
+          "state": {
+            "type": "string"
+          },
+          "transfer_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "state",
+          "transfer_id"
+        ],
+        "type": "object"
+      },
+      "FileTransferEntry": {
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "sha256": {
+            "type": "string"
+          },
+          "size": {
+            "type": "integer"
+          },
+          "skipped_reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "size"
+        ],
+        "type": "object"
+      },
+      "FileTransferLimits": {
+        "properties": {
+          "max_bytes": {
+            "type": "integer"
+          },
+          "max_depth": {
+            "type": "integer"
+          },
+          "max_entries": {
+            "type": "integer"
+          },
+          "max_path_bytes": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "max_bytes",
+          "max_depth",
+          "max_entries",
+          "max_path_bytes"
+        ],
+        "type": "object"
+      },
+      "FileTransferRecord": {
+        "properties": {
+          "acceptance_id": {
+            "type": "string"
+          },
+          "acting_as": {
+            "type": "string"
+          },
+          "bytes": {
+            "type": "integer"
+          },
+          "caller_root": {
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "direction": {
+            "type": "string"
+          },
+          "ended_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "entries": {
+            "items": {
+              "$ref": "#/components/schemas/FileTransferEntry"
+            },
+            "type": "array"
+          },
+          "entries_omitted": {
+            "type": "integer"
+          },
+          "files": {
+            "type": "integer"
+          },
+          "grant_id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "manifest_digest": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "principal": {
+            "type": "string"
+          },
+          "protected": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "source_session": {
+            "type": "string"
+          },
+          "source_worker_id": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          },
+          "target_root": {
+            "type": "string"
+          },
+          "target_session": {
+            "type": "string"
+          },
+          "target_worker_id": {
+            "type": "string"
+          },
+          "transfer_id": {
+            "type": "string"
+          },
+          "wire_bytes": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "bytes",
+          "created_at",
+          "direction",
+          "files",
+          "path",
+          "principal",
+          "state",
+          "target_session",
+          "target_worker_id",
+          "transfer_id",
+          "wire_bytes"
+        ],
+        "type": "object"
+      },
+      "FileTransferResult": {
+        "properties": {
+          "bytes": {
+            "type": "integer"
+          },
+          "caller_root": {
+            "type": "string"
+          },
+          "direction": {
+            "type": "string"
+          },
+          "encodings": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "entries": {
+            "items": {
+              "$ref": "#/components/schemas/FileTransferEntry"
+            },
+            "type": "array"
+          },
+          "entries_omitted": {
+            "type": "integer"
+          },
+          "etag": {
+            "type": "string"
+          },
+          "expires_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "files": {
+            "type": "integer"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "leg_path": {
+            "type": "string"
+          },
+          "leg_token": {
+            "type": "string"
+          },
+          "limits": {
+            "$ref": "#/components/schemas/FileTransferLimits"
+          },
+          "manifest_digest": {
+            "type": "string"
+          },
+          "outcome": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "size": {
+            "type": "integer"
+          },
+          "skipped": {
+            "type": "integer"
+          },
+          "stage": {
+            "type": "string"
+          },
+          "target_root": {
+            "type": "string"
+          },
+          "transfer_id": {
+            "type": "string"
+          },
+          "wire_bytes": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "direction",
+          "kind",
+          "stage",
+          "target_root",
+          "transfer_id"
+        ],
+        "type": "object"
+      },
+      "FileTransfersListArgs": {
+        "properties": {
+          "cursor": {
+            "type": "string"
+          },
+          "limit": {
+            "type": "integer"
+          },
+          "transfer_id": {
+            "type": "string"
+          },
+          "worker_id": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "FileTransfersListResult": {
+        "properties": {
+          "next_cursor": {
+            "type": "string"
+          },
+          "transfers": {
+            "items": {
+              "$ref": "#/components/schemas/FileTransferRecord"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "transfers"
         ],
         "type": "object"
       },
@@ -1493,6 +1989,12 @@
           "expires_at": {
             "format": "date-time",
             "type": "string"
+          },
+          "files_pull": {
+            "type": "boolean"
+          },
+          "files_push": {
+            "type": "boolean"
           },
           "granted_by": {
             "type": "string"
@@ -1712,6 +2214,12 @@
           },
           "expires_at": {
             "type": "string"
+          },
+          "files_pull": {
+            "type": "boolean"
+          },
+          "files_push": {
+            "type": "boolean"
           },
           "force": {
             "type": "boolean"
@@ -8525,6 +9033,658 @@
         "x-minion-session-only": false,
         "x-minion-stream": false,
         "x-minion-write": true
+      }
+    },
+    "/api/v1/ops/file_list": {
+      "get": {
+        "operationId": "file_list_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "path",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "target.pane",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "target.session_name",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "target.worker_id",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FileListResult"
+                }
+              }
+            },
+            "description": "The result of the operation."
+          },
+          "400": {
+            "$ref": "#/components/responses/Error400"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error403"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error404"
+          },
+          "405": {
+            "$ref": "#/components/responses/Error405"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error409"
+          },
+          "410": {
+            "$ref": "#/components/responses/Error410"
+          },
+          "413": {
+            "$ref": "#/components/responses/Error413"
+          },
+          "426": {
+            "$ref": "#/components/responses/Error426"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error429"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error500"
+          },
+          "501": {
+            "$ref": "#/components/responses/Error501"
+          },
+          "502": {
+            "$ref": "#/components/responses/Error502"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error503"
+          }
+        },
+        "security": [
+          {
+            "bearerApiKey": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "summary": "List one folder of a session's folder (paginated): names, types, sizes and modification times.",
+        "x-minion-actions": [
+          "file_read"
+        ],
+        "x-minion-guards": [],
+        "x-minion-mutates": false,
+        "x-minion-scope": "worker",
+        "x-minion-session-only": false,
+        "x-minion-stream": false,
+        "x-minion-unreleased": true,
+        "x-minion-write": false
+      },
+      "post": {
+        "operationId": "file_list",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FileListArgs"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FileListResult"
+                }
+              }
+            },
+            "description": "The result of the operation."
+          },
+          "400": {
+            "$ref": "#/components/responses/Error400"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error403"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error404"
+          },
+          "405": {
+            "$ref": "#/components/responses/Error405"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error409"
+          },
+          "410": {
+            "$ref": "#/components/responses/Error410"
+          },
+          "413": {
+            "$ref": "#/components/responses/Error413"
+          },
+          "426": {
+            "$ref": "#/components/responses/Error426"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error429"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error500"
+          },
+          "501": {
+            "$ref": "#/components/responses/Error501"
+          },
+          "502": {
+            "$ref": "#/components/responses/Error502"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error503"
+          }
+        },
+        "summary": "List one folder of a session's folder (paginated): names, types, sizes and modification times.",
+        "x-minion-actions": [
+          "file_read"
+        ],
+        "x-minion-guards": [],
+        "x-minion-mutates": false,
+        "x-minion-scope": "worker",
+        "x-minion-session-only": false,
+        "x-minion-stream": false,
+        "x-minion-unreleased": true,
+        "x-minion-write": false
+      }
+    },
+    "/api/v1/ops/file_pull": {
+      "post": {
+        "operationId": "file_pull",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FilePullArgs"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FileTransferResult"
+                }
+              }
+            },
+            "description": "The result of the operation."
+          },
+          "400": {
+            "$ref": "#/components/responses/Error400"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error403"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error404"
+          },
+          "405": {
+            "$ref": "#/components/responses/Error405"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error409"
+          },
+          "410": {
+            "$ref": "#/components/responses/Error410"
+          },
+          "413": {
+            "$ref": "#/components/responses/Error413"
+          },
+          "426": {
+            "$ref": "#/components/responses/Error426"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error429"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error500"
+          },
+          "501": {
+            "$ref": "#/components/responses/Error501"
+          },
+          "502": {
+            "$ref": "#/components/responses/Error502"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error503"
+          }
+        },
+        "summary": "Copy a file or folder from a session's folder into the caller's folder.",
+        "x-minion-actions": [
+          "file_read"
+        ],
+        "x-minion-guards": [],
+        "x-minion-hidden-members": [
+          "leg_token",
+          "max_bytes",
+          "max_entries",
+          "transfer_id"
+        ],
+        "x-minion-mutates": true,
+        "x-minion-scope": "worker",
+        "x-minion-session-only": false,
+        "x-minion-stream": false,
+        "x-minion-unreleased": true,
+        "x-minion-write": false
+      }
+    },
+    "/api/v1/ops/file_push": {
+      "post": {
+        "operationId": "file_push",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FilePushArgs"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FileTransferResult"
+                }
+              }
+            },
+            "description": "The result of the operation."
+          },
+          "400": {
+            "$ref": "#/components/responses/Error400"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error403"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error404"
+          },
+          "405": {
+            "$ref": "#/components/responses/Error405"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error409"
+          },
+          "410": {
+            "$ref": "#/components/responses/Error410"
+          },
+          "413": {
+            "$ref": "#/components/responses/Error413"
+          },
+          "426": {
+            "$ref": "#/components/responses/Error426"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error429"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error500"
+          },
+          "501": {
+            "$ref": "#/components/responses/Error501"
+          },
+          "502": {
+            "$ref": "#/components/responses/Error502"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error503"
+          }
+        },
+        "summary": "Copy a file or folder from the caller's folder into a session's folder.",
+        "x-minion-actions": [
+          "file_write"
+        ],
+        "x-minion-guards": [],
+        "x-minion-hidden-members": [
+          "entries",
+          "kind",
+          "leg_token",
+          "max_bytes",
+          "max_entries",
+          "size",
+          "transfer_id"
+        ],
+        "x-minion-mutates": true,
+        "x-minion-scope": "worker",
+        "x-minion-session-only": false,
+        "x-minion-stream": false,
+        "x-minion-unreleased": true,
+        "x-minion-write": false
+      }
+    },
+    "/api/v1/ops/file_receipt": {
+      "post": {
+        "operationId": "file_receipt",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FileReceiptArgs"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FileReceiptResult"
+                }
+              }
+            },
+            "description": "The result of the operation."
+          },
+          "400": {
+            "$ref": "#/components/responses/Error400"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error403"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error404"
+          },
+          "405": {
+            "$ref": "#/components/responses/Error405"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error409"
+          },
+          "410": {
+            "$ref": "#/components/responses/Error410"
+          },
+          "413": {
+            "$ref": "#/components/responses/Error413"
+          },
+          "426": {
+            "$ref": "#/components/responses/Error426"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error429"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error500"
+          },
+          "501": {
+            "$ref": "#/components/responses/Error501"
+          },
+          "502": {
+            "$ref": "#/components/responses/Error502"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error503"
+          }
+        },
+        "summary": "Report the final outcome of a received file transfer (receiving end only).",
+        "x-minion-actions": [
+          "file_read",
+          "file_write"
+        ],
+        "x-minion-guards": [],
+        "x-minion-mutates": true,
+        "x-minion-scope": "hub",
+        "x-minion-session-only": false,
+        "x-minion-stream": false,
+        "x-minion-unreleased": true,
+        "x-minion-write": false
+      }
+    },
+    "/api/v1/ops/file_transfers_list": {
+      "get": {
+        "operationId": "file_transfers_list_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "transfer_id",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "worker_id",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FileTransfersListResult"
+                }
+              }
+            },
+            "description": "The result of the operation."
+          },
+          "400": {
+            "$ref": "#/components/responses/Error400"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error403"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error404"
+          },
+          "405": {
+            "$ref": "#/components/responses/Error405"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error409"
+          },
+          "410": {
+            "$ref": "#/components/responses/Error410"
+          },
+          "413": {
+            "$ref": "#/components/responses/Error413"
+          },
+          "426": {
+            "$ref": "#/components/responses/Error426"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error429"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error500"
+          },
+          "501": {
+            "$ref": "#/components/responses/Error501"
+          },
+          "502": {
+            "$ref": "#/components/responses/Error502"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error503"
+          }
+        },
+        "security": [
+          {
+            "bearerApiKey": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "summary": "List the file transfers that touch your Workers or that you started (administrators: all).",
+        "x-minion-actions": [
+          "file_read"
+        ],
+        "x-minion-guards": [],
+        "x-minion-mutates": false,
+        "x-minion-scope": "hub",
+        "x-minion-session-only": false,
+        "x-minion-stream": false,
+        "x-minion-unreleased": true,
+        "x-minion-write": false
+      },
+      "post": {
+        "operationId": "file_transfers_list",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FileTransfersListArgs"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FileTransfersListResult"
+                }
+              }
+            },
+            "description": "The result of the operation."
+          },
+          "400": {
+            "$ref": "#/components/responses/Error400"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error403"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error404"
+          },
+          "405": {
+            "$ref": "#/components/responses/Error405"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error409"
+          },
+          "410": {
+            "$ref": "#/components/responses/Error410"
+          },
+          "413": {
+            "$ref": "#/components/responses/Error413"
+          },
+          "426": {
+            "$ref": "#/components/responses/Error426"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error429"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error500"
+          },
+          "501": {
+            "$ref": "#/components/responses/Error501"
+          },
+          "502": {
+            "$ref": "#/components/responses/Error502"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error503"
+          }
+        },
+        "summary": "List the file transfers that touch your Workers or that you started (administrators: all).",
+        "x-minion-actions": [
+          "file_read"
+        ],
+        "x-minion-guards": [],
+        "x-minion-mutates": false,
+        "x-minion-scope": "hub",
+        "x-minion-session-only": false,
+        "x-minion-stream": false,
+        "x-minion-unreleased": true,
+        "x-minion-write": false
       }
     },
     "/api/v1/ops/grant_approve": {
