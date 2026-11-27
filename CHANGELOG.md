@@ -9,6 +9,7 @@
 - **`minion mcp`: a re-enrolled local Worker was judged by its old id** for the life of the server; the gate now asks the local Worker for its id on every call that needs it.
 - **Hub: a Worker's hidden-sessions choice could be stored for its previous owner.** `worker_hidden_sessions_set` checked the owner and wrote in separate steps; the owner is now checked again in the write's transaction, and a reassignment in between answers conflict ("the Worker changed owner; try again") with nothing stored. An administrator's choice (manage) is unchanged.
 - **Hub: the audit row of a REST write into a command shell did not name the grant.** Like the call stream, the REST path now adds `command_shell=<grant>` to the audit detail (and names the grant when no other is named).
+- **Worker: a busy answer that came before the write of the turn returned was lost.** The sender recorded the send after the write, so a fast Hub's busy answer was overwritten: the turn was held until the ack timeout (10 s) instead of the `retry_after_ms` the Hub named. The send is now recorded before the write (the flake of `TestBusyWaitIsBounded`).
 
 ## v0.24.2
 
