@@ -6049,6 +6049,9 @@
           "force": {
             "type": "boolean"
           },
+          "now": {
+            "type": "boolean"
+          },
           "version": {
             "type": "string"
           },
@@ -6088,6 +6091,9 @@
         "properties": {
           "at": {
             "format": "date-time",
+            "type": "string"
+          },
+          "detail": {
             "type": "string"
           },
           "error": {

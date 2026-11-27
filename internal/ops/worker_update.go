@@ -19,18 +19,37 @@ const (
 	UpdateStateRestarting  = "restarting"
 	UpdateStateFailed      = "failed"
 	UpdateStateRolledBack  = "rolled_back"
+
+	// States of the Android app's APK update (v0.24.0): the Worker downloads
+	// and verifies the APK (downloading), stages it in the app's private
+	// storage (staged), waits until no agent is busy and no client is attached
+	// (waiting_idle, unless "now"), hands it to the app (installing), which
+	// installs it with PackageInstaller. needs_confirmation: Android asks the
+	// user on the device (install unknown apps not allowed, Android 10/11, the
+	// silent-update throttle). The app restarts with the new version; a failed
+	// install is failed with the app's reason.
+	UpdateStateStaged            = "staged"
+	UpdateStateWaitingIdle       = "waiting_idle"
+	UpdateStateInstalling        = "installing"
+	UpdateStateNeedsConfirmation = "needs_confirmation"
 )
 
 // WorkerUpdateArgs are the arguments of worker_update.
 type WorkerUpdateArgs struct {
 	// WorkerID names the Worker; required through the Hub.
 	WorkerID string `json:"worker_id"`
-	// Version is the exact release to install, "vX.Y.Z" or "vX.Y.Z-rc.N". A
-	// channel ("latest", "0.9") is refused, and so is an older version.
+	// Version is the exact release to install, "vX.Y.Z" or "vX.Y.Z-rc.N"
+	// (the Android app also takes an APK-only "android-vX.Y.Z"). A channel
+	// ("latest", "0.9") is refused, and so is an older version.
 	Version string `json:"version"`
 	// Force updates a Worker whose sessions end on a restart (Windows ConPTY)
 	// while it has sessions. It never allows a downgrade.
 	Force bool `json:"force,omitempty"`
+	// Now installs an Android app update at once instead of waiting until no
+	// agent is busy and no client is attached ("Update now"): every session
+	// ends, kept sessions come back after the restart. Version may then also
+	// be an APK-only release "android-vX.Y.Z". Other Workers ignore it.
+	Now bool `json:"now,omitempty"`
 }
 
 // WorkerUpdateResult says whether the Worker started the update.
@@ -56,6 +75,9 @@ type WorkerUpdateStatus struct {
 	To      string     `json:"to,omitempty"`
 	Error   string     `json:"error,omitempty"`
 	At      *Timestamp `json:"at,omitempty"`
+	// Detail explains a state that is not an error, for example why an
+	// Android update waits ("an agent is working in session x").
+	Detail string `json:"detail,omitempty"`
 }
 
 func init() {
