@@ -355,14 +355,14 @@ func TestUsageExplainsMissingClaudeExporter(t *testing.T) {
 func TestUsageSessionsShowAccessKindWithoutHost(t *testing.T) {
 	at := time.Now().UnixMilli()
 	row := func(name string, custom bool) ops.UsageSessionRow {
-		return ops.UsageSessionRow{WorkerID: "build", LastSeen: at, UsageSession: ops.UsageSession{ID: ops.UsageID("fixture", name), Name: name, Harness: "claude", AuthMode: "api", CustomEndpoint: custom, Endpoint: "cpa.example", Source: "session-host", ObservedAt: at}}
+		return ops.UsageSessionRow{WorkerID: "build", LastSeen: at, UsageSession: ops.UsageSession{ID: ops.UsageID("fixture", name), Name: name, Harness: "claude", AuthMode: "api", CustomEndpoint: custom, Endpoint: "gateway.example", Source: "session-host", ObservedAt: at}}
 	}
 	result := ops.UsageListResult{Version: 1, AsOf: at, Sessions: []ops.UsageSessionRow{row("keyed", false), row("gateway", true)}}
 	connect(t, usagePageFixtures().reply(ops.OpUsageList, result))
 	res := get(t, adminServer(t), "/usage?view=sessions", "X-Test-Session", userHeader)
 	body := mainOf(t, res.Body.String())
 	mustHave(t, body, "API key", "Custom endpoint")
-	if strings.Contains(body, "cpa.example") || strings.Contains(body, "API credential") {
+	if strings.Contains(body, "gateway.example") || strings.Contains(body, "API credential") {
 		t.Fatalf("an endpoint host is shown:\n%s", body)
 	}
 }

@@ -15,14 +15,14 @@ This file is the contract between the app (Kotlin, `cc.nasz.minion.devicecontrol
 ./gradlew :app:testDebugUnitTest -PminionSpake2HostLib=<host build>/libminion_spake2.so   # host build: see app/src/main/cpp/CMakeLists.txt
 ```
 
-Flipping the default is a one-line change after the Nebula gate (design 9).
+Flipping the default is a one-line change after the device gate (design 9).
 
 ## Transports (legacy adb first, then TLS)
 
 The bridge keeps one verified adb connection and tries, in this order:
 
 1. **Legacy adb on `127.0.0.1:5555`** (`AdbLegacy.kt`, transport `legacy-loopback`). Used where the firmware
-   already runs adbd on TCP 5555 (`service.adb.tcp.port=5555`, as on the owner's projector); Minion never opens,
+   already runs adbd on TCP 5555 (`service.adb.tcp.port=5555`, as on some projectors and TV boxes); Minion never opens,
    enables or changes that port. Works without Wi-Fi and without pairing. Handshake (AOSP `protocol.txt`,
    `client/auth.cpp`, `daemon/auth.cpp`): `CNXN` -> adbd `AUTH TOKEN` (20 random bytes) -> `AUTH SIGNATURE` =
    RSA PKCS#1 v1.5 over the SHA-1 DigestInfo of the raw token (`RSA_sign(NID_sha1, token, 20)`; the token is not
@@ -144,5 +144,5 @@ The app never enables on a request from the socket; there is no `enable` op.
 Legacy adb on 127.0.0.1:5555 with the real adbd (token signature accepted by `RSA_verify`, the "Allow debugging?"
 dialog on the TV, silent reconnect after "Always allow", after a cold boot without Wi-Fi), pairing with real adbd
 (SPAKE2 + exporter interop), the Keystore key signing the TLS 1.3 handshake, the overlay
-over the TvSettings pairing screen without `onPause()`, NSD behaviour of the Nebula, `content call` provenance as
+over the TvSettings pairing screen without `onPause()`, NSD behaviour of the test TV, `content call` provenance as
 uid 2000, Wi-Fi loss handling, and all G-tests.

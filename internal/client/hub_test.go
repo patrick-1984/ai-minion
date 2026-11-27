@@ -506,7 +506,7 @@ func TestHubURLPolicy(t *testing.T) {
 		{"https://hub.example/?token=1", ErrHubURL},
 		{"https://hub.example/#frag", ErrHubURL},
 		{"http://hub.example", ErrHubInsecureScheme},
-		{"http://192.168.1.5:8080", ErrHubInsecureScheme},
+		{"http://192.0.2.5:8080", ErrHubInsecureScheme},
 		{"wss://hub.example", ErrHubURL},
 		{"https://hub.example", nil},
 		{"https://hub.example:8443/prefix", nil},

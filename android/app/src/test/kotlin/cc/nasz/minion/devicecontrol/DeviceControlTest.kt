@@ -237,27 +237,27 @@ class DeviceControlTest {
 
     // --- Endpoint choice (design 4.3) ----------------------------------------------------------------------------
 
-    private val own = setOf(InetAddress.getByName("192.168.1.20"), InetAddress.getByName("127.0.0.1"))
+    private val own = setOf(InetAddress.getByName("192.0.2.20"), InetAddress.getByName("127.0.0.1"))
     private fun svc(name: String, ip: String, port: Int) = AdbService(name, listOf(InetAddress.getByName(ip)), port)
 
     @Test fun nsdRecordsOfOtherDevicesAreIgnored() {
-        val choice = EndpointChooser.choose(null, listOf(svc("tv", "192.168.1.20", 37001), svc("phone", "192.168.1.30", 41000)), own)
+        val choice = EndpointChooser.choose(null, listOf(svc("tv", "192.0.2.20", 37001), svc("phone", "192.0.2.30", 41000)), own)
         assertEquals(EndpointChoice.Port(37001, "nsd"), choice)
-        assertEquals(EndpointChoice.None, EndpointChooser.choose(null, listOf(svc("phone", "192.168.1.30", 41000)), own))
+        assertEquals(EndpointChoice.None, EndpointChooser.choose(null, listOf(svc("phone", "192.0.2.30", 41000)), own))
     }
 
     @Test fun severalLocalCandidatesAreAmbiguous() {
-        val choice = EndpointChooser.choose(null, listOf(svc("a", "192.168.1.20", 37001), svc("b", "127.0.0.1", 37002)), own)
+        val choice = EndpointChooser.choose(null, listOf(svc("a", "192.0.2.20", 37001), svc("b", "127.0.0.1", 37002)), own)
         assertEquals(EndpointChoice.Ambiguous(2), choice)
         // Same port twice (two interfaces) is one candidate.
         assertEquals(EndpointChoice.Port(37001, "nsd"),
-            EndpointChooser.choose(null, listOf(svc("a", "192.168.1.20", 37001), svc("a2", "127.0.0.1", 37001)), own))
+            EndpointChooser.choose(null, listOf(svc("a", "192.0.2.20", 37001), svc("a2", "127.0.0.1", 37001)), own))
     }
 
     @Test fun manualPortWinsAndBadPortsAreIgnored() {
-        assertEquals(EndpointChoice.Port(40123, "manual"), EndpointChooser.choose(40123, listOf(svc("a", "192.168.1.20", 37001)), own))
-        assertEquals(EndpointChoice.Port(37001, "nsd"), EndpointChooser.choose(70000, listOf(svc("a", "192.168.1.20", 37001)), own))
-        assertEquals(EndpointChoice.None, EndpointChooser.choose(null, listOf(svc("a", "192.168.1.20", 0)), own))
+        assertEquals(EndpointChoice.Port(40123, "manual"), EndpointChooser.choose(40123, listOf(svc("a", "192.0.2.20", 37001)), own))
+        assertEquals(EndpointChoice.Port(37001, "nsd"), EndpointChooser.choose(70000, listOf(svc("a", "192.0.2.20", 37001)), own))
+        assertEquals(EndpointChoice.None, EndpointChooser.choose(null, listOf(svc("a", "192.0.2.20", 0)), own))
     }
 
     // --- Bridge frames, token, limits ----------------------------------------------------------------------------

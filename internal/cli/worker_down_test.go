@@ -31,7 +31,7 @@ func baseDown() workerDownDeps {
 		output:         func(context.Context, string, ...string) (string, error) { return "inactive\n", nil },
 		windowsService: func() (bool, error) { return false, nil },
 		euid:           func() int { return 1000 },
-		user:           func() string { return "patryk" },
+		user:           func() string { return "dana" },
 		sleep:          func(time.Duration) {},
 		stateFree:      func(string) bool { return true },
 	}
@@ -79,7 +79,7 @@ func TestWorkerDownPrintsTheSudoCommandForASystemService(t *testing.T) {
 	d := baseDown()
 	// "activating": the wait before an automatic restart counts as running.
 	d.output = func(_ context.Context, name string, args ...string) (string, error) {
-		if args[len(args)-1] == "minion-worker@patryk.service" && args[0] == "show" {
+		if args[len(args)-1] == "minion-worker@dana.service" && args[0] == "show" {
 			return "activating\n", nil
 		}
 		return "inactive\n", nil
@@ -89,7 +89,7 @@ func TestWorkerDownPrintsTheSudoCommandForASystemService(t *testing.T) {
 		return nil, nil
 	}
 	_, err := downCmd(t, d)
-	if err == nil || !strings.Contains(err.Error(), "sudo systemctl stop minion-worker@patryk.service") {
+	if err == nil || !strings.Contains(err.Error(), "sudo systemctl stop minion-worker@dana.service") {
 		t.Fatalf("err = %v", err)
 	}
 }

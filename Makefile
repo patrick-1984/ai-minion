@@ -32,7 +32,7 @@ TESTTAGS := $(if $(TAGS),-tags $(TAGS))
 LINT_TARGETS := linux/amd64 linux/arm64 linux/arm windows/amd64 windows/arm64 darwin/amd64 darwin/arm64
 LINT_TAGS    := tmux,e2e
 
-.PHONY: tray check-headless build cross test test-race lint lint-negative check-english check-tmux check-docs check-compose check-skeleton vuln e2e snapshot clean help
+.PHONY: tray check-headless build cross test test-race lint lint-negative check-english check-private-names check-tmux check-docs check-compose check-skeleton vuln e2e snapshot clean help
 
 help: ## List the targets
 	@grep -E '^[a-z-]+:.*## ' $(MAKEFILE_LIST) | sed -E 's/:.*## /\t/'
@@ -62,7 +62,7 @@ test: ## Run all tests (TAGS=tmux adds the tmux-tagged tests)
 test-race: ## Run all tests with the race detector, needs CGO (TAGS=tmux adds the tmux-tagged tests)
 	CGO_ENABLED=1 go test -race -timeout 20m $(TESTTAGS) ./...
 
-lint: check-tmux check-english check-docs check-skeleton check-headless ## Run go vet, golangci-lint (incl. import rules) for every release GOOS/GOARCH with the tmux and e2e tags, tmux, English, documentation-link and skeleton checks
+lint: check-tmux check-english check-private-names check-docs check-skeleton check-headless ## Run go vet, golangci-lint (incl. import rules) for every release GOOS/GOARCH with the tmux and e2e tags, tmux, English, private-name, documentation-link and skeleton checks
 	go vet -tags $(LINT_TAGS) ./...
 	@set -e; for t in $(LINT_TARGETS); do \
 		echo "golangci-lint GOOS=$${t%/*} GOARCH=$${t#*/} tags=$(LINT_TAGS)"; \
@@ -71,6 +71,9 @@ lint: check-tmux check-english check-docs check-skeleton check-headless ## Run g
 
 lint-negative: ## Prove that the import rules reject forbidden imports (scratch copy, no network)
 	GOLANGCI_LINT='$(GOLANGCI_LINT)' scripts/lint-negative.sh
+
+check-private-names: ## Fail if an owner-internal name (former private domain or app ID, internal address, device or Wi-Fi name) is in the tree
+	scripts/check-private-names.sh
 
 check-english: ## Fail on non-English letters in internal/ Go files (every line) and docs/
 	scripts/check-english.sh

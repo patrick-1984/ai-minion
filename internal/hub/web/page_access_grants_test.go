@@ -468,27 +468,27 @@ func TestAccessGrantMaskedRowOffersOnlyRevoke(t *testing.T) {
 // list users), and neither Approve nor the audit History is offered.
 func TestAccessGrantsMaskedRowsForAPlainUser(t *testing.T) {
 	list := ops.GrantListResult{Grants: []ops.Grant{
-		{ID: "g9", SourceWorkerID: "wP", SourceSession: "a session of patryk", SourceMasked: true, SourceProof: ops.GrantProofClaimed,
+		{ID: "g9", SourceWorkerID: "wP", SourceSession: "a session of dana", SourceMasked: true, SourceProof: ops.GrantProofClaimed,
 			TargetWorkerID: "wM", TargetSession: "notes", Level: ops.GrantLevelMessage, Authority: ops.GrantAuthorityOwner,
-			GrantedBy: "u-patryk", Revision: 2, SourceWorkerName: "patryk-work", TargetWorkerName: "marta-x1",
-			SourceOwner: "patryk", TargetOwner: "bob", State: ops.GrantStateActive},
+			GrantedBy: "u-dana", Revision: 2, SourceWorkerName: "dana-work", TargetWorkerName: "erin-x1",
+			SourceOwner: "dana", TargetOwner: "bob", State: ops.GrantStateActive},
 		{ID: "g8", SourceWorkerID: "wM", SourceSession: "notes", SourceProof: ops.GrantProofClaimed,
-			TargetWorkerID: "wP", TargetSession: "a session of patryk", TargetMasked: true, Level: ops.GrantLevelView,
-			Authority: ops.GrantAuthorityOwner, GrantedBy: "u-bob", Revision: 1, SourceWorkerName: "marta-x1",
-			TargetWorkerName: "patryk-work", SourceOwner: "bob", TargetOwner: "patryk", State: ops.GrantStateActive},
+			TargetWorkerID: "wP", TargetSession: "a session of dana", TargetMasked: true, Level: ops.GrantLevelView,
+			Authority: ops.GrantAuthorityOwner, GrantedBy: "u-bob", Revision: 1, SourceWorkerName: "erin-x1",
+			TargetWorkerName: "dana-work", SourceOwner: "bob", TargetOwner: "dana", State: ops.GrantStateActive},
 	}}
-	f := newFakeOps().reply(ops.OpGrantList, list).reply(ops.OpUsersList, ops.UsersListResult{Users: []ops.UserInfo{{ID: "u-patryk", Username: "patryk"}}})
+	f := newFakeOps().reply(ops.OpGrantList, list).reply(ops.OpUsersList, ops.UsersListResult{Users: []ops.UserInfo{{ID: "u-dana", Username: "dana"}}})
 	connect(t, f)
 	body := get(t, adminServer(t), pathAccessGrants, "X-Test-Session", userHeader).Body.String()
 	_, g9, _ := strings.Cut(body, `<tr id="grant-g9"`)
 	g9, _, _ = strings.Cut(g9, "</tr>")
-	mustHave(t, g9, `<em class="grant-masked">a session of patryk</em> @ patryk-work`, `<strong>notes</strong> @ marta-x1`,
+	mustHave(t, g9, `<em class="grant-masked">a session of dana</em> @ dana-work`, `<strong>notes</strong> @ erin-x1`,
 		`<span class="muted grant-user-id">another user</span> <span class="muted">owner</span>`,
 		"only Revoke", `id="grant-g9-revoke"`)
 	mustNotHave(t, g9, `id="grant-g9-level"`, "/access/grants/approve", "History", "/admin/audit")
 	_, g8, _ := strings.Cut(body, `<tr id="grant-g8"`)
 	g8, _, _ = strings.Cut(g8, "</tr>")
-	mustHave(t, g8, `<strong>notes</strong> @ marta-x1`, `<em class="grant-masked">a session of patryk</em> @ patryk-work`,
+	mustHave(t, g8, `<strong>notes</strong> @ erin-x1`, `<em class="grant-masked">a session of dana</em> @ dana-work`,
 		`<td data-label="Decided by">bob <span class="muted">owner</span></td>`)
 	if n := len(f.called(ops.OpUsersList)); n != 0 {
 		t.Errorf("a plain user's page asked users_list %d times", n)
@@ -498,13 +498,13 @@ func TestAccessGrantsMaskedRowsForAPlainUser(t *testing.T) {
 // D4: an administrator sees the name of the decider from users_list.
 func TestAccessGrantsDecidedByShowsTheUserName(t *testing.T) {
 	list := grantFixture()
-	list.Grants[1].GrantedBy = "u-patryk"
-	f := newFakeOps().reply(ops.OpGrantList, list).reply(ops.OpUsersList, ops.UsersListResult{Users: []ops.UserInfo{{ID: "u-patryk", Username: "patryk"}}})
+	list.Grants[1].GrantedBy = "u-dana"
+	f := newFakeOps().reply(ops.OpGrantList, list).reply(ops.OpUsersList, ops.UsersListResult{Users: []ops.UserInfo{{ID: "u-dana", Username: "dana"}}})
 	connect(t, f)
 	body := get(t, adminServer(t), pathAccessGrants, "X-Test-Session", adminHeader).Body.String()
 	mustHave(t, body, `<td data-label="Decided by">alice <span class="muted">owner</span></td>`,
-		`<td data-label="Decided by">patryk <span class="muted">administrator</span></td>`, `<td data-label="Granted" class="grant-level-cell">Control</td>`)
-	mustNotHave(t, body, ">u-patryk<")
+		`<td data-label="Decided by">dana <span class="muted">administrator</span></td>`, `<td data-label="Granted" class="grant-level-cell">Control</td>`)
+	mustNotHave(t, body, ">u-dana<")
 }
 
 // (e) ?worker= limits the list through grant_list and says so; ?source=

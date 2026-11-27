@@ -525,7 +525,7 @@ class MainActivity : Activity() {
         }
         val overrideHelp = TextView(this).apply {
             text = "Advanced: Hub address override (optional)\n" +
-                "Use only when this network's DNS cannot find the Hub. Enter the Hub's IP address, such as 10.3.3.6; " +
+                "Use only when this network's DNS cannot find the Hub. Enter the Hub's IP address, such as 192.0.2.10; " +
                 "the name comes from the Hub URL or the join token. " +
                 "TLS still checks the Hub's certificate name."
             textSize = 16f
@@ -580,7 +580,7 @@ class MainActivity : Activity() {
                         return@setOnClickListener
                     }
                     if (address == null) {
-                        overrideInput.error = "Enter an IPv4 or IPv6 address, such as 10.3.3.6, without a port."
+                        overrideInput.error = "Enter an IPv4 or IPv6 address, such as 192.0.2.10, without a port."
                         overrideInput.requestFocus()
                         return@setOnClickListener
                     }

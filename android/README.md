@@ -57,7 +57,7 @@ until the app is opened, which starts an Enabled Worker. The Worker's Go
 connection uses its own TLS and proxy settings.
 
 **Hub address override.** On a network whose DNS cannot resolve the Hub's
-name, enter the Hub's IP address (for example `10.3.3.6`) in the optional
+name, enter the Hub's IP address (for example `192.0.2.10`) in the optional
 **Advanced: Hub address override** field of **Pair with a Hub** or **Use a
 join token**. The app takes the hostname from the Hub URL or the join token
 and passes `MINION_HUB_DIAL_ADDRESS=<hostname>=<address>` to the Worker on

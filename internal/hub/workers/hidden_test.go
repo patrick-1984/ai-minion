@@ -39,7 +39,7 @@ func TestHiddenSessionPolicyTable(t *testing.T) {
 					if pol.Allows() != wantAllowed {
 						t.Fatalf("Allows = %v, want %v", pol.Allows(), wantAllowed)
 					}
-					msg := HiddenSessionRefusal("patryk-asus", f, pol)
+					msg := HiddenSessionRefusal("dana-asus", f, pol)
 					wantRefused := (name == "hidden" || name == "legacy windows" || (name == "pre-v0.9" && hub == config.HiddenSessionsDisabled)) && !wantAllowed
 					if (msg != "") != wantRefused {
 						t.Fatalf("refusal = %q, want refused=%v", msg, wantRefused)
@@ -47,12 +47,12 @@ func TestHiddenSessionPolicyTable(t *testing.T) {
 					if !wantRefused {
 						return
 					}
-					parts := []string{"New sessions on patryk-asus would be hidden (ConPTY inside the Worker: psmux is not installed", "winget install psmux", "minion worker up --foreground"}
+					parts := []string{"New sessions on dana-asus would be hidden (ConPTY inside the Worker: psmux is not installed", "winget install psmux", "minion worker up --foreground"}
 					switch name {
 					case "legacy windows":
-						parts = []string{"New sessions on patryk-asus may be hidden", "older than v0.10.0", "Update the Worker to v0.10.0 or later"}
+						parts = []string{"New sessions on dana-asus may be hidden", "older than v0.10.0", "Update the Worker to v0.10.0 or later"}
 					case "pre-v0.9":
-						parts = []string{"New sessions on patryk-asus may be hidden", "session host unknown", "Update the Worker to v0.10.0 or later"}
+						parts = []string{"New sessions on dana-asus may be hidden", "session host unknown", "Update the Worker to v0.10.0 or later"}
 					}
 					for _, part := range parts {
 						if !strings.Contains(msg, part) {

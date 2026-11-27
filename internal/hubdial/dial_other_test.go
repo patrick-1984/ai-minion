@@ -10,7 +10,7 @@ import (
 
 // Outside Android the override never applies, whatever the environment says.
 func TestDialIsTheIdentityOutsideAndroid(t *testing.T) {
-	t.Setenv(EnvName, "minion.example=10.3.3.6")
+	t.Setenv(EnvName, "minion.example=192.0.2.10")
 	if Dial(nil) != nil {
 		t.Fatal("Dial(nil) must stay nil, so http.Transport keeps its own default")
 	}

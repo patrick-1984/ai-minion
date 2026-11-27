@@ -1,14 +1,13 @@
-● Three asks are open, all running in the background:
-  - Backport W4/W5 → W6: the template port is running. After it come the review gate, publish, and a test on a throwaway workspace.
-  - Docs close-out (ask 25): the branch is being prepared. It ships after W4–W6, with the fix reports moved into home-lab's docs/upstream/backport-2026-11-23/.
-  - CPA: the sync job is live in hm-marketplace PR #42. Your decision is still needed on the dashboard branch: hold or drop it?
-  Ledger: ~/code/wb2/ASKS.md.
-✻ Waiting for 1 background agent and 1 dynamic workflow to finish
+● Three tasks are open, all running in the background:
+  - Port the parser change: the port is running. After it come the review, the release, and a test on a scratch machine.
+  - Docs close-out: the branch is being prepared. It ships after the port, with the fix notes moved into docs/notes/.
+  - Sync job: it is live in pull request #42. Your decision is still needed on the dashboard branch: hold or drop it?
+  Ledger: ~/code/project/TASKS.md.
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── backport ─
 ❯ hold the dashboard branch
 ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-  Opus 5.5 medium · wb2 · ● context 68%
+  Opus 5.5 medium · dev2 · ● context 68%
   ⏵⏵ auto mode on (shift+tab to cycle) · ← 2 agents · ↓ to manage
   ● main
-  ◯ general-purpose               Inserting status into cpa-keeper.md                                                                                                                                                3m 43s · ↓ 144.1k tokens
+  ◯ general-purpose               Inserting status into status-notes.md                                                                                                                                              3m 43s · ↓ 144.1k tokens
   ◯ backport-w4-w5-templates-re…  ▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱  0/1 · 1h03m · ↓ 348.6k tokens

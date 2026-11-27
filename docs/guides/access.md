@@ -11,7 +11,7 @@ One default holds everywhere: **nothing crosses Workers until someone decides it
 A **grant** is one decision: *source session S on Worker A may reach target T on Worker B at a level.*
 
 ```text
- grant:  session wb-4 on patryk-work  --may reach-->  session wb-3 on patryk-f5   at level Message
+ grant:  session wb-4 on dana-work  --may reach-->  session wb-3 on dana-f5   at level Message
          (source: always one named session)           (target: one session, or every shared session of the Worker)
 ```
 
