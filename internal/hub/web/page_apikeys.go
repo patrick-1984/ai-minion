@@ -78,6 +78,8 @@ func apiKeyActionChoices(admin bool) []Choice {
 		{Value: string(ops.ActionRead), Label: "Read", Help: "see Workers, sessions and screens", Selected: true},
 		{Value: string(ops.ActionOperate), Label: "Operate", Help: "type, send keys, create sessions, answer dialogs"},
 		{Value: string(ops.ActionMessage), Label: "Message", Help: "send messages to agent sessions only"},
+		{Value: string(ops.ActionFileRead), Label: "Pull files", Help: "list session folders and download files from them"},
+		{Value: string(ops.ActionFileWrite), Label: "Push files", Help: "upload files into session folders"},
 	}
 	if admin {
 		out = append(out, Choice{Value: string(ops.ActionManage), Label: "Manage", Help: "administer the Hub"})

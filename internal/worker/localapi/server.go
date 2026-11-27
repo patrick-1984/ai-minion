@@ -157,7 +157,7 @@ type ResultFrame struct {
 // FullActions returns every action: the local OS user is the local owner and
 // holds all of them (AD-22).
 func FullActions() []ops.Action {
-	return []ops.Action{ops.ActionRead, ops.ActionOperate, ops.ActionMessage, ops.ActionManage}
+	return []ops.Action{ops.ActionRead, ops.ActionOperate, ops.ActionMessage, ops.ActionManage, ops.ActionFileRead, ops.ActionFileWrite}
 }
 
 // Request is one op request as the server hands it to the [Executor].
@@ -179,8 +179,9 @@ type Request struct {
 	TmuxSocketUnknown bool
 	// ClientRule is [RequestFrame].ClientRule when it is a valid id, or "".
 	ClientRule string
-	// PeerPID is the pid of the connected process as the kernel reports it for
-	// the socket (SO_PEERCRED), never sent by the caller; 0 where unknown.
+	// PeerPID is the pid of the connected process as the kernel tells it
+	// (SO_PEERCRED, Linux), or 0 where it cannot be told. It is never sent
+	// by the client.
 	// Device control maps it to the caller's session for its audit.
 	PeerPID int
 }

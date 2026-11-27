@@ -4,5 +4,5 @@ package localapi
 
 import "net"
 
-// peerPID is 0 where the Worker does not read the peer credentials.
+// peerPID cannot tell the peer process on this platform.
 func peerPID(net.Conn) int { return 0 }

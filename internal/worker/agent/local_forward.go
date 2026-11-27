@@ -63,6 +63,9 @@ type callerPane struct {
 	Socket        string
 	ServerPID     int64
 	SocketUnknown bool
+	// PeerPID is the pid of the local caller process as the kernel told it
+	// (localapi.Request.PeerPID), or 0.
+	PeerPID int
 }
 
 // forwardSessionControl sends the local request rq to the Hub with the calling

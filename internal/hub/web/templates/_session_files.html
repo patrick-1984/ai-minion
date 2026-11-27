@@ -1,0 +1,42 @@
+{{define "files_panel"}}<section class="files-panel" id="files-panel" aria-labelledby="files-title" data-files-pull="{{.PullURL}}" data-files-push="{{.PushURL}}" data-files-upload="{{.UploadURL}}">
+  <link rel="stylesheet" href="/static/files.css">
+  <h3 id="files-title" class="sr-only">Files of {{.Session}} on {{.Worker}}</h3>
+  {{if .Unavailable}}<p class="notice notice-info" id="files-unavailable" role="status">{{.Unavailable}}</p>{{else}}
+  <p class="help">The folder of the session's pane. Download a file (an interrupted download can be resumed) or a folder as a .tar.gz archive{{if .Push}}, or upload one file into the folder shown{{end}}. Nothing here runs a file.</p>
+  <div class="files-list-wrap" id="files-list" hx-post="{{.ListURL}}" hx-trigger="load" hx-swap="innerHTML" aria-live="polite"><p class="muted">Loading the folder...</p></div>
+  <div class="files-transfers" id="files-transfers" aria-label="Transfers of this page"></div>
+  <p class="sr-only" id="files-live" role="status" aria-live="polite"></p>
+  {{if .Push}}<form class="files-upload" id="files-upload" aria-label="Upload a file to {{.Session}}" novalidate>
+    <div class="field">
+      <label for="files-upload-file">File to upload</label>
+      <input type="file" id="files-upload-file" name="file" aria-describedby="files-upload-help">
+      <span class="help" id="files-upload-help">One file, into the folder shown above. A file with the same name is kept unless you choose to replace it.</span>
+    </div>
+    <label class="check" for="files-upload-overwrite"><input type="checkbox" id="files-upload-overwrite" name="overwrite" value="1"> Replace a file with the same name</label>
+    <p class="form-error" id="files-upload-error" role="alert" hidden></p>
+    <div class="form-actions"><button type="submit" id="files-upload-submit">Upload</button></div>
+  </form>{{end}}
+  <script src="/static/session-files.js" defer></script>{{end}}
+</section>{{end}}
+{{define "files_list"}}<div class="files-list" data-files-dir="{{.Path}}">
+  <nav class="files-crumbs" aria-label="Folder path">
+    <form method="post" action="{{.ListURL}}" hx-post="{{.ListURL}}" hx-target="#files-list" hx-swap="innerHTML" class="inline-form"><input type="hidden" name="path" value=""><button type="submit" class="btn btn-secondary btn-sm"{{if not .Path}} aria-current="location"{{end}}>{{if .Root}}{{.Root}}{{else}}Session folder{{end}}</button></form>
+    {{range .Crumbs}}<span aria-hidden="true">/</span> <form method="post" action="{{$.ListURL}}" hx-post="{{$.ListURL}}" hx-target="#files-list" hx-swap="innerHTML" class="inline-form"><input type="hidden" name="path" value="{{.Path}}"><button type="submit" class="btn btn-secondary btn-sm"{{if eq .Path $.Path}} aria-current="location"{{end}}>{{.Label}}</button></form>
+    {{end}}
+  </nav>
+  {{if .Error}}<p class="form-error" role="alert">{{.Error}}</p>{{else}}
+  <div class="table-wrap"><table class="files-table">
+    <caption class="sr-only">Entries of {{if .Path}}{{.Path}}{{else}}the session folder{{end}}</caption>
+    <thead><tr><th scope="col">Name</th><th scope="col">Size</th><th scope="col">Modified (UTC)</th><th scope="col"><span class="sr-only">Actions</span></th></tr></thead>
+    <tbody>
+      {{if .HasUp}}<tr><td colspan="4"><form method="post" action="{{.ListURL}}" hx-post="{{.ListURL}}" hx-target="#files-list" hx-swap="innerHTML" class="inline-form"><input type="hidden" name="path" value="{{.Parent}}"><button type="submit" class="btn btn-secondary btn-sm">Up one folder</button></form></td></tr>{{end}}
+      {{range .Entries}}<tr>
+        <td data-label="Name">{{if .Dir}}<form method="post" action="{{$.ListURL}}" hx-post="{{$.ListURL}}" hx-target="#files-list" hx-swap="innerHTML" class="inline-form"><input type="hidden" name="path" value="{{.Path}}"><button type="submit" class="btn btn-secondary btn-sm" aria-label="Open folder {{.Name}}">{{.Name}}/</button></form>{{else}}<span class="files-name">{{.Name}}</span>{{end}}{{if .Skipped}} <span class="muted">({{.Skipped}})</span>{{end}}</td>
+        <td data-label="Size">{{.Size}}</td>
+        <td data-label="Modified">{{if .MTime}}<time datetime="{{.MTimeAt}}">{{.MTime}}</time>{{end}}</td>
+        <td data-label="Actions">{{if .File}}<button type="button" class="btn btn-secondary btn-sm" data-files-get data-kind="file" data-path="{{.Path}}" data-name="{{.Name}}" data-size="{{.Bytes}}" aria-label="Download {{.Name}}">Download</button>{{else if .Dir}}<button type="button" class="btn btn-secondary btn-sm" data-files-get data-kind="dir" data-path="{{.Path}}" data-name="{{.Name}}" aria-label="Download folder {{.Name}} as .tar.gz">Download .tar.gz</button>{{end}}</td>
+      </tr>{{else}}<tr><td colspan="4" class="muted">This folder is empty.</td></tr>{{end}}
+    </tbody>
+  </table></div>
+  {{if .Cursor}}<form method="post" action="{{.ListURL}}" hx-post="{{.ListURL}}" hx-target="#files-list" hx-swap="innerHTML" class="inline-form"><input type="hidden" name="path" value="{{.Path}}"><input type="hidden" name="cursor" value="{{.Cursor}}"><button type="submit" class="btn btn-secondary btn-sm">Next page</button></form>{{end}}{{end}}
+</div>{{end}}

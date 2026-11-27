@@ -15,7 +15,7 @@ import "strings"
 
 // strictPrefixes names the operation families that are strict as a whole,
 // future members included.
-var strictPrefixes = []string{"grant_", "access_"}
+var strictPrefixes = []string{"grant_", "access_", "file_"}
 
 // strictOps names the strict operations one by one. The prefixes cover them
 // too; the names are listed so that the set is readable in one place.
@@ -28,6 +28,12 @@ var strictOps = map[string]struct{}{
 	OpAccessExplain: {},
 	OpGrantBind:     {},
 	OpGrantHistory:  {},
+
+	OpFileList:          {},
+	OpFilePull:          {},
+	OpFilePush:          {},
+	OpFileReceipt:       {},
+	OpFileTransfersList: {},
 }
 
 // StrictArgs reports whether the operation name refuses unknown argument

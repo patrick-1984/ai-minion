@@ -149,8 +149,9 @@ func TestHubIdentityCodesAreDeclaredAfterTheOlderOnes(t *testing.T) {
 		CodeTLSRequired: 403, CodePassphraseInvalid: 403,
 	}
 	all := Codes()
-	// The tray codes of 0.15.0 (paused, new_sessions_blocked) follow them.
-	all = all[:len(all)-len(trayCodes)]
+	// The tray codes of 0.15.0 (paused, new_sessions_blocked) and the file
+	// transfer codes of 0.24.0 follow them.
+	all = all[:len(all)-len(trayCodes)-len(fileCodes)]
 	tail := all[len(all)-len(want):]
 	for _, c := range tail {
 		st, ok := want[c]
@@ -167,15 +168,46 @@ func TestHubIdentityCodesAreDeclaredAfterTheOlderOnes(t *testing.T) {
 	}
 }
 
-// trayCodes are the codes of the tray work (0.15.0), declared last.
+// trayCodes are the codes of the tray work (0.15.0), declared before the file
+// transfer codes.
 var trayCodes = map[Code]int{CodePaused: 503, CodeNewSessionsBlocked: 403}
 
-func TestTrayCodesAreDeclaredLast(t *testing.T) {
+func TestTrayCodesAreDeclaredBeforeTheFileCodes(t *testing.T) {
 	all := Codes()
+	all = all[:len(all)-len(fileCodes)]
 	for _, c := range all[len(all)-len(trayCodes):] {
 		st, ok := trayCodes[c]
 		if !ok || HTTPStatus(c) != st {
 			t.Errorf("code %q among the last %d: tray code %t, status %d", c, len(trayCodes), ok, HTTPStatus(c))
+		}
+	}
+}
+
+// fileCodes are the codes of the file transfer (files.v1, 0.24.0) with the
+// HTTP statuses of BRD section 5.10, declared last.
+var fileCodes = map[Code]int{
+	CodeFilesDisabled: 403, CodeFilesRootUnknown: 409, CodeFilesRootRefused: 403,
+	CodePathOutsideRoot: 400, CodePathProtected: 403, CodePathSensitive: 403,
+	CodeFileTypeRefused: 403, CodeTransferTooLarge: 413, CodeIntegrityFailed: 502,
+	CodeTransferExpired: 410,
+}
+
+func TestFileCodesAreDeclaredLastWithTheirStatuses(t *testing.T) {
+	names := map[Code]string{
+		CodeFilesDisabled: "files_disabled", CodeFilesRootUnknown: "files_root_unknown",
+		CodeFilesRootRefused: "files_root_refused", CodePathOutsideRoot: "path_outside_root",
+		CodePathProtected: "path_protected", CodePathSensitive: "path_sensitive",
+		CodeFileTypeRefused: "file_type_refused", CodeTransferTooLarge: "transfer_too_large",
+		CodeIntegrityFailed: "integrity_failed", CodeTransferExpired: "transfer_expired",
+	}
+	all := Codes()
+	for _, c := range all[len(all)-len(fileCodes):] {
+		st, ok := fileCodes[c]
+		if !ok || HTTPStatus(c) != st {
+			t.Errorf("code %q among the last %d: file code %t, status %d", c, len(fileCodes), ok, HTTPStatus(c))
+		}
+		if names[c] != string(c) {
+			t.Errorf("code %q: the wire name is %q", c, names[c])
 		}
 	}
 }

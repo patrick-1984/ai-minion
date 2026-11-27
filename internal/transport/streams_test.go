@@ -102,6 +102,7 @@ func TestKindPrefixBytes(t *testing.T) {
 		{KindOp, []byte{0x6f, 0x70}, "op"},
 		{KindCall, []byte{0x63, 0x61}, "call"},
 		{KindEvents, []byte{0x65, 0x76}, "ev"},
+		{KindFiles, []byte{0x66, 0x78}, "fx"},
 	} {
 		p := tc.k.Prefix()
 		if !bytes.Equal(p[:], tc.hex) {
@@ -121,10 +122,16 @@ func TestKindPrefixBytes(t *testing.T) {
 	if KindOp.Opener() != RoleHub || KindCall.Opener() != RoleWorker || KindEvents.Opener() != RoleWorker {
 		t.Fatal("wrong opener role")
 	}
+	if !KindFiles.OpenableBy(RoleHub) || !KindFiles.OpenableBy(RoleWorker) || KindFiles.OpenableBy(0) {
+		t.Fatal("fx must be openable by both roles and nobody else")
+	}
+	if KindOp.OpenableBy(RoleWorker) || KindCall.OpenableBy(RoleHub) || !KindOp.OpenableBy(RoleHub) {
+		t.Fatal("OpenableBy disagrees with Opener")
+	}
 }
 
 func TestParseKindRejectsEverythingElse(t *testing.T) {
-	valid := map[[2]byte]bool{{'o', 'p'}: true, {'c', 'a'}: true, {'e', 'v'}: true}
+	valid := map[[2]byte]bool{{'o', 'p'}: true, {'c', 'a'}: true, {'e', 'v'}: true, {'f', 'x'}: true}
 	for a := 0; a < 256; a++ {
 		for b := 0; b < 256; b++ {
 			p := [2]byte{byte(a), byte(b)}

@@ -99,6 +99,13 @@ type Grant struct {
 	// guard does not refuse, without force. Only on a Control grant that names
 	// one target session.
 	CommandShell bool `json:"command_shell,omitempty"`
+	// FilesPull and FilesPush are the file transfer flags (files.v1): the
+	// source session may list and pull files from the target (needs level
+	// view or more), or push files into it (needs level control). They are
+	// honoured only for a verified source; a grant stored before v0.24 has
+	// neither.
+	FilesPull bool `json:"files_pull,omitempty"`
+	FilesPush bool `json:"files_push,omitempty"`
 
 	// Display members, filled by the handler.
 	SourceWorkerName string `json:"source_worker_name,omitempty"`
@@ -163,6 +170,12 @@ type GrantSetArgs struct {
 	// a change (none on a create); a level below control clears it. true needs
 	// level control and a target session.
 	CommandShell *bool `json:"command_shell,omitempty"`
+	// FilesPull and FilesPush set the file transfer flags (see
+	// Grant.FilesPull). Absent keeps the stored flag on a change (unset on a
+	// create, so a new grant has no file access); files_push true needs level
+	// control.
+	FilesPull *bool `json:"files_pull,omitempty"`
+	FilesPush *bool `json:"files_push,omitempty"`
 }
 
 // Validate checks the shape of a grant. Whether the caller may decide it is
@@ -217,6 +230,9 @@ func (a GrantSetArgs) Validate() error {
 		if a.TargetSession == "" {
 			return invalid("command_shell", "a command shell names one target session")
 		}
+	}
+	if a.FilesPush != nil && *a.FilesPush && a.Level != GrantLevelControl {
+		return invalid("files_push", "pushing files needs level control")
 	}
 	return nil
 }

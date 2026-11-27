@@ -569,7 +569,7 @@ func TestRESTToATestWorkerEndToEnd(t *testing.T) {
 	mu.Lock()
 	req := seen[len(seen)-1]
 	mu.Unlock()
-	if req.Op != "send_text" || req.RequestID != rid || !slices.Equal(req.Actions, ops.ActionSet{ops.ActionMessage, ops.ActionOperate, ops.ActionRead}) {
+	if req.Op != "send_text" || req.RequestID != rid || !slices.Equal(req.Actions, ops.ActionSet{ops.ActionFileRead, ops.ActionFileWrite, ops.ActionMessage, ops.ActionOperate, ops.ActionRead}) {
 		t.Errorf("Worker saw %+v", req)
 	}
 

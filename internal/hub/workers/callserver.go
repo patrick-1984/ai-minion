@@ -829,6 +829,9 @@ func directGrantsOf(rows []store.SessionGrantRow) []authz.DirectGrant {
 			ID: g.ID, TargetWorkerID: g.TargetWorkerID, TargetSession: g.TargetSession, Level: g.Level,
 			Authority: g.Authority, GrantedBy: g.GrantedBy, SourceOwnerID: g.SourceOwnerID, TargetOwnerID: g.TargetOwnerID,
 			Suspended: g.SuspendedAt != nil, CommandShell: g.CommandShell,
+			// The file flags count only for a principal with verified file
+			// authority (authz.Principal.WithVerifiedFiles).
+			FilesPull: g.FilesPull, FilesPush: g.FilesPush,
 		}
 		if g.ExpiresAt != nil {
 			// A stored expiry always ends the grant, the zero time included.

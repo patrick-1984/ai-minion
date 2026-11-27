@@ -110,10 +110,28 @@ func (d localAPIDeps) start(_ context.Context, env *Env) (StopFunc, error) {
 	}
 	// F06: the executor reports the local writes it runs to the Hub.
 	ex.OnLocalWrite(newLocalReporter(calls, log).Enqueue)
+	// The receipts of this Worker's pulls wait in the outbox until the Hub
+	// acknowledges them, across connections and restarts (FR-15).
+	receipts := NewReceiptOutbox(env.Settings().StateDir, func(ctx context.Context, a ops.FileReceiptArgs) error {
+		cc, ok := calls().(*CallClient)
+		if !ok || cc == nil {
+			return apiErr(proto.CodeWorkerOffline, "", "no Hub connection")
+		}
+		return cc.Do(ctx, ops.OpFileReceipt, a, nil)
+	}, log)
+	if conn != nil {
+		conn.OnLink("file-receipts", receipts.Serve)
+	}
 	srv, err := localapi.New(localapi.Config{
 		Executor: localExecutor{
 			ex: ex, log: log, live: live, stateDir: env.Settings().StateDir, pipe: pipeSvc, calls: calls, stop: env.RequestStop,
-			instance: instance, enrollments: enrollments, pause: pause,
+			instance: instance, enrollments: enrollments, pause: pause, receipts: receipts,
+			master: func() masterFiles {
+				if m := masterFeature(env); m != nil {
+					return m.files
+				}
+				return nil
+			},
 		},
 		Logger: log,
 	})
@@ -150,6 +168,12 @@ type localExecutor struct {
 	stop func()
 	// pause is the pause of the Hub traffic (OpLocalPause); nil refuses it.
 	pause *PauseService
+	// receipts is the outbox of the receipts of this Worker's pulls
+	// (files_receipts.go); nil sends each receipt once.
+	receipts *ReceiptOutbox
+	// master returns the master lane's sender of a calling session's file
+	// ops (files.v1, WP12), or nil when there is none; looked up per call.
+	master func() masterFiles
 }
 
 func (l localExecutor) Execute(ctx context.Context, rq localapi.Request, progress func(json.RawMessage)) (json.RawMessage, error) {
@@ -211,12 +235,34 @@ func (l localExecutor) Execute(ctx context.Context, rq localapi.Request, progres
 	// The client rule labels a call this Worker sends on to the Hub, for the
 	// Hub's audit; nothing here decides by it.
 	ctx = WithClientRule(ctx, rq.ClientRule)
-	if forwardsToHub(rq.Op, rq.Args, l.ex.policy.WorkerID()) {
+	if isFileTransfer(rq.Op) {
+		// This Worker is the caller end of the transfer (caller_files_daemon.go).
 		if l.pause != nil && l.pause.Paused() {
 			return nil, l.protoError(rq.Op, pauseRefusal())
 		}
+		raw, err := l.fileCall(ctx, Request{Op: rq.Op, Actions: rq.Actions, Args: rq.Args}, callerPane{Pane: rq.Pane, Socket: rq.TmuxSocket, ServerPID: rq.TmuxServerPID, SocketUnknown: rq.TmuxSocketUnknown, PeerPID: rq.PeerPID})
+		if err != nil {
+			return nil, l.protoError(rq.Op, err)
+		}
+		return raw, nil
+	}
+	if forwardsToHub(rq.Op, rq.Args, l.ex.policy.WorkerID()) || forwardsFileList(rq.Op, rq.Args, l.ex.policy.WorkerID()) {
+		if l.pause != nil && l.pause.Paused() {
+			return nil, l.protoError(rq.Op, pauseRefusal())
+		}
+		if rq.Op == ops.OpFileList {
+			// A verified calling session lists on the master lane
+			// (caller_files_daemon.go); otherwise it is forwarded as before.
+			caller := callerPane{Pane: rq.Pane, Socket: rq.TmuxSocket, ServerPID: rq.TmuxServerPID, SocketUnknown: rq.TmuxSocketUnknown, PeerPID: rq.PeerPID}
+			if raw, handled, err := l.masterFileList(ctx, rq.Args, caller); handled {
+				if err != nil {
+					return nil, l.protoError(rq.Op, err)
+				}
+				return raw, nil
+			}
+		}
 		// The target is on another Worker: only the Hub reaches it.
-		raw, err := l.forwardSessionControl(ctx, Request{Op: rq.Op, Actions: rq.Actions, Args: rq.Args}, callerPane{Pane: rq.Pane, Socket: rq.TmuxSocket, ServerPID: rq.TmuxServerPID, SocketUnknown: rq.TmuxSocketUnknown})
+		raw, err := l.forwardSessionControl(ctx, Request{Op: rq.Op, Actions: rq.Actions, Args: rq.Args}, callerPane{Pane: rq.Pane, Socket: rq.TmuxSocket, ServerPID: rq.TmuxServerPID, SocketUnknown: rq.TmuxSocketUnknown, PeerPID: rq.PeerPID})
 		if err != nil {
 			return nil, l.protoError(rq.Op, err)
 		}

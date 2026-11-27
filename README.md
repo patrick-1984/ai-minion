@@ -190,6 +190,7 @@ denies later calls from the revoked attachment even if Claude presents a cached 
 | [Sign in with OIDC](docs/guides/oidc.md) | An identity provider with role claims |
 | [API keys and MCP](docs/guides/api-keys-and-mcp.md) | Scoped API keys, the CLI against a Hub, the read-only MCP server |
 | [Claude Code without per-command prompts](docs/guides/claude-code-standing-allow.md) | Using Minion from Claude Code without per-command prompts: `minion claude allow`, `status`, `revoke`, the target limit of `minion mcp`, the audit and the security trade-off |
+| [File transfer](docs/guides/file-transfer.md) | Copy files and folders between session folders, the CLI and the browser (v0.24.0): `minion files ls\|pull\|push`, who may transfer, the off switch `file_transfer` on each Worker, protected and sensitive names, limits, resume, security trade-offs |
 | [The pipe](docs/guides/pipe.md) | Sending a message to an agent and reading its replies |
 | [AI agents](docs/guides/agents.md) | `minion llm-help`, the Claude Code and Codex plugin (`/plugin marketplace add patrick-1984/ai-minion`), the Minion master |
 | [Access: who reaches what](docs/guides/access.md) | Start here for access between Workers: grants from one session to another (View, Message, Control), who may decide, Claimed and Verified sessions, the Access pages (matrix, Grants, Why?), revoking, why a call is refused |

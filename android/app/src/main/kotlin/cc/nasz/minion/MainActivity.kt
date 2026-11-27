@@ -65,6 +65,8 @@ class MainActivity : Activity() {
     private lateinit var allowInstalls: Button
     private lateinit var updatePolicy: Button
     private lateinit var share: CheckBox
+    private lateinit var fileTransfer: CheckBox
+    private lateinit var filesFolder: TextView
     private lateinit var done: Button
     private lateinit var pair: Button
     private lateinit var token: Button
@@ -235,7 +237,16 @@ class MainActivity : Activity() {
             minHeight = dp(48)
             setOnCheckedChangeListener { _, value -> if (!drawing) worker?.share(value) }
         }
+        fileTransfer = CheckBox(this).apply {
+            text = "Allow file transfer (Minion files folder)"
+            textSize = if (television) 18f else 16f
+            minHeight = dp(48)
+            setOnCheckedChangeListener { _, value -> if (!drawing) worker?.fileTransfer(value) }
+        }
+        filesFolder = label("", 15f, ink)
         page.addView(share, row(12))
+        page.addView(fileTransfer, row(2))
+        page.addView(filesFolder, row(2))
         reviewUsage = button("Review usage monitoring") { model.usage?.let(::showUsage) }
         page.addView(reviewUsage, row(6))
         forget = button("Forget this Hub") {
@@ -312,6 +323,9 @@ class MainActivity : Activity() {
         enable.text = Autostart.enableLabel(running)
         disable.visible(configured && value.boot && !value.busy)
         share.visible(configured && !value.busy)
+        // A local setting: it can be switched off before the first pairing.
+        fileTransfer.visible(!value.busy)
+        filesFolder.show(if (value.busy) "" else filesLine(value))
         reviewUsage.visible(value.usage?.accepted == false && !value.busy)
         forget.visible(configured && !value.wanted && !value.busy)
         clearOverride.visible(value.dialOverride.isNotBlank() && !value.wanted && !value.busy)
@@ -328,7 +342,7 @@ class MainActivity : Activity() {
             it.text = value.deviceControl.ifEmpty { "Device control: off" }
         }
         val controls = listOfNotNull(
-            installUpdate, done, pair, token, start, pause, stop, enable, disable, share, reviewUsage, forget, clearOverride,
+            installUpdate, done, pair, token, start, pause, stop, enable, disable, share, fileTransfer, reviewUsage, forget, clearOverride,
             allowInstalls, updatePolicy, deviceControl,
         )
         for (control in controls) control.isEnabled = worker != null
@@ -336,6 +350,8 @@ class MainActivity : Activity() {
             controls.firstOrNull { it.isEnabled && it.visibility == View.VISIBLE }?.requestFocus()
         }
         share.isChecked = value.share
+        // Default on: unknown ("") shows the Worker's default.
+        fileTransfer.isChecked = value.fileTransfer != NativeWorker.FILE_TRANSFER_OFF
         drawing = false
         // Not over a pairing in progress: only once the Hub knows this Worker.
         if (configured && value.paired && value.code.isBlank() && !value.busy && worker != null && installQuestion == null &&
@@ -461,6 +477,23 @@ class MainActivity : Activity() {
                 "\n${update.reason}")
         } else if (update.lastResult.isNotBlank()) {
             lines.add(update.lastResult)
+        }
+        return lines.joinToString("\n")
+    }
+
+    // The folder line under the file transfer setting: the folder, a one-way
+    // value saved with the CLI, and why this device cannot transfer files.
+    private fun filesLine(value: WorkerView): String {
+        val lines = mutableListOf<String>()
+        if (value.filesUnavailable.isNotBlank()) {
+            lines.add("Not supported on this device (${value.filesUnavailable})")
+        }
+        when (value.fileTransfer) {
+            NativeWorker.FILE_TRANSFER_SEND_ONLY -> lines.add("Send only: files may leave this device, none arrive.")
+            NativeWorker.FILE_TRANSFER_RECEIVE_ONLY -> lines.add("Receive only: files may arrive on this device, none leave.")
+        }
+        if (value.filesFolder.isNotBlank()) {
+            lines.add("Files move only in and out of this folder (~/Minion files in a terminal session):\n${value.filesFolder}")
         }
         return lines.joinToString("\n")
     }

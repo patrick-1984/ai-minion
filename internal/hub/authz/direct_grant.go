@@ -56,6 +56,12 @@ type DirectGrant struct {
 	// CommandShell marks TargetSession as a command shell of the calling
 	// session (A116). It grants nothing: see [Authorizer.CommandShellGrant].
 	CommandShell bool
+	// FilesPull and FilesPush are the file transfer flags of the grant
+	// (files.v1): file_read on a target session (any level), file_write on
+	// a target session (level Control only). They count only for a
+	// principal whose calling session is verified
+	// ([Principal.WithVerifiedFiles]); a claimed source never carries them.
+	FilesPull, FilesPush bool
 }
 
 // ExpiryAt returns the ExpiresAt of a grant that ends at t.
@@ -217,7 +223,7 @@ func (a *Authorizer) GrantIDs(ctx context.Context, p Principal, accepted ops.Act
 	}
 	var ids []string
 	for _, g := range p.directList() {
-		if accepted.Permits(sub.directFor(g, resolved)...) {
+		if accepted.Permits(append(sub.directFor(g, resolved), sub.directFileFor(g, resolved)...)...) {
 			ids = append(ids, g.ID)
 		}
 	}

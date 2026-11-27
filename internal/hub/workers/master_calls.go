@@ -333,6 +333,22 @@ func (m *MasterControl) runMasterCall(ctx context.Context, c Call) (any, error) 
 	// The session of the bound lease: the Hub verified the incarnation that
 	// holds it, whether a nomination or verified grants authorize the call.
 	req.source = verifiedSource(auth.session)
+	if isFileOp(op) {
+		// A transfer outlives this call: its re-decisions read the authority
+		// of the lease again, so a revoked grant, an ended nomination or a
+		// lost lease stops it (BRD 5.6).
+		target, session := req.WorkerID, req.Session
+		req.fileRefresh = func(ctx context.Context) (authz.Principal, error) {
+			fresh, _, err := m.masterAuthority(ctx, c)
+			if err != nil {
+				return authz.Principal{}, err
+			}
+			if !fresh.reach[target][session] {
+				return authz.Principal{}, errMasterDenied
+			}
+			return fresh.principal(c.Worker.ID), nil
+		}
+	}
 	if op == ops.OpSendText && len(auth.direct) != 0 {
 		// The bound prompt was validated as agent-only, submitted and
 		// unforced: a terminal that holds message but not operate on the
@@ -505,6 +521,15 @@ func masterRoute(requestID, op string, raw json.RawMessage) (CallRequest, error)
 			return r, proto.NewError(proto.CodeInvalidArgument, "a master prompt requires normal submission and a matching request ID")
 		}
 		r.WorkerID, r.Session, r.Args = a.Target.WorkerID, a.Target.SessionName, prompt
+	case ops.OpFileList, ops.OpFilePull, ops.OpFilePush:
+		// files.v1 (BRD 5.6): the file ops of a session caller whose
+		// incarnation the Hub verified. The transfer service admits them on
+		// the file flags of the verified grants and acceptances.
+		t, args, err := masterFileArgs(op, raw)
+		if err != nil {
+			return r, err
+		}
+		r.WorkerID, r.Session, r.Args = t.WorkerID, t.SessionName, args
 	default:
 		return r, proto.NewError(proto.CodeForbidden, "operation is outside the master catalog")
 	}
@@ -512,6 +537,40 @@ func masterRoute(requestID, op string, raw json.RawMessage) (CallRequest, error)
 		return r, proto.NewError(proto.CodeInvalidArgument, "the master target must identify a Worker")
 	}
 	return r, nil
+}
+
+// masterFileArgs decodes the arguments of a file op of the master lane and
+// returns its target and the arguments as a value.
+func masterFileArgs(op string, raw json.RawMessage) (ops.Target, any, error) {
+	var args ops.Validator
+	switch op {
+	case ops.OpFileList:
+		args = &ops.FileListArgs{}
+	case ops.OpFilePull:
+		args = &ops.FilePullArgs{}
+	default:
+		args = &ops.FilePushArgs{}
+	}
+	if err := proto.DecodeMasterJSON(raw, args); err != nil {
+		return ops.Target{}, nil, err
+	}
+	if err := args.Validate(); err != nil {
+		return ops.Target{}, nil, proto.NewError(proto.CodeInvalidArgument, "invalid master file operation arguments")
+	}
+	switch a := args.(type) {
+	case *ops.FileListArgs:
+		return a.Target, *a, nil
+	case *ops.FilePullArgs:
+		return a.Target, *a, nil
+	case *ops.FilePushArgs:
+		return a.Target, *a, nil
+	}
+	return ops.Target{}, nil, proto.NewError(proto.CodeInternal, "unreadable master file operation")
+}
+
+// isFileOp reports whether op is a file op of the master lane.
+func isFileOp(op string) bool {
+	return op == ops.OpFileList || op == ops.OpFilePull || op == ops.OpFilePush
 }
 
 // recordMasterWrite audits a bound master's write; session is the session

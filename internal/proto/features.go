@@ -84,6 +84,15 @@ const (
 	// can save and rebuild a session layout (tmux, also the Android managed
 	// tmux; not psmux or ConPTY on Windows).
 	FeatureSessionKeepV1 = "session.keep.v1"
+
+	// FeatureFilesV1: the Worker serves the file transfer ops (file_list,
+	// file_pull, file_push) and the data legs of stream kind "fx" (HTTP/1.1
+	// GET or PUT of FilesLegPath on one stream per leg, see files.go). The Hub
+	// opens a data leg only to a Worker that announced it, and a client sends a
+	// file op only to such a Worker (ops.RequiredFeatures). A Worker announces
+	// it only when its host proved a root source, or with no transfer end at
+	// all (Windows in v1 answers every file op with files_root_unknown).
+	FeatureFilesV1 = "files.v1"
 )
 
 // Limits of an announced feature list. The hello is at most 64 KiB already;

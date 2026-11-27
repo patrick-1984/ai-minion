@@ -194,3 +194,41 @@ func CheckPasteText(text string) error {
 	}
 	return ops.CheckPasteText(text)
 }
+
+// ErrNoPaneDir means the host cannot report the folder of a pane in a way the
+// file transfer can verify (psmux on Windows, ConPTY): the file ops answer
+// files_root_unknown there.
+var ErrNoPaneDir = errors.New("term: the host cannot report the folder of a pane")
+
+// PaneDir is what a host reports about the folder of one pane: the process id
+// of the pane's first process and its current directory as the multiplexer
+// sees it (tmux #{pane_pid} and #{pane_current_path}). It is the input of the
+// root proof of the file transfer (internal/filexfer.OpenPaneRoot), which opens
+// the process's own working directory and cross-checks it against Path; the
+// path alone is never trusted and is never sent anywhere.
+type PaneDir struct {
+	PID  int
+	Path string
+}
+
+// PaneDirOpener is an optional port of a SessionHost (files.v1): a host that
+// implements it reports the folder of a pane. The Worker announces
+// proto.FeatureFilesV1 only for such a host. PaneDir returns ErrPaneChanged
+// when the pane's process is no longer the one of pane, ErrNotFound when the
+// pane is gone and ErrNoPaneDir when the host cannot tell.
+type PaneDirOpener interface {
+	PaneDir(ctx context.Context, pane PaneRef) (PaneDir, error)
+}
+
+// PaneDirOf returns the PaneDirOpener of host, if it has one that can report
+// folders.
+func PaneDirOf(host SessionHost) (PaneDirOpener, bool) {
+	o, ok := host.(PaneDirOpener)
+	if !ok {
+		return nil, false
+	}
+	if c, ok := host.(interface{ ReportsPaneDirs() bool }); ok && !c.ReportsPaneDirs() {
+		return nil, false
+	}
+	return o, true
+}

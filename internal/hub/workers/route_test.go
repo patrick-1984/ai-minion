@@ -532,7 +532,7 @@ func TestCallRoutesAReadWithTheEffectiveActions(t *testing.T) {
 	if req.Type != proto.TypeOpRequest || req.Op != "session_snapshot" || !ops.ValidUUIDv7(req.RequestID) {
 		t.Errorf("request = %+v", req)
 	}
-	if want := (ops.ActionSet{ops.ActionMessage, ops.ActionOperate, ops.ActionRead}); !reflect.DeepEqual(req.Actions, want) {
+	if want := (ops.ActionSet{ops.ActionFileRead, ops.ActionFileWrite, ops.ActionMessage, ops.ActionOperate, ops.ActionRead}); !reflect.DeepEqual(req.Actions, want) {
 		t.Errorf("actions = %v, want the owner's %v", req.Actions, want)
 	}
 	var args ops.SessionSnapshotArgs
@@ -598,7 +598,7 @@ func TestAdminActionsIncludeManageAndAKeyGetsItsScope(t *testing.T) {
 	if _, err := r.rt.Call(context.Background(), CallRequest{Principal: routeRoot(), Op: ops.OpSessionsList, WorkerID: wBobBox.ID, Args: ops.SessionsListArgs{}}); err != nil {
 		t.Fatal(err)
 	}
-	want := ops.ActionSet{ops.ActionManage, ops.ActionMessage, ops.ActionOperate, ops.ActionRead}
+	want := ops.ActionSet{ops.ActionFileRead, ops.ActionFileWrite, ops.ActionManage, ops.ActionMessage, ops.ActionOperate, ops.ActionRead}
 	if got := st.request(t).Actions; !reflect.DeepEqual(got, want) {
 		t.Errorf("admin actions = %v, want %v", got, want)
 	}
@@ -893,7 +893,7 @@ func TestStreamRelaysElementsInOrder(t *testing.T) {
 	if !reflect.DeepEqual(got, []string{"one", "two"}) {
 		t.Errorf("elements = %v", got)
 	}
-	if req := st.request(t); req.Op != "pipe_wait" || !reflect.DeepEqual(req.Actions, ops.ActionSet{ops.ActionMessage, ops.ActionOperate, ops.ActionRead}) {
+	if req := st.request(t); req.Op != "pipe_wait" || !reflect.DeepEqual(req.Actions, ops.ActionSet{ops.ActionFileRead, ops.ActionFileWrite, ops.ActionMessage, ops.ActionOperate, ops.ActionRead}) {
 		t.Errorf("request = %+v", req)
 	}
 }
@@ -1192,7 +1192,7 @@ func TestInProcessHubRoutesToATestWorker(t *testing.T) {
 	mu.Lock()
 	last := seen[len(seen)-1]
 	mu.Unlock()
-	if last.Op != ops.OpSendText || last.RequestID != id || !reflect.DeepEqual(last.Actions, ops.ActionSet{ops.ActionMessage, ops.ActionOperate, ops.ActionRead}) {
+	if last.Op != ops.OpSendText || last.RequestID != id || !reflect.DeepEqual(last.Actions, ops.ActionSet{ops.ActionFileRead, ops.ActionFileWrite, ops.ActionMessage, ops.ActionOperate, ops.ActionRead}) {
 		t.Errorf("Worker saw %+v", last)
 	}
 

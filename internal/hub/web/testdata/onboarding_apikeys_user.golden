@@ -28,6 +28,8 @@
       <label class="check" for="act-0"><input type="checkbox" id="act-0" name="action" value="read" checked> Read <span class="muted">(see Workers, sessions and screens)</span></label>
       <label class="check" for="act-1"><input type="checkbox" id="act-1" name="action" value="operate"> Operate <span class="muted">(type, send keys, create sessions, answer dialogs)</span></label>
       <label class="check" for="act-2"><input type="checkbox" id="act-2" name="action" value="message"> Message <span class="muted">(send messages to agent sessions only)</span></label>
+      <label class="check" for="act-3"><input type="checkbox" id="act-3" name="action" value="file_read"> Pull files <span class="muted">(list session folders and download files from them)</span></label>
+      <label class="check" for="act-4"><input type="checkbox" id="act-4" name="action" value="file_write"> Push files <span class="muted">(upload files into session folders)</span></label>
       
     </fieldset>
     <div class="field">
