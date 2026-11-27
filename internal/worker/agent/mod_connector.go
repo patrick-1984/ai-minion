@@ -72,6 +72,9 @@ func (e *Executor) Features() []string {
 	if e.filesAnnounced() {
 		out = append(out, proto.FeatureFilesV1)
 	}
+	if e.appInstall.Load() != nil {
+		out = append(out, proto.FeatureAppInstallV1)
+	}
 	return proto.NormaliseFeatures(out)
 }
 

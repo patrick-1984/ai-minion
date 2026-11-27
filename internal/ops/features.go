@@ -30,6 +30,7 @@ import (
 //   - file_list, file_pull, file_push: proto.FeatureFilesV1. A Worker without
 //     it does not announce the ops either; the check also refuses a newer CLI
 //     against an older local daemon.
+//   - app_install, app_install_status: proto.FeatureAppInstallV1 (Android).
 //
 // Other ops, reads included, need nothing. An argument that cannot be read
 // requires every feature of the op, so a malformed request never weakens a
@@ -40,6 +41,8 @@ func RequiredFeatures(op string, args json.RawMessage) []string {
 		return []string{proto.FeatureAnswerReviewed}
 	case OpFileList, OpFilePull, OpFilePush:
 		return []string{proto.FeatureFilesV1}
+	case OpAppInstall, OpAppInstallStatus:
+		return []string{proto.FeatureAppInstallV1}
 	case OpSendText:
 		var a struct {
 			Text   string `json:"text"`

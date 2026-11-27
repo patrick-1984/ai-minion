@@ -93,6 +93,13 @@ const (
 	// it only when its host proved a root source, or with no transfer end at
 	// all (Windows in v1 answers every file op with files_root_unknown).
 	FeatureFilesV1 = "files.v1"
+
+	// FeatureAppInstallV1: the Android Worker serves app_install and
+	// app_install_status: it installs another app from an APK in its Minion
+	// files folder through the app's PackageInstaller (v0.25.0). Announced
+	// only by the Android app build, whose app supports it; the Hub routes the
+	// ops only to a Worker that announced it (ops.RequiredFeatures).
+	FeatureAppInstallV1 = "app.install.v1"
 )
 
 // Limits of an announced feature list. The hello is at most 64 KiB already;
