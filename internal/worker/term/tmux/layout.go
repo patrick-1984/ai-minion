@@ -94,16 +94,19 @@ func (c paneCodec) parseLayout(out string) (term.SessionLayout, error) {
 	return l, nil
 }
 
-// ServerID implements [term.LayoutKeeper]: the pid and start time of the
-// server, the server part of an instance id.
+// ServerID implements [term.LayoutKeeper]: an identity of the running server
+// that changes when the server is replaced. It is the identity of the server's
+// socket file (device, inode and change time): every new server creates a new
+// socket. This needs no session, so it works on every supported tmux version
+// (tmux 3.0a answers "no current target" to display-message without a
+// session). A server that is not running gives an error.
 func (h *Host) ServerID(ctx context.Context) (string, error) {
-	out, err := h.run(ctx, "display-message", "-p", "#{pid} #{start_time}")
-	if err != nil {
+	if _, err := h.run(ctx, "show-options", "-g", "-v", "exit-empty"); err != nil {
 		return "", err
 	}
-	id := strings.TrimSpace(string(out))
-	if f := strings.Fields(id); len(f) != 2 || !positiveDecimal(f[0]) || !decimal(f[1]) {
-		return "", fmt.Errorf("tmux: unexpected server identity %q", truncate(id, 40))
+	id, err := socketIdentity(h.socket)
+	if err != nil {
+		return "", fmt.Errorf("tmux: server identity: %w", err)
 	}
 	return id, nil
 }
