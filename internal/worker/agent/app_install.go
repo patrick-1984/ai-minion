@@ -209,7 +209,7 @@ func (a *appInstaller) inspect(ctx context.Context, rel string) (size int64, dig
 	if err != nil {
 		return 0, "", fileErr(err, "the Minion files folder cannot be opened")
 	}
-	defer root.Close()
+	defer func() { _ = root.Close() }()
 	f, err := root.OpenFile(rel)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
@@ -217,7 +217,7 @@ func (a *appInstaller) inspect(ctx context.Context, rel string) (size int64, dig
 		}
 		return 0, "", fileErr(err, "the file cannot be opened")
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	fi, err := f.Stat()
 	if err != nil {
 		return 0, "", internalErr("stat", err)
@@ -447,12 +447,12 @@ func (a *appInstaller) listAPKs() []ops.AppInstallFile {
 	if err != nil {
 		return out
 	}
-	defer root.Close()
+	defer func() { _ = root.Close() }()
 	d, err := root.OpenDir("")
 	if err != nil {
 		return out
 	}
-	defer d.Close()
+	defer func() { _ = d.Close() }()
 	entries, err := d.ReadDir(-1)
 	if err != nil {
 		return out
