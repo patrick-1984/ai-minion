@@ -162,6 +162,9 @@ type fakeEvStream struct {
 	closed   bool
 	reset    bool
 	writeErr error
+	// afterWrite, when set, runs inside WriteFrame after the frame is out and
+	// before the write returns: a Hub that answers before the writer resumes.
+	afterWrite func(json.RawMessage)
 }
 
 func newFakeEvStream() *fakeEvStream {
@@ -194,7 +197,19 @@ func (s *fakeEvStream) WriteFrame(v any) error {
 		return err
 	}
 	s.frames <- b
+	s.mu.Lock()
+	hook := s.afterWrite
+	s.mu.Unlock()
+	if hook != nil {
+		hook(b)
+	}
 	return nil
+}
+
+func (s *fakeEvStream) setAfterWrite(f func(json.RawMessage)) {
+	s.mu.Lock()
+	s.afterWrite = f
+	s.mu.Unlock()
 }
 
 func (s *fakeEvStream) Close() error {

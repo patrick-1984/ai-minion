@@ -8,7 +8,6 @@ import (
 	"io"
 	"log/slog"
 	"os"
-	"sync"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -216,19 +215,11 @@ func mcpGate(cmd *cobra.Command, deps mcpDeps, backend client.Backend) (claudeal
 }
 
 // localWorkerID returns a function that asks the local Worker behind b for its
-// id (the id its Hub gave it), once: the first answer with an id is kept for
-// the life of the server; a failure is asked again at the next call.
+// id (the id its Hub gave it) on every call: a Worker that enrolls again gets
+// a new id while minion mcp runs, and a call is judged by the id the Worker
+// has now, never by an earlier one.
 func localWorkerID(b client.Backend) func() (string, error) {
-	var (
-		mu sync.Mutex
-		id string
-	)
 	return func() (string, error) {
-		mu.Lock()
-		defer mu.Unlock()
-		if id != "" {
-			return id, nil
-		}
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
 		raw, err := b.Call(ctx, agent.OpLocalStatus, nil)
@@ -242,8 +233,7 @@ func localWorkerID(b client.Backend) func() (string, error) {
 		if !ops.ValidUUIDv7(reply.WorkerID) {
 			return "", errors.New("the local Worker has no Worker id")
 		}
-		id = reply.WorkerID
-		return id, nil
+		return reply.WorkerID, nil
 	}
 }
 

@@ -1,10 +1,24 @@
 # Changelog
 
-## Unreleased
+## v0.25.0
 
 ### Added
 
 - **Install other apps on an Android Worker without adb** (`app.install.v1`). Copy an APK into the app's Minion files folder with `minion files push`, then run `minion apps install --target <android-worker> <path> [--allow-new]`; `minion apps status` shows readiness, the last attempt and the APK files. The Worker confines the path to Minion files (no symbolic links, regular file, at most 512 MiB) and hands the SHA-256 to the app, which checks package, version and signer (no downgrade, same signer as the installed app, `--allow-new` for a new app, never Minion itself) and streams the APK into a PackageInstaller session against that digest. A first install needs one press of **Install <app>** on the Minion screen (D-pad, TV) or its notification; updates of apps Minion installed are silent on Android 12 and newer. New ops `app_install` (write) and `app_install_status`, the MCP tools of the same name, a form on the Hub's Android Worker page, and the action `app_install`: owners and administrators hold it, an API key only when its scope names it, and sessions of other Workers only through a verified Control grant or master acceptance with the new flag `apps_install` (default off, never implied by `files_push`). In a session, `minion apps install` and `minion apps status` (and the MCP tools) without a Hub API key go through the local Worker, which sends them on the master lane for a verified session (welcome flag `app_install_v1`, local socket feature `app.install.forward`); a claimed source is refused with a message that says how to get a verified one. Administrators set `apps_install` of a master acceptance on **Access > Minion control** (box **may install apps**, audited with `control_set_accept`). A preview-only Worker drops the action, and the Worker refuses an install that does not come through the Hub. Every request is audited with package, version code, signer SHA-256 and outcome. See [Installing Android apps](docs/guides/android-apps.md).
+
+## v0.24.3
+
+### Fixed
+
+- **`minion mcp` on the local control socket: a session named like a session code (`2024-11`) needed a `worker_id` under a standing allow rule.** Only the Hub resolves session codes; on the local socket (no Hub, no `--hub-worker`) such a name is a session of the local Worker, and the gate now judges it as one.
+- **`minion mcp`: an allowlist path whose directory is a file (ENOTDIR) refused every targeted read** although no allowlist can exist there; it now counts as no allowlist. A file that exists but cannot be read, or a directory that cannot be searched, still refuses (fail closed).
+- **`minion mcp`: a re-enrolled local Worker was judged by its old id** for the life of the server; the gate now asks the local Worker for its id on every call that needs it.
+- **Hub: a Worker's hidden-sessions choice could be stored for its previous owner.** `worker_hidden_sessions_set` checked the owner and wrote in separate steps; the owner is now checked again in the write's transaction, and a reassignment in between answers conflict ("the Worker changed owner; try again") with nothing stored. An administrator's choice (manage) is unchanged.
+- **Hub: the audit row of a REST write into a command shell did not name the grant.** Like the call stream, the REST path now adds `command_shell=<grant>` to the audit detail (and names the grant when no other is named).
+- **Worker: a busy answer that came before the write of the turn returned was lost.** The sender recorded the send after the write, so a fast Hub's busy answer was overwritten: the turn was held until the ack timeout (10 s) instead of the `retry_after_ms` the Hub named. The send is now recorded before the write (the flake of `TestBusyWaitIsBounded`).
+- **Worker: a local master process could be taken for dead when a signal interrupted the liveness check.** The pidfd poll returned EINTR (the Go runtime preempts with SIGURG) and that counted as an exited process; the poll is now asked again (the flake of `TestMasterBrokerUsesTheSocketProcess`).
+- The test Hub of the connector tests now ends a connection that is stopped right after its welcome, before it has its session (the flake of `TestReconnectsWhenTheHubRestarts`).
+- The Hub's pairing service reports a waiting Worker as pending only once its pairing row is read, so a test that waits for it no longer meets a row that is not written yet (the flake of `TestAPendingWorkerThatClosesItsConnectionIsDroppedAndItsIdIsFree`).
 
 ## v0.24.2
 

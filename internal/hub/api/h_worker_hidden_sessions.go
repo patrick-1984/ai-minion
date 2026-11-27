@@ -16,7 +16,7 @@ import (
 // *store.Store implements it.
 type WorkerHiddenSessionsStore interface {
 	WorkerOwner(ctx context.Context, id string) (string, error)
-	SetWorkerHiddenSessions(ctx context.Context, workerID string, allow *bool, by string) error
+	SetWorkerHiddenSessionsIfOwner(ctx context.Context, workerID string, allow *bool, by, expectedOwnerID string) error
 }
 
 var _ WorkerHiddenSessionsStore = (*store.Store)(nil)
@@ -52,43 +52,51 @@ var errWorkerHiddenNotAllowed = NewError(proto.CodeForbidden,
 	"only the owner of this Worker or an administrator can change its hidden-sessions choice")
 
 // allowed refuses a caller that is neither the Worker's owner nor holds
-// manage on it.
-func (h workerHiddenHandlers) allowed(ctx context.Context, p authz.Principal, workerID string) error {
+// manage on it. A caller allowed as the owner gets the owner back, so that
+// the write re-checks it in its transaction; a caller allowed by manage gets
+// "".
+func (h workerHiddenHandlers) allowed(ctx context.Context, p authz.Principal, workerID string) (string, error) {
 	if p.UserID == "" || p.Kind == authz.KindWorker {
-		return errWorkerHiddenNotAllowed
+		return "", errWorkerHiddenNotAllowed
 	}
 	owner, err := h.st.WorkerOwner(ctx, workerID)
 	switch {
 	case errors.Is(err, store.ErrWorkerNotFound):
-		return NewError(proto.CodeNotFound, "the Worker does not exist")
+		return "", NewError(proto.CodeNotFound, "the Worker does not exist")
 	case err != nil:
-		return err
+		return "", err
 	case owner == p.UserID:
-		return nil
+		return owner, nil
 	}
 	err = h.dec.Decide(ctx, p, ops.MustActionSet(ops.ActionManage), authz.WorkerResource{ID: workerID})
 	if err == nil {
-		return nil
+		return "", nil
 	}
 	if e := ErrorOf(err); e.Code != proto.CodeForbidden && e.Code != proto.CodeNotFound {
-		return err
+		return "", err
 	}
-	return errWorkerHiddenNotAllowed
+	return "", errWorkerHiddenNotAllowed
 }
 
 func (h workerHiddenHandlers) set(ctx context.Context, c *Call, a ops.WorkerHiddenSessionsSetArgs) (ops.WriteResult, error) {
 	if c.Identity.Actor == "" {
 		return ops.WriteResult{}, errWorkerHiddenNotAllowed
 	}
-	if err := h.allowed(ctx, c.Principal, a.WorkerID); err != nil {
+	owner, err := h.allowed(ctx, c.Principal, a.WorkerID)
+	if err != nil {
 		return ops.WriteResult{}, err
 	}
 	// The audit row (written by the dispatcher on the Worker) carries the
 	// new choice.
 	c.AuditDetail = "hidden_sessions=" + a.HiddenSessions
-	if err := h.st.SetWorkerHiddenSessions(ctx, a.WorkerID, a.Allow(), c.Identity.Actor); err != nil {
-		if errors.Is(err, store.ErrWorkerNotFound) {
+	// An owner's choice is stored only while that user still owns the
+	// Worker: a reassignment between the check and the write refuses it.
+	if err := h.st.SetWorkerHiddenSessionsIfOwner(ctx, a.WorkerID, a.Allow(), c.Identity.Actor, owner); err != nil {
+		switch {
+		case errors.Is(err, store.ErrWorkerNotFound):
 			return ops.WriteResult{}, NewError(proto.CodeNotFound, "the Worker does not exist")
+		case errors.Is(err, store.ErrWorkerOwnerChanged):
+			return ops.WriteResult{}, NewError(proto.CodeConflict, "the Worker changed owner; try again")
 		}
 		return ops.WriteResult{}, err
 	}

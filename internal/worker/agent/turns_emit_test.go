@@ -765,6 +765,39 @@ func TestBusyWaitIsBounded(t *testing.T) {
 	}
 }
 
+// A busy answer can arrive before the write of the turn has returned (a fast
+// Hub, a sender that was descheduled after the write): the hold it sets is
+// kept, and the turn goes out again after retry_after, not only at the ack
+// timeout. This was the flake of TestBusyWaitIsBounded under CPU load.
+func TestABusyAnswerBeforeTheWriteReturnsHoldsTheTurnForRetryAfter(t *testing.T) {
+	h := startTurns(t)
+	st := h.stream()
+	st.open(t)
+	answered := make(chan struct{})
+	var once sync.Once
+	st.setAfterWrite(func(b json.RawMessage) {
+		var tf turnFrame
+		if json.Unmarshal(b, &tf) != nil || tf.Type != FrameTurn {
+			return
+		}
+		once.Do(func() {
+			st.ackBusy(tf.TurnID, 0) // returns once the reader has handled it
+			close(answered)
+		})
+	})
+	id, _ := h.em.Emit(PendingTurn{MessageID: 7, Session: "minion-1", Text: "one"})
+	if tf := st.turn(t); tf.TurnID != id {
+		t.Fatalf("turn = %+v", tf)
+	}
+	<-answered
+	h.clk.tickDue(t, MinBusyWait) // the sender waits for the busy hold, not the ack timeout
+	if tf := st.turn(t); tf.TurnID != id {
+		t.Fatalf("turn after retry_after = %+v", tf)
+	}
+	st.ack(id, "stored")
+	waitPending(t, h.out, 0)
+}
+
 // A final rejection drops the turn and it is never sent again; a Hub that stays
 // busy does not keep a turn for ever.
 func TestARejectedTurnIsDroppedAndABusyHubDoesNotHoldATurnForEver(t *testing.T) {

@@ -161,7 +161,7 @@ func TestMCPGateUsesTheHubWorkerOnlyWithAHub(t *testing.T) {
 	}
 }
 
-func TestLocalWorkerIDIsAskedUntilKnownThenKept(t *testing.T) {
+func TestLocalWorkerIDIsAskedOnEveryCall(t *testing.T) {
 	b := &stubBackend{out: map[string]string{agent.OpLocalStatus: `{"state":"connecting"}`}}
 	id := localWorkerID(b)
 	if _, err := id(); err == nil {
@@ -170,13 +170,18 @@ func TestLocalWorkerIDIsAskedUntilKnownThenKept(t *testing.T) {
 	b.mu.Lock()
 	b.out[agent.OpLocalStatus] = `{"worker_id":"` + gateLocalWorker + `"}`
 	b.mu.Unlock()
-	for range 2 {
-		if got, err := id(); err != nil || got != gateLocalWorker {
-			t.Fatalf("id = %q, %v", got, err)
-		}
+	if got, err := id(); err != nil || got != gateLocalWorker {
+		t.Fatalf("id = %q, %v", got, err)
 	}
-	if n := len(b.ops()); n != 2 {
-		t.Fatalf("status asked %d times, want 2", n)
+	// The Worker enrolls again and gets a new id: the next call sees it.
+	b.mu.Lock()
+	b.out[agent.OpLocalStatus] = `{"worker_id":"` + gateHubWorker + `"}`
+	b.mu.Unlock()
+	if got, err := id(); err != nil || got != gateHubWorker {
+		t.Fatalf("id after re-enrolment = %q, %v", got, err)
+	}
+	if n := len(b.ops()); n != 3 {
+		t.Fatalf("status asked %d times, want 3", n)
 	}
 }
 

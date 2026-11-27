@@ -91,7 +91,13 @@ func (p *masterProcess) live() bool {
 	if p == nil {
 		return false
 	}
+	// A pidfd is readable once its process has exited. poll is never
+	// restarted after a signal handler, and the Go runtime preempts with
+	// SIGURG, so EINTR says nothing about the process: ask again.
 	n, err := unix.Poll([]unix.PollFd{{Fd: int32(p.fd), Events: unix.POLLIN}}, 0)
+	for err == unix.EINTR {
+		n, err = unix.Poll([]unix.PollFd{{Fd: int32(p.fd), Events: unix.POLLIN}}, 0)
+	}
 	if err != nil || n != 0 {
 		return false
 	}

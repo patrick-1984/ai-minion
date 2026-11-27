@@ -3,10 +3,12 @@ package api
 import (
 	"context"
 	"fmt"
+	"sync"
 
 	"github.com/patrick-1984/ai-minion/internal/hub/authz"
 	"github.com/patrick-1984/ai-minion/internal/hub/workers"
 	"github.com/patrick-1984/ai-minion/internal/ops"
+	"github.com/patrick-1984/ai-minion/internal/proto"
 )
 
 // WorkerRouter is what the Worker op handlers need; *workers.Router
@@ -82,6 +84,41 @@ func RegisterWorkerOp(r *Registry, name string, rt WorkerRouter) error {
 		if err != nil {
 			return nil, err
 		}
-		return rt.Call(ctx, req)
+		var shell commandShellNote
+		if op.Write {
+			req.CommandShell = shell.set
+		}
+		res, err := rt.Call(ctx, req)
+		shell.audit(c)
+		return res, err
 	})
+}
+
+// commandShellNote keeps the command shell grant (A116) the router reports
+// for a write, for its audit row: the same command_shell detail as the call
+// stream writes (the last decision wins, "" for none).
+type commandShellNote struct {
+	mu sync.Mutex
+	id string
+}
+
+func (n *commandShellNote) set(id string) {
+	n.mu.Lock()
+	n.id = id
+	n.mu.Unlock()
+}
+
+// audit adds the grant, when there is one, to the audit row the dispatcher
+// writes for c, and names it as the row's grant when none is named.
+func (n *commandShellNote) audit(c *Call) {
+	n.mu.Lock()
+	id := n.id
+	n.mu.Unlock()
+	if id == "" {
+		return
+	}
+	c.AuditDetail = proto.AppendDetail(c.AuditDetail, "command_shell="+id)
+	if c.AuditGrantID == "" {
+		c.AuditGrantID = id
+	}
 }

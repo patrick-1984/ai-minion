@@ -7,7 +7,7 @@ Run and steer terminal AI agents (Claude Code, Codex and others) in tmux session
 
 One binary, `minion` (also installed as `mn` by the Linux packages), is the Hub, the Worker, the command line and the MCP server.
 
-Version 0.24.2. License: Apache-2.0.
+Version 0.24.3. License: Apache-2.0.
 
 ## Start here
 
@@ -37,7 +37,7 @@ curl -fsSL https://github.com/patrick-1984/ai-minion/releases/latest/download/in
 
 **Docker (Hub):** see [Quick start: the Hub in Docker](#quick-start-the-hub-in-docker).
 
-The scripts install the latest `minion` (`MINION_VERSION=v0.24.2` picks one) after checking it against `checksums.txt` of the release: into `/usr/local/bin` when writable or `~/.local/bin` on Linux and macOS, into `%LOCALAPPDATA%\Programs\minion` (added to your user `PATH`) on Windows. When the session host is missing, the installer installs tmux with the system package manager on Linux and macOS, or psmux with WinGet on Windows. The install guides below also show the manual install that verifies the signature.
+The scripts install the latest `minion` (`MINION_VERSION=v0.24.3` picks one) after checking it against `checksums.txt` of the release: into `/usr/local/bin` when writable or `~/.local/bin` on Linux and macOS, into `%LOCALAPPDATA%\Programs\minion` (added to your user `PATH`) on Windows. When the session host is missing, the installer installs tmux with the system package manager on Linux and macOS, or psmux with WinGet on Windows. The install guides below also show the manual install that verifies the signature.
 
 A minimal local try-out, no Hub and no install beyond the binary and tmux:
 
@@ -73,7 +73,7 @@ docker run -d --name minion-hub --restart unless-stopped \
   -v "$PWD/admin_password.txt:/run/secrets/minion_admin_password:ro" \
   -e MINION_DATA_DIR=/data \
   -e MINION_ADMIN_PASSWORD_FILE=/run/secrets/minion_admin_password \
-  ghcr.io/patrick-1984/minion:v0.24.2 hub serve
+  ghcr.io/patrick-1984/minion:v0.24.3 hub serve
 
 docker logs minion-hub
 ```
@@ -106,7 +106,7 @@ services:
       - ./hub-data:/data
 
   hub:
-    image: ghcr.io/patrick-1984/minion:${MINION_VERSION:-v0.24.2}
+    image: ghcr.io/patrick-1984/minion:${MINION_VERSION:-v0.24.3}
     command: ["hub", "serve"]
     restart: unless-stopped
     depends_on:
@@ -130,7 +130,7 @@ services:
 
 ```dotenv
 # Image tag: an exact release, or a channel that follows new releases (0.8, 0, latest).
-MINION_VERSION=v0.24.2
+MINION_VERSION=v0.24.3
 
 # Where the Hub's port is published on the host. 127.0.0.1 keeps it on this machine
 # (for a reverse proxy on the same host); 0.0.0.0 publishes it on every interface.
@@ -191,7 +191,7 @@ denies later calls from the revoked attachment even if Claude presents a cached 
 | [Sign in with OIDC](docs/guides/oidc.md) | An identity provider with role claims |
 | [API keys and MCP](docs/guides/api-keys-and-mcp.md) | Scoped API keys, the CLI against a Hub, the read-only MCP server |
 | [Claude Code without per-command prompts](docs/guides/claude-code-standing-allow.md) | Using Minion from Claude Code without per-command prompts: `minion claude allow`, `status`, `revoke`, the target limit of `minion mcp`, the audit and the security trade-off |
-| [File transfer](docs/guides/file-transfer.md) | Copy files and folders between session folders, the CLI and the browser (v0.24.2): `minion files ls\|pull\|push`, who may transfer, the off switch `file_transfer` on each Worker, protected and sensitive names, limits, resume, security trade-offs |
+| [File transfer](docs/guides/file-transfer.md) | Copy files and folders between session folders, the CLI and the browser (v0.24.3): `minion files ls\|pull\|push`, who may transfer, the off switch `file_transfer` on each Worker, protected and sensitive names, limits, resume, security trade-offs |
 | [The pipe](docs/guides/pipe.md) | Sending a message to an agent and reading its replies |
 | [AI agents](docs/guides/agents.md) | `minion llm-help`, the Claude Code and Codex plugin (`/plugin marketplace add patrick-1984/ai-minion`), the Minion master |
 | [Access: who reaches what](docs/guides/access.md) | Start here for access between Workers: grants from one session to another (View, Message, Control), who may decide, Claimed and Verified sessions, the Access pages (matrix, Grants, Why?), revoking, why a call is refused |

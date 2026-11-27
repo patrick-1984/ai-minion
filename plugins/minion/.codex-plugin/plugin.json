@@ -1,6 +1,6 @@
 {
   "name": "minion",
-  "version": "0.24.2",
+  "version": "0.24.3",
   "description": "Operate Minion (github.com/patrick-1984/ai-minion) from Codex: detect an installed minion or install it, start and pair a Worker with a Hub, list, read and type into terminal sessions, and act as a Minion master once an administrator grants it. The skill is the same guide as \"minion llm-help\".",
   "author": { "name": "Minion maintainers" },
   "homepage": "https://github.com/patrick-1984/ai-minion",

@@ -33,7 +33,7 @@ func routeShellSend(t *testing.T, p authz.Principal, op, session string, admit f
 	}
 	told := "unset"
 	_, err := r.rt.Call(context.Background(), CallRequest{Principal: p, Op: op, WorkerID: wAlicePi1.ID, Session: session,
-		Args: args, granted: func([]string) {}, commandShell: func(id string) { told = id }, admit: admit})
+		Args: args, granted: func([]string) {}, CommandShell: func(id string) { told = id }, admit: admit})
 	if err != nil {
 		return proto.Origin{}, told, err
 	}
