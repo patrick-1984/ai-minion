@@ -16,7 +16,7 @@
 #   sudo mkdir -p ./hub-data && sudo chown 65532:65532 ./hub-data
 # before "docker compose up"; do that instead if you prefer to run no root container).
 #
-# MINION_VERSION selects the image tag: an exact version (v0.24.2), which is the
+# MINION_VERSION selects the image tag: an exact version (v0.24.3), which is the
 # default here, or a channel tag such as 0.8 or latest.
 #
 # The Hub speaks HTTPS on 8443 with a certificate it generates on first start
@@ -35,7 +35,7 @@ services:
       - ./hub-data:/data
 
   hub:
-    image: ghcr.io/patrick-1984/minion:${MINION_VERSION:-v0.24.2}
+    image: ghcr.io/patrick-1984/minion:${MINION_VERSION:-v0.24.3}
     command: ["hub", "serve"]
     restart: unless-stopped
     depends_on:
