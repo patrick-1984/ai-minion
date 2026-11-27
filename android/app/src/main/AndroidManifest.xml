@@ -52,5 +52,8 @@
 
         <!-- Reached only by the app's own explicit PendingIntent of an install session. -->
         <receiver android:name=".InstallStatusReceiver" android:exported="false" />
+
+        <!-- Reached only by the app's own explicit PendingIntent of an app install session (app_install). -->
+        <receiver android:name=".AppInstallStatusReceiver" android:exported="false" />
     </application>
 </manifest>

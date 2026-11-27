@@ -51,6 +51,8 @@ internal data class WorkerView(
     val fileTransfer: String = "",
     val filesFolder: String = "",
     val filesUnavailable: String = "",
+    // An app install from Minion files (app_install) and whether it waits for a confirmation here.
+    val appInstall: AppInstallView = AppInstallView(),
 )
 
 internal fun workerPreferences(context: Context): SharedPreferences =
@@ -93,6 +95,7 @@ class WorkerService : Service() {
     private lateinit var native: NativeWorker
     private lateinit var preferences: SharedPreferences
     private lateinit var updater: ApkUpdater
+    private lateinit var appInstaller: AppInstaller
     private var worker: java.lang.Process? = null
     private var tmux: java.lang.Process? = null
 
@@ -220,6 +223,8 @@ class WorkerService : Service() {
 
         fun installUpdate() = updater.installNow()
 
+        fun confirmAppInstall() = appInstaller.confirm()
+
         // Takes effect on the next start; only offered while the Worker is stopped.
         fun clearDialOverride() {
             queue.execute {
@@ -255,6 +260,8 @@ class WorkerService : Service() {
         preferences = workerPreferences(this)
         updater = ApkUpdater.get(this)
         updater.onChange = { queue.execute { publish() } }
+        appInstaller = AppInstaller.get(this)
+        appInstaller.onChange = { queue.execute { publish() } }
         getSystemService(NotificationManager::class.java).createNotificationChannel(
             NotificationChannel(CHANNEL, "Minion Worker", NotificationManager.IMPORTANCE_LOW)
         )
@@ -485,6 +492,7 @@ class WorkerService : Service() {
                 fileTransfer = native.fileTransferMode()
                 nextReport = now + 4_000
                 updater.poll(report, wanted && !busy && !stopping.get() && worker?.isAlive == true)
+                appInstaller.poll()
                 if (report?.optBoolean("paired") != true) {
                     usage = null
                     nextUsageReport = 0
@@ -598,7 +606,7 @@ class WorkerService : Service() {
             livePairing?.optString("code").orEmpty(), if (livePairing != null) expires else "",
             usage, preferences.getString(HubDialOverride.PREFERENCE, null).orEmpty(), updater.view,
             if (DeviceControl.available && DeviceControl.get(this).enabled) DeviceControl.get(this).statusLine() else "",
-            fileTransfer, native.minionFilesPath, filesUnavailable(r),
+            fileTransfer, native.minionFilesPath, filesUnavailable(r), appInstaller.view,
         )
         main.post {
             if (v != view) {
@@ -674,6 +682,7 @@ class WorkerService : Service() {
         networkCallback = null
         listener = null
         updater.onChange = null
+        appInstaller.onChange = null
         stopping.set(true)
         native.cancelCommand()
         queue.execute {

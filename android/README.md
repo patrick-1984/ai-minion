@@ -104,6 +104,17 @@ The line under the checkbox shows the folder path, and a value of
 finds no safe way to confine transfers on the device, it does not offer
 file transfer and the line says **Not supported on this device**.
 
+## Installing other apps
+
+An APK pushed into `Minion files` can be installed on the device without adb:
+`minion apps install --target <worker> <path in Minion files>` (add
+`--allow-new` for an app that is not installed yet). The first install of an
+app asks on the device: the Minion screen shows an **Install <app>** button
+(D-pad) and a notification. Updates of apps that Minion installed run
+silently on Android 12 and newer. Minion refuses itself, a downgrade and an
+APK signed with another key than the installed app. See
+[Installing Android apps](../docs/guides/android-apps.md).
+
 ## Rooted devices
 
 The Worker, terminal server and initial shells run under the Minion app UID.

@@ -433,7 +433,9 @@ internal class ApkUpdater private constructor(context: Context) {
 
     private fun abandonOwnSessions(installer: PackageInstaller) {
         for (info in runCatching { installer.mySessions }.getOrDefault(emptyList())) {
-            runCatching { installer.abandonSession(info.sessionId) }
+            // Sessions for other apps belong to AppInstaller.
+            val pkg = info.appPackageName
+            if (pkg == null || pkg == app.packageName) runCatching { installer.abandonSession(info.sessionId) }
         }
         confirmation = null
     }

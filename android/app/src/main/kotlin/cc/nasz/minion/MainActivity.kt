@@ -62,6 +62,7 @@ class MainActivity : Activity() {
     private lateinit var usageStatus: TextView
     private lateinit var updateStatus: TextView
     private lateinit var installUpdate: Button
+    private lateinit var installApp: Button
     private lateinit var allowInstalls: Button
     private lateinit var updatePolicy: Button
     private lateinit var share: CheckBox
@@ -118,10 +119,12 @@ class MainActivity : Activity() {
         updater.launcher = ::confirmUpdate
         // Back from the Install unknown apps page: read the switch again.
         updater.refresh()
+        AppInstaller.get(this).launcher = ::confirmUpdate
     }
 
     override fun onPause() {
         ApkUpdater.get(this).launcher = null
+        AppInstaller.get(this).launcher = null
         super.onPause()
     }
 
@@ -229,7 +232,9 @@ class MainActivity : Activity() {
         enable = button(Autostart.enableLabel(running = false)) { worker?.autostart(true) }
         disable = button(Autostart.DISABLE_LABEL) { worker?.autostart(false) }
         installUpdate = button("Install update") { installUpdateNow() }
-        for (action in listOf(installUpdate, done, pair, token, start, pause, stop, enable, disable)) page.addView(action, row(10))
+        // An app install from Minion files waits for the system confirmation (D-pad: no touch on TV).
+        installApp = button("Install app") { worker?.confirmAppInstall() }
+        for (action in listOf(installApp, installUpdate, done, pair, token, start, pause, stop, enable, disable)) page.addView(action, row(10))
 
         share = CheckBox(this).apply {
             text = "Share terminal sessions with the Hub"
@@ -334,6 +339,8 @@ class MainActivity : Activity() {
         installUpdate.visible(update.offer && !value.busy)
         installUpdate.text = if (update.state == ApkUpdater.NEEDS_CONFIRMATION) "Install update ${update.version} (confirm)"
             else "Install update ${update.version}".trim()
+        installApp.visible(value.appInstall.offer)
+        installApp.text = "Install ${value.appInstall.label}".trim()
         allowInstalls.visible(configured && !update.canInstall && update.selfSigned && update.policy != UpdatePolicy.OFF)
         updatePolicy.visible(configured && !value.busy)
         updatePolicy.text = "Updates: ${update.policy.label}"
@@ -342,7 +349,7 @@ class MainActivity : Activity() {
             it.text = value.deviceControl.ifEmpty { "Device control: off" }
         }
         val controls = listOfNotNull(
-            installUpdate, done, pair, token, start, pause, stop, enable, disable, share, fileTransfer, reviewUsage, forget, clearOverride,
+            installApp, installUpdate, done, pair, token, start, pause, stop, enable, disable, share, fileTransfer, reviewUsage, forget, clearOverride,
             allowInstalls, updatePolicy, deviceControl,
         )
         for (control in controls) control.isEnabled = worker != null
@@ -433,9 +440,9 @@ class MainActivity : Activity() {
         try {
             startActivity(confirm)
         } catch (_: ActivityNotFoundException) {
-            Toast.makeText(this, "Android could not show the update confirmation.", Toast.LENGTH_LONG).show()
+            Toast.makeText(this, "Android could not show the install confirmation.", Toast.LENGTH_LONG).show()
         } catch (_: SecurityException) {
-            Toast.makeText(this, "Android could not show the update confirmation.", Toast.LENGTH_LONG).show()
+            Toast.makeText(this, "Android could not show the install confirmation.", Toast.LENGTH_LONG).show()
         }
     }
 
