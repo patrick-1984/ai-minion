@@ -112,16 +112,17 @@ func TestUpgradeFromSchema42FileTransfer(t *testing.T) {
 	}
 }
 
-// The CHECKs of the grant flags: files_push only at level 3, both only on a
-// verified grant; unbinding clears them.
+// The CHECKs of the grant flags: files_push only at level 3; a new grant
+// carries them from its creation (no bound source); the deprecated unbind
+// clears them.
 func TestSessionGrantFileFlags(t *testing.T) {
 	f := newGrantFixture(t)
 	ctx := t.Context()
-	// A claimed grant (every new grant is) refuses the flags.
-	claimed := f.ownerGrant("boss")
-	claimed.FilesPull = true
-	if _, err := f.s.PutSessionGrant(ctx, claimed, 0, GrantWrite{ActorID: "alice"}); !errors.Is(err, ErrGrantInvalid) {
-		t.Fatalf("pull flag on a claimed grant: %v", err)
+	// A new grant saves the flags it is created with.
+	named := f.ownerGrant("boss")
+	named.TargetSession, named.FilesPull = "other", true
+	if g, err := f.s.PutSessionGrant(ctx, named, 0, GrantWrite{ActorID: "alice"}); err != nil || !g.FilesPull || g.FilesPush {
+		t.Fatalf("pull flag at create = %+v, %v", g, err)
 	}
 	row := f.ownerGrant("boss")
 	row.Level = 3

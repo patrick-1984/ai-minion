@@ -32,6 +32,11 @@ func (s *Store) BindSessionGrant(ctx context.Context, id, incarnation string, if
 		if ifRevision == 0 || cur.Revision != ifRevision {
 			return ErrGrantRevision
 		}
+		if !cur.NamedSource() {
+			// Deprecated binding names one source session; a Worker-wide or
+			// everyone grant has none.
+			return fmt.Errorf("%w: only a grant for one named source session can be bound", ErrGrantInvalid)
+		}
 		if err := pinGrantOwners(ctx, tx, cur); err != nil {
 			return err
 		}
@@ -106,8 +111,9 @@ type VerifiedGrantCaller struct {
 	IncarnationID string
 }
 
-// VerifiedSessionGrants takes one store snapshot of the verified grants of the
-// caller's incarnation (expired and suspended rows included, the decision
+// VerifiedSessionGrants takes one store snapshot of the grants of the
+// caller's incarnation: those pinned to it (legacy bound grants) and those
+// whose source selector covers its session (by name, Worker or everyone) (expired and suspended rows included, the decision
 // judges them). The source Worker must be enrolled as the caller says and its
 // session shared, else [ErrWorkerOwnerChanged] or [ErrMasterCandidate]. With a
 // target it is also the dispatch fence: the target Worker must be approved and
@@ -128,8 +134,11 @@ func (s *Store) VerifiedSessionGrants(ctx context.Context, c VerifiedGrantCaller
 		if err := requireMasterShare(ctx, tx, c.WorkerID, []string{c.SessionName}); err != nil {
 			return err
 		}
+		// The grants of this incarnation's session by name, by Worker or for
+		// everyone (a prepared terminal uses an ordinary grant it matches),
+		// and the legacy grants pinned to this very incarnation.
 		rows, err := tx.QueryContext(ctx, `SELECT `+sessionGrantCols+` FROM session_grant
-			WHERE source_worker_id = ? AND source_session = ? AND source_incarnation = ? ORDER BY created_at, id`,
+			WHERE `+grantSourceMatch("?3")+` ORDER BY created_at, id`,
 			c.WorkerID, c.SessionName, c.IncarnationID)
 		if err != nil {
 			return fmt.Errorf("store: verified session grants: %w", err)
@@ -162,7 +171,7 @@ func (s *Store) VerifiedSessionGrants(ctx context.Context, c VerifiedGrantCaller
 		admins := map[string]bool{}
 		usable := func(g SessionGrantRow) (bool, error) {
 			if g.TargetWorkerID != target.WorkerID || g.SuspendedAt != nil || g.ExpiresAt != nil && *g.ExpiresAt <= now ||
-				g.SourceOwnerID != c.OwnerID || g.TargetOwnerID != owner {
+				g.Scope() != GrantSourceEveryone && g.SourceOwnerID != c.OwnerID || g.TargetOwnerID != owner {
 				return false, nil
 			}
 			switch g.Authority {

@@ -69,7 +69,7 @@ func (s *Store) endSessionGrants(ctx context.Context, tx *sql.Tx, grants []Sessi
 		if err := s.InsertAudit(ctx, tx, AuditRow{
 			ID: NewID(), TS: now, Actor: AuditActorSystem, Action: AuditActionGrantEnd,
 			Target: grantAuditTarget(g), Outcome: "success",
-			Source: g.SourceWorkerID + ":" + g.SourceSession, GrantID: g.ID, Detail: "cause=" + cause,
+			Source: GrantSourceAudit(g), GrantID: g.ID, Detail: "cause=" + cause,
 		}); err != nil {
 			return total, err
 		}
@@ -105,7 +105,7 @@ func (s *Store) endGoneSessionGrants(ctx context.Context, tx *sql.Tx, workerID s
 	}
 	var drop []SessionGrantRow
 	for _, g := range all {
-		if (g.SourceWorkerID == workerID && gone(g.SourceSession)) ||
+		if (g.NamedSource() && g.SourceWorkerID == workerID && gone(g.SourceSession)) ||
 			(g.TargetWorkerID == workerID && g.TargetSession != "" && gone(g.TargetSession)) {
 			drop = append(drop, g)
 		}

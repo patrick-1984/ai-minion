@@ -5,17 +5,22 @@ import (
 	"testing"
 )
 
-// The apps_install flag (migration 0044): off on every new or existing row,
-// only on a verified Control grant, cleared by unbinding and by a lower
-// level; on an acceptance kept by a put without it, cleared by a revoke, and
+// The apps_install flag (migrations 0044, 0045): saved at create on a
+// Control grant (no bound source needed), refused below Control, cleared by
+// the deprecated unbind; on an acceptance kept by a put without it, cleared by a revoke, and
 // it alone makes the row a flag row of FileAcceptances.
 func TestAppsInstallFlag(t *testing.T) {
 	f := newGrantFixture(t)
 	ctx := t.Context()
-	claimed := f.ownerGrant("boss")
-	claimed.Level, claimed.AppsInstall = 3, true
-	if _, err := f.s.PutSessionGrant(ctx, claimed, 0, GrantWrite{ActorID: "alice"}); !errors.Is(err, ErrGrantInvalid) {
-		t.Fatalf("apps_install on a claimed grant: %v", err)
+	named := f.ownerGrant("boss")
+	named.TargetSession, named.Level, named.AppsInstall = "other", 3, true
+	if g, err := f.s.PutSessionGrant(ctx, named, 0, GrantWrite{ActorID: "alice"}); err != nil || !g.AppsInstall {
+		t.Fatalf("apps_install at create = %+v, %v", g, err)
+	}
+	view := f.ownerGrant("boss")
+	view.TargetSession, view.Level, view.AppsInstall = "third", 1, true
+	if _, err := f.s.PutSessionGrant(ctx, view, 0, GrantWrite{ActorID: "alice"}); !errors.Is(err, ErrGrantInvalid) {
+		t.Fatalf("apps_install at View: %v", err)
 	}
 	row := f.ownerGrant("boss")
 	row.Level = 3
