@@ -80,6 +80,19 @@ func newAPKFixture(t *testing.T) *apkFixture {
 		poll: 5 * time.Millisecond, handoverTTL: 300 * time.Millisecond,
 	}
 	f.app.write(apkAppState{Ready: true, InstalledVersionCode: 2_300_999})
+	// An update a test leaves running (for example one that waits for the
+	// confirmation on the device) ends here, before withVersion restores
+	// version.Version, which the update goroutine reads.
+	t.Cleanup(func() {
+		deadline := time.Now().Add(10 * time.Second)
+		for u.busy.Load() && time.Now().Before(deadline) {
+			u.apk.withdraw()
+			time.Sleep(2 * time.Millisecond)
+		}
+		if u.busy.Load() {
+			t.Error("the update goroutine did not end")
+		}
+	})
 	return f
 }
 
