@@ -145,7 +145,7 @@ func NewSession(conn net.Conn, role Role, opts SessionOptions) (*Session, error)
 	if st, ok := opts.FrameTap.(SessionTapper); ok {
 		opts.FrameTap = st.ForSession()
 	}
-	ac := &activityConn{Conn: conn, clk: opts.Keepalive.Clock}
+	ac := &activityConn{Conn: conn, clk: opts.Keepalive.Clock, base: opts.Keepalive.Clock.Now()}
 	ac.touch()
 
 	cfg := yamux.DefaultConfig()
@@ -233,6 +233,53 @@ func (s *Session) NumStreams() int { return s.ys.NumStreams() }
 
 // Ping sends a yamux ping and returns the round trip time.
 func (s *Session) Ping() (time.Duration, error) { return s.ys.Ping() }
+
+// LastRead returns when bytes last arrived from the peer: the last moment the
+// link was known to work. It carries the clock's monotonic reading, so
+// clk.Now().Sub(LastRead()) is the silence even across wall-clock steps.
+func (s *Session) LastRead() time.Time { return s.conn.lastRead() }
+
+// Probe verifies the link now: it pings the peer and waits up to timeout
+// (zero means ProbeTimeout) for the answer, or for any other bytes from the
+// peer. A link that does not answer is declared dead: the session is closed
+// with ErrKeepaliveTimeout and the error is returned. It is what a caller uses
+// when it has a reason to doubt the link (the network changed, the device
+// resumed), instead of waiting for the keepalive's DeadAfter.
+func (s *Session) Probe(ctx context.Context, timeout time.Duration) error {
+	if timeout <= 0 {
+		timeout = ProbeTimeout
+	}
+	select {
+	case <-s.done:
+		return s.Err()
+	default:
+	}
+	before := s.conn.lastRead()
+	res := make(chan error, 1)
+	go func() {
+		_, err := s.ys.Ping()
+		res <- err
+	}()
+	clk := s.opts.Keepalive.Clock
+	select {
+	case err := <-res:
+		if err == nil {
+			return nil
+		}
+	case <-clk.After(timeout):
+	case <-s.done:
+		return s.Err()
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	if s.conn.lastRead().After(before) {
+		// Something arrived meanwhile (the ping was only queued behind a
+		// large write): the peer is alive.
+		return nil
+	}
+	s.shutdown(ErrKeepaliveTimeout)
+	return ErrKeepaliveTimeout
+}
 
 // Close ends the session and the underlying connection.
 func (s *Session) Close() error {
@@ -571,15 +618,21 @@ func (s *Session) watch() {
 }
 
 // activityConn records the time of the last bytes read from the peer.
+//
+// The time is kept as an offset from base on the clock's own (monotonic)
+// reading, never as a wall-clock value: a wall clock that is set back (a
+// device that syncs its time after a standby) would otherwise make the silence
+// look negative and keep a dead connection "alive" for as long as the step.
 type activityConn struct {
 	net.Conn
 	clk  Clock
-	last atomic.Int64 // unix nanoseconds
+	base time.Time
+	last atomic.Int64 // nanoseconds since base
 }
 
-func (c *activityConn) touch() { c.last.Store(c.clk.Now().UnixNano()) }
+func (c *activityConn) touch() { c.last.Store(int64(c.clk.Now().Sub(c.base))) }
 
-func (c *activityConn) lastRead() time.Time { return time.Unix(0, c.last.Load()) }
+func (c *activityConn) lastRead() time.Time { return c.base.Add(time.Duration(c.last.Load())) }
 
 func (c *activityConn) Read(p []byte) (int, error) {
 	n, err := c.Conn.Read(p)

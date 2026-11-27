@@ -282,6 +282,15 @@ type StatusConnection struct {
 	LastErrorAt *ops.Timestamp `json:"last_error_at,omitempty"`
 	// ConnectedSince is set while connected.
 	ConnectedSince *ops.Timestamp `json:"connected_since,omitempty"`
+	// LastHeardAt and LastHeardAgeS say when the Hub was last heard on the
+	// current connection and how many seconds ago (measured by the Worker).
+	// Verified is true while connected and heard within LinkFreshWithin; a
+	// connected state that is not verified may be a half-open link that the
+	// Worker is checking (show it as reconnecting). All three are absent
+	// unless connected, and from an older Worker.
+	LastHeardAt   *ops.Timestamp `json:"last_heard_at,omitempty"`
+	LastHeardAgeS *int64         `json:"last_heard_age_s,omitempty"`
+	Verified      *bool          `json:"verified,omitempty"`
 }
 
 // StatusShare is the share part of the report.
@@ -567,6 +576,12 @@ func connectionOf(ctx context.Context, in StatusInputs, r *StatusReport, problem
 			t := ops.Timestamp(live.Connector.ConnectedSince.UTC())
 			c.ConnectedSince = &t
 		}
+		if !live.Connector.LastHeard.IsZero() && live.Connector.State == ConnConnected {
+			t := ops.Timestamp(live.Connector.LastHeard.UTC())
+			age := int64(live.Connector.HeardAgo / time.Second)
+			fresh := live.Connector.HeardAgo <= LinkFreshWithin
+			c.LastHeardAt, c.LastHeardAgeS, c.Verified = &t, &age, &fresh
+		}
 		return c
 	}
 	if in.HubURL == "" {
@@ -701,6 +716,9 @@ func (r StatusReport) connectionText() string {
 	switch {
 	case c.State == string(ConnConnected) && c.ConnectedSince != nil:
 		out += " (since " + c.ConnectedSince.Time().Format(time.RFC3339) + ")"
+		if c.Verified != nil && !*c.Verified && c.LastHeardAgeS != nil {
+			out += fmt.Sprintf(", not verified: the Hub was last heard %ds ago; checking the link", *c.LastHeardAgeS)
+		}
 	case c.Reason != "":
 		out += " (" + c.Reason + ")"
 	}

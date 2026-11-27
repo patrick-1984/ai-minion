@@ -17,6 +17,7 @@ import (
 	"github.com/patrick-1984/ai-minion/internal/config"
 	"github.com/patrick-1984/ai-minion/internal/ops"
 	"github.com/patrick-1984/ai-minion/internal/proto"
+	"github.com/patrick-1984/ai-minion/internal/worker/agent"
 	"github.com/patrick-1984/ai-minion/internal/worker/localapi"
 )
 
@@ -448,9 +449,18 @@ func (h hubWorkerBackend) Stream(ctx context.Context, op string, args any, onPro
 }
 
 // args adds worker_id to the arguments of sessions_list, unless they name one.
+// Every other op that --hub-worker would route (it names a Worker that has no
+// say in workers_list) goes on only when it can reach that Worker: an op whose
+// target the local Worker forwards (session control) gets the Worker in its
+// target, like a Hub call does; any other op runs on the local Worker only, so
+// it is refused unless the named Worker is the local one. It never runs on the
+// local Worker in place of the one named.
 func (h hubWorkerBackend) args(op string, args any) (any, error) {
-	if op != ops.OpSessionsList {
+	if op == ops.OpWorkersList || op == agent.OpLocalStatus {
 		return args, nil
+	}
+	if op != ops.OpSessionsList {
+		return h.routeOther(op, args)
 	}
 	if !ops.ValidUUIDv7(h.worker) {
 		return nil, usagef("--hub-worker (MINION_HUB_WORKER) must be a Worker id (a UUIDv7) without a Hub URL; a Worker name is not resolved: find the id with workers_list")
@@ -470,6 +480,72 @@ func (h hubWorkerBackend) args(op string, args any) (any, error) {
 	}
 	b, err := json.Marshal(members)
 	return json.RawMessage(b), err
+}
+
+// routeOther applies --hub-worker to an op other than sessions_list on the
+// local control socket (no Hub is configured for this command).
+func (h hubWorkerBackend) routeOther(op string, args any) (any, error) {
+	if !ops.ValidUUIDv7(h.worker) {
+		return nil, usagef("--hub-worker (MINION_HUB_WORKER) must be a Worker id (a UUIDv7) without a Hub URL; a Worker name is not resolved: find the id with workers_list")
+	}
+	members := map[string]json.RawMessage{}
+	if args != nil {
+		b, err := json.Marshal(args)
+		if err != nil || (string(b) != "null" && json.Unmarshal(b, &members) != nil) {
+			return nil, proto.NewError(proto.CodeInvalidArgument, "the arguments of an op must be one JSON object")
+		}
+		if members == nil {
+			members = map[string]json.RawMessage{}
+		}
+	}
+	var named struct {
+		Target   *ops.Target `json:"target"`
+		WorkerID string      `json:"worker_id"`
+	}
+	b, _ := json.Marshal(members)
+	_ = json.Unmarshal(b, &named)
+	if (named.Target != nil && named.Target.WorkerID != "") || named.WorkerID != "" {
+		// The arguments name their own Worker: the default never replaces it.
+		return args, nil
+	}
+	base, _ := localapi.SplitOp(op)
+	o, known := ops.Lookup(base)
+	if !known || o.Scope != ops.ScopeWorker {
+		// As on the Hub: only a Worker operation is routed to a Worker.
+		return args, nil
+	}
+	if h.isLocal() {
+		// The named Worker is this one: the op runs here, as given.
+		return args, nil
+	}
+	if named.Target != nil && delegatesTarget(o) {
+		if _, isCode := ops.SessionCodeTarget(*named.Target); isCode {
+			return args, nil // a session code: the local Worker resolves it
+		}
+		// The local Worker forwards a target on another Worker to its Hub,
+		// and refuses it when it has no Hub: never run on a local session.
+		named.Target.WorkerID = h.worker
+		members["target"], _ = json.Marshal(named.Target)
+		out, err := json.Marshal(members)
+		return json.RawMessage(out), err
+	}
+	return nil, usagef("--hub-worker names the Worker %s, but no Hub is configured, so %s can only reach the local Worker and is not run there instead; configure a Hub (MINION_HUB_URL, MINION_API_KEY_FILE) to reach that Worker, or leave out --hub-worker (MINION_HUB_WORKER) for the local Worker", h.worker, base)
+}
+
+// isLocal reports whether the named Worker is the one behind the local
+// control socket, by the id its live status reports. Not knowing is not local.
+func (h hubWorkerBackend) isLocal() bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	raw, err := h.Backend.Call(ctx, agent.OpLocalStatus, nil)
+	if err != nil {
+		return false
+	}
+	var reply agent.LiveStatusReply
+	if json.Unmarshal(raw, &reply) != nil {
+		return false
+	}
+	return reply.WorkerID != "" && strings.EqualFold(reply.WorkerID, h.worker)
 }
 
 // guardedOp reports whether a request of op can rely on a safeguard of the

@@ -36,7 +36,13 @@ type LiveStatusReply struct {
 	LastError      string `json:"last_error,omitempty"`
 	LastErrorAt    string `json:"last_error_at,omitempty"`
 	ConnectedSince string `json:"connected_since,omitempty"`
-	Owner          string `json:"owner,omitempty"`
+	// LastHeardAt is when bytes last arrived from the Hub on the current
+	// connection, and HeardAgoMs the silence since then as the Worker measured
+	// it on its monotonic clock (immune to wall-clock steps). Both are absent
+	// unless connected, and from an older Worker.
+	LastHeardAt string `json:"last_heard_at,omitempty"`
+	HeardAgoMs  *int64 `json:"heard_ago_ms,omitempty"`
+	Owner       string `json:"owner,omitempty"`
 	// WorkerID and Pending are from the welcome of the current connection:
 	// the id the Hub gave this Worker and whether it waits for approval.
 	// Pending is nil in the reply of an older Worker, which does not send it.
@@ -144,6 +150,11 @@ func NewLiveStatusReply(stateDir string, live LiveStatus) LiveStatusReply {
 	if !c.ConnectedSince.IsZero() {
 		r.ConnectedSince = c.ConnectedSince.UTC().Format(time.RFC3339Nano)
 	}
+	if !c.LastHeard.IsZero() {
+		r.LastHeardAt = c.LastHeard.UTC().Format(time.RFC3339Nano)
+		ms := c.HeardAgo.Milliseconds()
+		r.HeardAgoMs = &ms
+	}
 	return r
 }
 
@@ -161,6 +172,7 @@ func (r LiveStatusReply) LiveStatus() (LiveStatus, error) {
 	}{
 		{"last_error_at", r.LastErrorAt, &c.LastErrorAt},
 		{"connected_since", r.ConnectedSince, &c.ConnectedSince},
+		{"last_heard_at", r.LastHeardAt, &c.LastHeard},
 	} {
 		if f.in == "" {
 			continue
@@ -170,6 +182,9 @@ func (r LiveStatusReply) LiveStatus() (LiveStatus, error) {
 			return LiveStatus{}, fmt.Errorf("the Worker sent an invalid %s: %w", f.name, err)
 		}
 		*f.out = t
+	}
+	if r.HeardAgoMs != nil && *r.HeardAgoMs >= 0 {
+		c.HeardAgo = time.Duration(*r.HeardAgoMs) * time.Millisecond
 	}
 	var daemon *DaemonInfo
 	switch {

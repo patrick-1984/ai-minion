@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **A Worker that kept a dead Hub link after a standby now reconnects by itself, and the Android app no longer says "Connected" for it.** Seen on an Android TV: the Hub restarted while the TV slept without network; when the TV woke up the Worker kept its half-open connection and stayed offline on the Hub for hours while the app said "Connected", until Stop and Start. Causes: the keepalive measured the silence against a wall-clock time (a clock that is set back after a resume makes it look negative), the monotonic clock does not advance during a suspend (so a standby of hours counted as no silence at all), the Worker side waited 2 minutes of awake time before declaring a silent link dead, nothing told the Worker that the network had come back, and the status reported the last connected state with no sign of how recently the Hub was heard.
+  - The Worker side of the link pings every 15 s and declares a silent link dead after 60 s (the Hub keeps 30 s / 2 min). The silence is measured on the monotonic clock. After a suspend (the wall clock moved on much more than the monotonic one) the link is verified at once with a ping that must be answered within 15 s. The dial (30 s), TLS and WebSocket upgrade, handshake (30 s) and control frame (10 s) stay bounded, and the backoff stays capped at 60 s with jitter.
+  - New `minion worker reconnect [--reason TEXT]` (local op `worker_reconnect`): in backoff the Worker dials at once with a fresh backoff; while connected it checks the link with a ping and redials at once when the Hub does not answer (a working connection is kept). It never resumes a paused Worker.
+  - `minion worker status --json`: `connection` now has `last_heard_at`, `last_heard_age_s` and `verified` (connected and the Hub heard within 45 s) for a connected Worker; the text status says when a connected link is not verified. An older Worker omits them.
+  - Android app: a network callback (`ACCESS_NETWORK_STATE`) runs `worker reconnect` when a network becomes available or validated (at most once per 5 s). The status line shows "Reconnecting..." for a connected link that was not verified recently and "Waiting for the network..." without a network.
+- **Android app: no "No Hub configured" flash after a boot.** A status read that failed or came before the Worker was up was taken as "no Hub": the app now also keeps its own record of the Hub it was set up with (removed by Forget), shows "Starting..." until the Worker answers, and no longer stops an autostart because the first status read came too early.
+- **`--hub-worker` naming another Worker without a Hub no longer runs the op on the local Worker.** `session_create --hub-worker <id>` with no Hub configured created the session on the local Worker. Now every Worker operation with `--hub-worker` (or `MINION_HUB_WORKER`) that names a Worker other than the local one is refused with "--hub-worker names the Worker ..., but no Hub is configured, ..." unless the local Worker forwards it: `sessions_list` (as `worker_id`) and the session-control operations with a target (the Worker is put in the target, and the local Worker forwards it to its Hub or refuses it). Naming the local Worker itself runs the op locally as before; arguments that name their own Worker are kept. The same applies to `minion mcp`.
+
 ## v0.24.0
 
 ### Added
