@@ -629,6 +629,12 @@ type CallRequest struct {
 	// authorize the request (authz.Authorizer.GrantIDs), once the decision
 	// allowed it and before anything is sent; for the audit of the caller.
 	granted func(ids []string)
+	// appBasis, when set on an app_install, is told what authorizes it
+	// (authz.Authorizer.AppInstallBasis: the apps_install grants or the
+	// acceptance row), each time the request is decided (before the dispatch
+	// and at the final admission); for the audit of the caller. It decides
+	// nothing.
+	appBasis func(authz.FileBasis)
 	// source is the calling session as the admission path established it
 	// (a verified bound master lease, or a session named on a call stream);
 	// it only attributes the request in its origin.
@@ -699,7 +705,9 @@ func (rt *Router) call(ctx context.Context, req CallRequest, out **call) (any, e
 	if req.Op == ops.OpFilePull || req.Op == ops.OpFilePush {
 		return rt.callFile(ctx, req, out)
 	}
-	if req.Op == ops.OpFileList {
+	if req.Op == ops.OpFileList || req.Op == ops.OpAppInstall || req.Op == ops.OpAppInstallStatus {
+		// The apps_install flag counts, like the file flags, only through the
+		// verified authority of the calling session.
 		var err error
 		if req, err = rt.withFileAuthority(ctx, req); err != nil {
 			return nil, err
@@ -997,6 +1005,8 @@ type call struct {
 	accepted ops.ActionSet
 	res      authz.Resource
 	granted  func(ids []string)
+	// appBasis is CallRequest.appBasis.
+	appBasis func(authz.FileBasis)
 	// shell is set for a request that may carry shell_ok (shellCandidate);
 	// the final admission decides it again. report is
 	// CallRequest.CommandShell.
@@ -1089,8 +1099,9 @@ func (rt *Router) Redecide(ctx context.Context, p authz.Principal, req CallReque
 	if err != nil {
 		return err
 	}
-	if req.Op == ops.OpFileList || req.Op == ops.OpFilePull || req.Op == ops.OpFilePush {
-		// A file op is decided on the file authority of the verified
+	if req.Op == ops.OpFileList || req.Op == ops.OpFilePull || req.Op == ops.OpFilePush ||
+		req.Op == ops.OpAppInstall || req.Op == ops.OpAppInstallStatus {
+		// A file op (and an app install op) is decided on the file authority of the verified
 		// calling session, as at its dispatch.
 		req.Principal, req.admit = p, nil
 		if req, err = rt.withFileAuthority(ctx, req); err != nil {
@@ -1182,6 +1193,11 @@ func (rt *Router) prepare(ctx context.Context, req CallRequest, wantStream bool)
 	if req.granted != nil {
 		req.granted(grantIDs)
 	}
+	if req.appBasis != nil {
+		if err := rt.reportAppBasis(ctx, req.Principal, res, req.appBasis); err != nil {
+			return nil, err
+		}
+	}
 	shell := shellCandidate(op.Name, req)
 	if shell {
 		if err := rt.decideShell(ctx, &origin, req.Principal, res, req.CommandShell); err != nil {
@@ -1207,6 +1223,7 @@ func (rt *Router) prepare(ctx context.Context, req CallRequest, wantStream bool)
 		accepted: accepted,
 		res:      res,
 		granted:  req.granted,
+		appBasis: req.appBasis,
 		shell:    shell,
 		report:   req.CommandShell,
 		frame: OpRequest{
@@ -1342,6 +1359,12 @@ func (rt *Router) admit(ctx context.Context, c *call, destination Online) error 
 		// grant of the earlier decision.
 		rt.originGrant(&c.frame.Origin, p, ids)
 	}
+	if c.appBasis != nil {
+		// The audit names what this final admission found.
+		if err := rt.reportAppBasis(ctx, p, c.res, c.appBasis); err != nil {
+			return err
+		}
+	}
 	if c.shell {
 		// A command shell grant revoked or changed since the first decision
 		// no longer lets the request skip the shell_pane guard (A116).
@@ -1349,6 +1372,17 @@ func (rt *Router) admit(ctx context.Context, c *call, destination Online) error 
 			return err
 		}
 	}
+	return nil
+}
+
+// reportAppBasis tells report what authorizes the app_install of p on res
+// now (authz.Authorizer.AppInstallBasis).
+func (rt *Router) reportAppBasis(ctx context.Context, p authz.Principal, res authz.Resource, report func(authz.FileBasis)) error {
+	b, err := rt.az.AppInstallBasis(ctx, p, res)
+	if err != nil {
+		return err
+	}
+	report(b)
 	return nil
 }
 

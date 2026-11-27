@@ -131,7 +131,7 @@ func held(ctx context.Context, sub subject, res ResolvedResource, pt ports) (ops
 // allActions is what an admin holds on every resource, the file transfer
 // actions included (files.v1).
 var allActions = []ops.Action{ops.ActionRead, ops.ActionOperate, ops.ActionMessage, ops.ActionManage,
-	ops.ActionFileRead, ops.ActionFileWrite}
+	ops.ActionFileRead, ops.ActionFileWrite, ops.ActionAppInstall}
 
 // ownerActions is what the owner of a resource holds. manage is global and
 // admin only, so the owner does not hold it. The owner holds both file
@@ -139,7 +139,7 @@ var allActions = []ops.Action{ops.ActionRead, ops.ActionOperate, ops.ActionMessa
 // switch in held). An API key gets a file action only when its stored
 // actions name it (scope and base intersected), so a key from before v0.24 has none.
 var ownerActions = []ops.Action{ops.ActionRead, ops.ActionOperate, ops.ActionMessage,
-	ops.ActionFileRead, ops.ActionFileWrite}
+	ops.ActionFileRead, ops.ActionFileWrite, ops.ActionAppInstall}
 
 // workerActions is what a Worker identity holds on its own Worker and that
 // Worker's sessions. It never holds operate or manage.
@@ -370,6 +370,7 @@ func (s subject) actions(res ResolvedResource) ops.ActionSet {
 		// does every direct grant that covers res and is valid now.
 		held = append(held, s.grantActions(res)...)
 		held = append(held, s.fileActions(res)...)
+		held = append(held, s.appInstallActions(res)...)
 		return canonical(append(held, s.directActions(res)...))
 	}
 	base := s.base(res, s.p.UserID)

@@ -132,6 +132,12 @@ func (d localAPIDeps) start(_ context.Context, env *Env) (StopFunc, error) {
 				}
 				return nil
 			},
+			masterApps: func() masterFiles {
+				if m := masterFeature(env); m != nil {
+					return m.apps
+				}
+				return nil
+			},
 		},
 		Logger: log,
 	})
@@ -176,6 +182,9 @@ type localExecutor struct {
 	// master returns the master lane's sender of a calling session's file
 	// ops (files.v1, WP12), or nil when there is none; looked up per call.
 	master func() masterFiles
+	// masterApps returns the master lane's sender of a calling session's app
+	// install ops (v0.25.0), or nil; looked up per call.
+	masterApps func() masterFiles
 }
 
 func (l localExecutor) Execute(ctx context.Context, rq localapi.Request, progress func(json.RawMessage)) (json.RawMessage, error) {
@@ -186,7 +195,8 @@ func (l localExecutor) Execute(ctx context.Context, rq localapi.Request, progres
 	// does not know the qualified name and refuses it as an unsupported operation.
 	if base, need := localapi.SplitOp(rq.Op); len(need) > 0 {
 		// The local socket also forwards session control (local_forward.go).
-		have := proto.NormaliseFeatures(append(l.ex.Features(), proto.FeatureSessionForward))
+		// So does it app installs on another Worker (local_apps.go).
+		have := proto.NormaliseFeatures(append(l.ex.Features(), proto.FeatureSessionForward, proto.FeatureAppInstallForward))
 		for _, f := range need {
 			if !proto.HasFeature(have, f) {
 				return nil, l.protoError(base, apiErr(proto.CodeUnsupportedOp, "", fmt.Sprintf("this Worker does not announce the feature %q that %s needs; nothing was sent", f, base)))
@@ -247,6 +257,18 @@ func (l localExecutor) Execute(ctx context.Context, rq localapi.Request, progres
 			return nil, l.protoError(rq.Op, pauseRefusal())
 		}
 		raw, err := l.fileCall(ctx, Request{Op: rq.Op, Actions: rq.Actions, Args: rq.Args}, callerPane{Pane: rq.Pane, Socket: rq.TmuxSocket, ServerPID: rq.TmuxServerPID, SocketUnknown: rq.TmuxSocketUnknown, PeerPID: rq.PeerPID})
+		if err != nil {
+			return nil, l.protoError(rq.Op, err)
+		}
+		return raw, nil
+	}
+	if forwardsApp(rq.Op, rq.Args, l.ex.policy.WorkerID()) {
+		// An app install on another Worker: the Hub decides and audits it
+		// (local_apps.go).
+		if l.pause != nil && l.pause.Paused() {
+			return nil, l.protoError(rq.Op, pauseRefusal())
+		}
+		raw, err := l.appCall(ctx, Request{Op: rq.Op, Args: rq.Args}, callerPane{Pane: rq.Pane, Socket: rq.TmuxSocket, ServerPID: rq.TmuxServerPID, SocketUnknown: rq.TmuxSocketUnknown, PeerPID: rq.PeerPID})
 		if err != nil {
 			return nil, l.protoError(rq.Op, err)
 		}

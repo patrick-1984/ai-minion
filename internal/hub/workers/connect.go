@@ -54,12 +54,18 @@ type Welcome struct {
 	// (stream kind fx, files.v1): set only when the Worker announced
 	// proto.FeatureFilesV1, and then both sessions enable them
 	// (transport.SessionOptions.Files). An older Hub omits it.
-	FilesV1     bool   `json:"files_v1,omitempty"`
-	UsagePolicy int    `json:"usage_policy,omitempty"`
-	Type        string `json:"type"`
-	WorkerID    string `json:"worker_id"`
-	Name        string `json:"name"`
-	Owner       string `json:"owner"`
+	FilesV1 bool `json:"files_v1,omitempty"`
+	// AppInstallV1 tells the Worker that this Hub routes app_install and
+	// app_install_status of a session on the master lane (v0.25.0), decided
+	// on the apps_install flag of the verified grants and acceptances. Set
+	// with MasterSessionV1; an older Hub omits it and the Worker sends the
+	// ops on an ordinary call stream.
+	AppInstallV1 bool   `json:"app_install_v1,omitempty"`
+	UsagePolicy  int    `json:"usage_policy,omitempty"`
+	Type         string `json:"type"`
+	WorkerID     string `json:"worker_id"`
+	Name         string `json:"name"`
+	Owner        string `json:"owner"`
 	// OwnerID is the stable id of the Worker's owner (protocol 2.0); Owner is
 	// the display name. The Worker uses OwnerID for pipe_accept_from.
 	OwnerID string `json:"owner_id"`
@@ -861,6 +867,7 @@ func (c *Conn) Welcome(ctx context.Context, w store.WorkerRow) error {
 	if err := c.write(Welcome{
 		MasterSessionV1: masterV1,
 		FilesV1:         filesV1,
+		AppInstallV1:    masterV1,
 		LocalAuditV1:    !w.Pending && h.callOp(proto.OpLocalAuditV1) != nil,
 		UsagePolicy:     usagePolicy,
 		Type:            proto.TypeWelcome,

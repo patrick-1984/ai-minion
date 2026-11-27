@@ -63,6 +63,17 @@ func TestFilesOldWorkerWithoutFilesV1GetsUnsupportedOpAndKeepsWorking(t *testing
 	}
 }
 
+// snapshotGap is the pause between two measured session_snapshot round trips.
+// It is short so that a bulk transfer of a few seconds yields enough samples
+// for a p99 that is a percentile and not the single worst sample.
+const snapshotGap = 5 * time.Millisecond
+
+// p99Samples is the smallest sample count whose p99 leaves out the worst
+// sample: with fewer, the p99 is the maximum, and one scheduling stall of the
+// loaded test process (the race detector, a full e2e run) decides the
+// verdict alone. A bulk transfer of the test yields about 200 under -race.
+const p99Samples = 100
+
 // snapshotLatencies measures n session_snapshot round trips on the Worker
 // connection, as the Hub's terminal view does them.
 func snapshotLatencies(t *testing.T, e *fxE2E, w *fxWorker, n int, stop <-chan struct{}) []time.Duration {
@@ -80,11 +91,13 @@ func snapshotLatencies(t *testing.T, e *fxE2E, w *fxWorker, n int, stop <-chan s
 			t.Fatalf("session_snapshot: %v", m)
 		}
 		out = append(out, time.Since(start))
-		time.Sleep(20 * time.Millisecond)
+		time.Sleep(snapshotGap)
 	}
 	return out
 }
 
+// p99 is the nearest-rank 99th percentile of d: for n samples, the
+// ceil(0.99*n)-th smallest one (the maximum below 100 samples).
 func p99(d []time.Duration) time.Duration {
 	if len(d) == 0 {
 		return 0
@@ -107,7 +120,7 @@ func TestFilesTerminalLatencyUnderABulkTransfer(t *testing.T) {
 	_, _ = rand.NewChaCha8([32]byte{1}).Read(content) // incompressible: identity on the wire, the pacer is the only brake
 	writeFile(t, w.dirs["src"], "bulk.bin", content)
 
-	base := snapshotLatencies(t, e, w, 40, nil)
+	base := snapshotLatencies(t, e, w, p99Samples, nil)
 
 	c := e.caller(bearer)
 	type out struct {
@@ -124,15 +137,15 @@ func TestFilesTerminalLatencyUnderABulkTransfer(t *testing.T) {
 		done <- out{res, err, time.Since(start)}
 	}()
 	time.Sleep(100 * time.Millisecond) // the leg is open and saturating
-	loaded := snapshotLatencies(t, e, w, 60, stop)
+	loaded := snapshotLatencies(t, e, w, 4*p99Samples, stop)
 	o := <-done
 	if o.err != nil || o.res.Outcome != ops.OutcomeDelivered {
 		t.Fatalf("bulk pull: %+v %v", o.res, o.err)
 	}
 	mbps := float64(size) / o.dur.Seconds() / 1e6
 	added := p99(loaded) - p99(base)
-	t.Logf("bulk pull of %d MiB in %s (%.1f MB/s); session_snapshot p99 %s idle, %s under load (%d samples), added %s",
-		size>>20, o.dur.Round(time.Millisecond), mbps, p99(base), p99(loaded), len(loaded), added)
+	t.Logf("bulk pull of %d MiB in %s (%.1f MB/s); session_snapshot p99 %s idle, %s under load (%d samples, max %s), added %s",
+		size>>20, o.dur.Round(time.Millisecond), mbps, p99(base), p99(loaded), len(loaded), slices.Max(loaded), added)
 	if len(loaded) < 10 {
 		t.Skipf("the transfer ended after %d samples: too fast to measure here", len(loaded))
 	}

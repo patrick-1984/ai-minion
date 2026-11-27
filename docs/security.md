@@ -240,6 +240,16 @@ File transfer copies files between the folder of a session and a caller; the Hub
 - **Verification before publication:** per-file SHA-256 and size against the manifest, the manifest digest, the end of the archive and the trailers; then an atomic publish that never replaces an existing name unless asked (`--overwrite`, regular files only).
 - **What it does not protect against:** an agent in the pane choosing its folder with `cd` before a transfer; a person or agent running a pushed file later; transfers that a caller with the authority asks for. The history (who, which sessions, which grant, counts, manifest digest) is visible to the target's owner; logs, metrics and audit details never contain names, paths, tokens or content.
 
+## Installing Android apps (0.25.0)
+
+The Minion app on an Android Worker installs other apps from APK files in its Minion files folder ([Installing Android apps](guides/android-apps.md)). Installing an app is powerful: an installed app runs with its own permissions and can start at boot.
+
+- **Who may install.** An administrator on every Android Worker, an owner on their own; an API key only when its scope names the action `app_install` (no wildcard, `everything`, `operate` or file action implies it); a session on another Worker only from a **Verified** source (a bound master, or a grant bound to the session) whose Control grant or master acceptance has the flag `apps_install` (default off, never implied by `files_push`), on the master lane. A claimed source and a Worker identity have none. The Hub audits every request with the package, the version code, the signer's SHA-256 and the outcome.
+- **The first install needs a confirmation on the device.** Android asks once, on the device, before an app that Minion did not install is installed or updated; the Hub cannot answer that dialog. The Worker and the app check the path (only inside Minion files, no symbolic link), the SHA-256 of the file from the request to the commit, the signer (the same as the installed app) and the version (no downgrade); a new app needs `allow_new`; the Minion app itself is refused.
+- **Updates of apps Minion installed are silent** (Android 12 and newer): whoever may run `app_install` on the Worker can replace such an app with any newer version signed with the same key. The signer check keeps a different key out.
+- **The switch on the device wins.** Turning **Install unknown apps** off for Minion stops every install (and self-update); the Hub cannot turn it back on.
+- **Residual risks.** Every terminal session on the Android Worker runs as the Minion app's user and can write the app's private files, including the install request: treat a session on the device as able to request installs (a first install still needs the press on the device, an update of an app Minion installed does not), and do not run untrusted agents there. Play Protect may scan or block an install, and is not tested on every device. Minion never uninstalls an app.
+
 ## When something is not known
 
 - Reads that fail are retried or reported as errors. A write that may have been delivered, but whose answer was lost, is reported as **unknown** and is never replayed for you; you repeat it with the same request id on purpose.

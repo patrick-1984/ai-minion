@@ -142,6 +142,9 @@ type Executor struct {
 	// files is the file transfer end (files.v1, exec_files.go); nil until
 	// the files module attaches it.
 	files atomic.Pointer[Files]
+	// appInstall is the app install end of the Android Worker
+	// ([Executor.AttachAppInstall]); nil elsewhere.
+	appInstall atomic.Pointer[appInstaller]
 
 	// localWrites is told about every write of a local caller that this
 	// executor really ran (see [Executor.OnLocalWrite]); nil when unset.

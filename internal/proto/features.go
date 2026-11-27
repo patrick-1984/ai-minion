@@ -37,6 +37,12 @@ const (
 	// running it on its own terminals. It is a property of the local control
 	// socket only; the Worker does not announce it to the Hub.
 	FeatureSessionForward = "session.forward"
+	// FeatureAppInstallForward: the local Worker daemon sends an app_install
+	// or app_install_status whose worker_id names another Worker to its Hub
+	// (on the master lane for a verified session, v0.25.0) instead of
+	// running it itself. Like FeatureSessionForward it is a property of the
+	// local control socket only and is not announced to the Hub.
+	FeatureAppInstallForward = "app.install.forward"
 	// FeatureSelfUpdate: the Worker serves worker_update and can replace its
 	// own binary with a signed release and restart (v0.9.0). It is announced
 	// only when the install method allows it (not a package, not a container,
@@ -93,6 +99,13 @@ const (
 	// it only when its host proved a root source, or with no transfer end at
 	// all (Windows in v1 answers every file op with files_root_unknown).
 	FeatureFilesV1 = "files.v1"
+
+	// FeatureAppInstallV1: the Android Worker serves app_install and
+	// app_install_status: it installs another app from an APK in its Minion
+	// files folder through the app's PackageInstaller (v0.25.0). Announced
+	// only by the Android app build, whose app supports it; the Hub routes the
+	// ops only to a Worker that announced it (ops.RequiredFeatures).
+	FeatureAppInstallV1 = "app.install.v1"
 )
 
 // Limits of an announced feature list. The hello is at most 64 KiB already;

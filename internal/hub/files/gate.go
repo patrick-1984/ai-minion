@@ -102,6 +102,7 @@ func (s *Service) fileAuthority(ctx context.Context, p authz.Principal, verified
 			ID:             store.AcceptanceID(r.TargetWorkerID, r.SourceWorkerID),
 			TargetWorkerID: r.TargetWorkerID, Sessions: r.Sessions,
 			FilesPull: r.FilesPull != nil && *r.FilesPull, FilesPush: r.FilesPush != nil && *r.FilesPush,
+			AppsInstall: r.AppsInstall != nil && *r.AppsInstall,
 		})
 	}
 	return p.WithVerifiedFiles(verified, accepts), nil

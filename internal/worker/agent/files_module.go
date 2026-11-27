@@ -92,6 +92,10 @@ func startFiles(ctx context.Context, env *Env) (StopFunc, error) {
 	}
 	f := NewFiles(ex, cfg)
 	ex.AttachFiles(f)
+	if runtime.GOOS == "android" && cfg.Confine != "" && s.StateDir != "" {
+		// The app of this build reads the app install requests (v0.25.0).
+		ex.AttachAppInstall(s.StateDir, cfg.Confine, cfg.Floor)
+	}
 	if st := f.Status(); st != "" {
 		log.Info("file transfer is not available on this Worker", "reason", st)
 	} else {

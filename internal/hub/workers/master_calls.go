@@ -385,11 +385,22 @@ func (m *MasterControl) runMasterCall(ctx context.Context, c Call) (any, error) 
 	if len(auth.direct) != 0 {
 		req.granted = func(ids []string) { grantIDs = ids }
 	}
+	// An app install stands on an apps_install grant or acceptance row: its
+	// audit event names the one the final admission decided on, as the
+	// transfer record of a file op does.
+	var appBasis authz.FileBasis
+	if op == ops.OpAppInstall {
+		req.appBasis = func(b authz.FileBasis) { appBasis = b }
+	}
 	var withdrawn atomic.Bool
-	if op != ops.OpSendText && len(auth.direct) != 0 {
+	if op != ops.OpSendText && op != ops.OpAppInstall && len(auth.direct) != 0 {
 		// An admitted read leaves the pending set: a verified grant that
 		// stops authorizing it ends it within the re-check interval (D5),
-		// not when a stalled target answers.
+		// not when a stalled target answers. A write (send_text,
+		// app_install) is not re-checked: its final admission decided it,
+		// the target goes on with it whatever the Hub does next, and its
+		// audit row records what the target answered (an app install that
+		// was withdrawn here would still commit on the device, with no row).
 		stop := m.recheckRead(qctx, c, req, func() { withdrawn.Store(true); cancel() })
 		defer stop()
 	}
@@ -399,6 +410,14 @@ func (m *MasterControl) runMasterCall(ctx context.Context, c Call) (any, error) 
 	}
 	if err == nil {
 		m.grantUse.Used(grantIDs...)
+	}
+	if op == ops.OpAppInstall {
+		m.recordMasterWrite(ctx, c.Worker.ID, lease.row.SessionName, req, appAuditIDs(appBasis), result, err)
+	}
+	if isAppOp(op) {
+		// Decided at the final admission on the apps_install flags of the
+		// verified authority; the answer names no session to filter.
+		return result, err
 	}
 	if op == ops.OpSendText {
 		m.recordMasterWrite(ctx, c.Worker.ID, lease.row.SessionName, req, grantIDs, result, err)
@@ -530,6 +549,28 @@ func masterRoute(requestID, op string, raw json.RawMessage) (CallRequest, error)
 			return r, err
 		}
 		r.WorkerID, r.Session, r.Args = t.WorkerID, t.SessionName, args
+	case ops.OpAppInstall, ops.OpAppInstallStatus:
+		// v0.25.0: an app install on another Android Worker, decided on the
+		// apps_install flag of the verified grants and acceptances.
+		var args ops.Validator
+		var workerID string
+		if op == ops.OpAppInstall {
+			var a ops.AppInstallArgs
+			if err := proto.DecodeMasterJSON(raw, &a); err != nil {
+				return r, err
+			}
+			args, workerID, r.Args = a, a.WorkerID, a
+		} else {
+			var a ops.AppInstallStatusArgs
+			if err := proto.DecodeMasterJSON(raw, &a); err != nil {
+				return r, err
+			}
+			args, workerID, r.Args = a, a.WorkerID, a
+		}
+		if err := args.Validate(); err != nil {
+			return r, proto.NewError(proto.CodeInvalidArgument, "invalid master app install arguments")
+		}
+		r.WorkerID = workerID
 	default:
 		return r, proto.NewError(proto.CodeForbidden, "operation is outside the master catalog")
 	}
@@ -568,6 +609,9 @@ func masterFileArgs(op string, raw json.RawMessage) (ops.Target, any, error) {
 	return ops.Target{}, nil, proto.NewError(proto.CodeInternal, "unreadable master file operation")
 }
 
+// isAppOp reports whether op is an app install op of the master lane.
+func isAppOp(op string) bool { return op == ops.OpAppInstall || op == ops.OpAppInstallStatus }
+
 // isFileOp reports whether op is a file op of the master lane.
 func isFileOp(op string) bool {
 	return op == ops.OpFileList || op == ops.OpFilePull || op == ops.OpFilePush
@@ -586,10 +630,43 @@ func (m *MasterControl) recordMasterWrite(ctx context.Context, workerID, session
 		Actor: "worker:" + workerID, Action: req.Op, Target: req.WorkerID + ":" + req.Session,
 		Outcome: writeAuditOutcome(result, err), Detail: "proof=bound", GrantID: strings.Join(grantIDs, ","),
 	}
+	if req.Op == ops.OpAppInstall {
+		ev.Target = req.WorkerID
+		if r, ok := appInstallResultOf(result); ok && err == nil {
+			ev.Outcome = r.Outcome
+			ev.Detail = proto.AppendDetail(ev.Detail, ops.AppInstallAuditDetail(r))
+		}
+	}
 	if session != "" {
 		ev.Source = workerID + ":" + session
 	}
 	if aerr := m.auditor.Record(ctx, ev); aerr != nil {
 		slog.Default().Error("workers: audit write failed", "action", req.Op, "error", aerr.Error())
 	}
+}
+
+// appAuditIDs is what the audit event of an app install names as its
+// grant_id: the apps_install grants that decided it, else its acceptance row
+// (as internal/hub/files names a transfer's basis).
+func appAuditIDs(b authz.FileBasis) []string {
+	if len(b.GrantIDs) != 0 {
+		return b.GrantIDs
+	}
+	if b.AcceptanceID != "" {
+		return []string{b.AcceptanceID}
+	}
+	return nil
+}
+
+// appInstallResultOf returns the app install result a routed call answered.
+func appInstallResultOf(result any) (ops.AppInstallResult, bool) {
+	switch v := result.(type) {
+	case ops.AppInstallResult:
+		return v, true
+	case *ops.AppInstallResult:
+		if v != nil {
+			return *v, true
+		}
+	}
+	return ops.AppInstallResult{}, false
 }

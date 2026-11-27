@@ -49,6 +49,8 @@ type FileAcceptance struct {
 	Sessions []string
 	// FilesPull and FilesPush are the file transfer flags of the row.
 	FilesPull, FilesPush bool
+	// AppsInstall is the app install flag of the row (v0.25.0).
+	AppsInstall bool
 }
 
 // covers reports whether the row reaches the session res.
@@ -131,6 +133,81 @@ func (s subject) acceptFileFor(a FileAcceptance, res ResolvedResource) []ops.Act
 		return nil
 	}
 	return fileFlagsActions(a.FilesPull, a.FilesPush, s.grantActions(res))
+}
+
+// appInstallActions is what the apps_install flags of the principal's
+// verified direct grants and acceptance rows authorize on res: app_install on
+// a Worker resource that is not the principal's own Worker.
+func (s subject) appInstallActions(res ResolvedResource) []ops.Action {
+	for _, g := range s.p.directList() {
+		if s.directAppFor(g, res) {
+			return []ops.Action{ops.ActionAppInstall}
+		}
+	}
+	if s.p.files != nil {
+		for _, a := range s.p.files.accepts {
+			if s.acceptAppFor(a, res) {
+				return []ops.Action{ops.ActionAppInstall}
+			}
+		}
+	}
+	return nil
+}
+
+// appInstallTarget reports whether res is a Worker on which the apps_install
+// flags of the principal can count: only for a principal with verified file
+// authority, and never on its own Worker.
+func (s subject) appInstallTarget(res ResolvedResource) bool {
+	return s.p.Kind == KindWorker && s.p.files != nil && res.Kind == ResourceWorker && res.WorkerID != s.p.WorkerID
+}
+
+// directAppFor reports whether the apps_install flag of direct grant g
+// authorizes app_install on res: at level Control, while g is valid for the
+// Worker (directFor).
+func (s subject) directAppFor(g DirectGrant, res ResolvedResource) bool {
+	return s.appInstallTarget(res) && g.AppsInstall && g.Level == LevelControl && len(s.directFor(g, res)) != 0
+}
+
+// acceptAppFor reports whether the apps_install flag of acceptance row a
+// authorizes app_install on res: a row of that Worker, while the master scope
+// reaches it.
+func (s subject) acceptAppFor(a FileAcceptance, res ResolvedResource) bool {
+	return s.appInstallTarget(res) && a.AppsInstall && a.TargetWorkerID == res.WorkerID && len(s.grantActions(res)) != 0
+}
+
+// AppInstallBasis tells what authorizes app_install by p on the Worker res
+// now, for the audit of the caller: the direct grants whose apps_install flag
+// authorizes it by themselves and the first acceptance row whose flag does,
+// as [FileBasis] names them for a transfer (Standing for an administrator,
+// the owner or an API key that names the action). It is empty for a
+// principal without access and for a Worker that does not exist; only a
+// failure of a lookup is an error. The Hub calls it after
+// [Authorizer.Decide] allowed the operation; it reads the current state
+// again, like Decide.
+func (a *Authorizer) AppInstallBasis(ctx context.Context, p Principal, res Resource) (FileBasis, error) {
+	sub, resolved, ok, err := a.grantSubject(ctx, p, res)
+	if err != nil || !ok {
+		return FileBasis{}, err
+	}
+	var b FileBasis
+	if p.Kind != KindWorker {
+		b.Standing = slices.Contains(sub.actions(resolved), ops.ActionAppInstall)
+		return b, nil
+	}
+	for _, g := range p.directList() {
+		if sub.directAppFor(g, resolved) {
+			b.GrantIDs = append(b.GrantIDs, g.ID)
+		}
+	}
+	if p.files != nil {
+		for _, acc := range p.files.accepts {
+			if sub.acceptAppFor(acc, resolved) {
+				b.AcceptanceID = acc.ID
+				break
+			}
+		}
+	}
+	return b, nil
 }
 
 // fileActions is the union of what the file flags of the principal's direct

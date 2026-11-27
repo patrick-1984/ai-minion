@@ -401,3 +401,31 @@ func TestControlSettersRefuseAStaleView(t *testing.T) {
 		t.Errorf("control_set_worker with what was seen = %v", got)
 	}
 }
+
+// v0.25.0: the app install flag of an acceptance is set, kept by a change
+// that does not name it, listed and audited.
+func TestControlAcceptAppsInstallIsSetAndAudited(t *testing.T) {
+	k := newSessionControlStack(t)
+	a, b := k.worker(k.u1, "a", store.WorkerKindPrivate), k.worker(k.u1, "b", store.WorkerKindPrivate)
+	k.as(k.admin)
+	if code, body := k.call(ops.OpControlSetAccept, map[string]any{"worker_id": b.ID, "source_worker_id": a.ID, "accept": true, "apps_install": true}); code != http.StatusOK {
+		t.Fatalf("accept with apps_install = %d %s", code, body)
+	}
+	if code, body := k.call(ops.OpControlSetAccept, map[string]any{"worker_id": b.ID, "source_worker_id": a.ID, "accept": true, "if_state": "all"}); code != http.StatusOK {
+		t.Fatalf("accept again = %d %s", code, body)
+	}
+	rows, err := k.st.ListAccepts(context.Background())
+	if err != nil || len(rows) != 1 || rows[0].AppsInstall == nil || !*rows[0].AppsInstall || *rows[0].FilesPush {
+		t.Fatalf("stored = %+v, %v", rows, err)
+	}
+	var details []string
+	for _, ev := range k.audit.all() {
+		if ev.Action == ops.OpControlSetAccept && ev.Outcome == AuditOutcomeSuccess {
+			details = append(details, ev.Detail)
+		}
+	}
+	if len(details) != 2 || details[0] != "source_worker="+a.ID+" accept=true sessions=all apps_install=true" ||
+		strings.Contains(details[1], "apps_install") {
+		t.Fatalf("audit = %q", details)
+	}
+}

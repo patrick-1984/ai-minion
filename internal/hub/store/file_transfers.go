@@ -561,12 +561,12 @@ func (s *Store) SetWorkerFileMode(ctx context.Context, workerID, mode string) (c
 func AcceptanceID(target, source string) string { return target + "/" + source }
 
 // FileAcceptances returns the acceptance rows that accept control from
-// source and carry a file flag, ordered by target. The flags count only
+// source and carry a file flag or the app install flag, ordered by target. The flags count only
 // through these rows: a target that accepts all Workers (accept_all) without
 // a row has none.
 func (s *Store) FileAcceptances(ctx context.Context, source string) ([]AcceptRow, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT target_worker_id, source_worker_id, sessions_json, created_by, created_at,
-		files_pull, files_push FROM control_accept WHERE source_worker_id = ? AND (files_pull = 1 OR files_push = 1)
+		files_pull, files_push, apps_install FROM control_accept WHERE source_worker_id = ? AND (files_pull = 1 OR files_push = 1 OR apps_install = 1)
 		ORDER BY target_worker_id`, source)
 	if err != nil {
 		return nil, fmt.Errorf("store: list file acceptances: %w", err)

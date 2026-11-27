@@ -133,6 +133,16 @@ func initRoute(ctx context.Context, env *Env) error {
 			return fmt.Errorf("route: %w", err)
 		}
 	}
+	// App install on an Android Worker (v0.25.0): the dispatcher decides the
+	// action app_install on the named Worker (owner, admin, an API key that
+	// names it, or the apps_install flag of a verified grant or acceptance)
+	// and audits every request with the outcome; the Worker answers only when
+	// it announced app.install.v1.
+	for _, name := range ops.AppInstallOpNames {
+		if err := api.RegisterWorkerOp(handlers, name, rt); err != nil {
+			return fmt.Errorf("route: %w", err)
+		}
+	}
 	// Kept sessions (v0.24.0): session_keep_set is a session write routed
 	// like set_task (the dispatcher decides operate on the named session; a
 	// Worker that does not serve it answers unsupported_op).

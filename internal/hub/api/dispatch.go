@@ -307,6 +307,7 @@ func (d *Dispatcher) serve(w http.ResponseWriter, r *http.Request, rt route) {
 		return
 	}
 	if !tracker.Recorded() {
+		call.AuditDetail = proto.AppendDetail(call.AuditDetail, resultDetail(result))
 		d.audit(r.Context(), call, outcomeOf(result))
 	}
 	d.logger().Debug("api request done", "request_id", audit.RequestID(r.Context()), "op", op.Name, "principal_kind", string(id.Principal.Kind),
@@ -810,6 +811,12 @@ func outcomeOf(result any) string {
 		if r != nil {
 			return writeOutcome(*r)
 		}
+	case ops.AppInstallResult:
+		return appInstallOutcome(r)
+	case *ops.AppInstallResult:
+		if r != nil {
+			return appInstallOutcome(*r)
+		}
 	case ops.WorkerUpdateResult:
 		return updateOutcome(r)
 	case *ops.WorkerUpdateResult:
@@ -818,6 +825,29 @@ func outcomeOf(result any) string {
 		}
 	}
 	return AuditOutcomeSuccess
+}
+
+// appInstallOutcome is the outcome of an app install as the Worker reported
+// it (installed, needs_confirmation_on_device, installing, refused, failed).
+func appInstallOutcome(r ops.AppInstallResult) string {
+	if r.Outcome == "" {
+		return auditOutcomeError
+	}
+	return r.Outcome
+}
+
+// resultDetail is what the audit row of a result adds to its detail
+// (ops.AppInstallAuditDetail for an app install).
+func resultDetail(result any) string {
+	switch v := result.(type) {
+	case ops.AppInstallResult:
+		return ops.AppInstallAuditDetail(v)
+	case *ops.AppInstallResult:
+		if v != nil {
+			return ops.AppInstallAuditDetail(*v)
+		}
+	}
+	return ""
 }
 
 // updateOutcome is "failed" when the Worker did not start the update (or it

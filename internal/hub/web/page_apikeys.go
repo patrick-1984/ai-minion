@@ -80,6 +80,7 @@ func apiKeyActionChoices(admin bool) []Choice {
 		{Value: string(ops.ActionMessage), Label: "Message", Help: "send messages to agent sessions only"},
 		{Value: string(ops.ActionFileRead), Label: "Pull files", Help: "list session folders and download files from them"},
 		{Value: string(ops.ActionFileWrite), Label: "Push files", Help: "upload files into session folders"},
+		{Value: string(ops.ActionAppInstall), Label: "Install apps", Help: "install apps on Android Workers from their Minion files folder"},
 	}
 	if admin {
 		out = append(out, Choice{Value: string(ops.ActionManage), Label: "Manage", Help: "administer the Hub"})

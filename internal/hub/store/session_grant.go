@@ -221,6 +221,9 @@ type SessionGrantRow struct {
 	// a verified grant (SourceIncarnation set), FilesPush only at Control.
 	// Unbinding the grant clears them.
 	FilesPull, FilesPush bool
+	// AppsInstall is the app install flag (v0.25.0): only on a verified
+	// grant at Control. Unbinding the grant clears it.
+	AppsInstall bool
 }
 
 // SessionGrantFilter narrows [Store.ListSessionGrants]. An empty member does
@@ -232,17 +235,17 @@ type SessionGrantFilter struct {
 
 const sessionGrantCols = `id, source_worker_id, source_session, source_incarnation, target_worker_id, target_session,
 	level, authority, granted_by, source_owner_id, target_owner_id, note, expires_at, revision, created_at, updated_at,
-	suspended_at, suspend_cause, command_shell, files_pull, files_push`
+	suspended_at, suspend_cause, command_shell, files_pull, files_push, apps_install`
 
 func scanSessionGrant(sc rowScanner) (SessionGrantRow, error) {
 	var g SessionGrantRow
 	var exp, sus sql.NullInt64
-	var rev, shell, pull, push int64
+	var rev, shell, pull, push, apps int64
 	err := sc.Scan(&g.ID, &g.SourceWorkerID, &g.SourceSession, &g.SourceIncarnation, &g.TargetWorkerID, &g.TargetSession,
 		&g.Level, &g.Authority, &g.GrantedBy, &g.SourceOwnerID, &g.TargetOwnerID, &g.Note, &exp, &rev, &g.CreatedAt,
-		&g.UpdatedAt, &sus, &g.SuspendCause, &shell, &pull, &push)
+		&g.UpdatedAt, &sus, &g.SuspendCause, &shell, &pull, &push, &apps)
 	g.CommandShell = shell != 0
-	g.FilesPull, g.FilesPush = pull != 0, push != 0
+	g.FilesPull, g.FilesPush, g.AppsInstall = pull != 0, push != 0, apps != 0
 	if err != nil {
 		return g, err
 	}
@@ -337,10 +340,11 @@ func (s *Store) PutSessionGrant(ctx context.Context, row SessionGrantRow, ifRevi
 			}
 			_, err := tx.ExecContext(ctx, `INSERT INTO session_grant (id, source_worker_id, source_session, source_incarnation,
 				target_worker_id, target_session, level, authority, granted_by, source_owner_id, target_owner_id, note,
-				expires_at, revision, created_at, updated_at, command_shell, files_pull, files_push) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,1,?,?,?,?,?)`,
+				expires_at, revision, created_at, updated_at, command_shell, files_pull, files_push, apps_install) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,1,?,?,?,?,?,?)`,
 				row.ID, row.SourceWorkerID, row.SourceSession, row.SourceIncarnation, row.TargetWorkerID, row.TargetSession,
 				row.Level, row.Authority, row.GrantedBy, row.SourceOwnerID, row.TargetOwnerID, row.Note,
-				nullInt64(row.ExpiresAt), created, now, boolInt(row.CommandShell), boolInt(row.FilesPull), boolInt(row.FilesPush))
+				nullInt64(row.ExpiresAt), created, now, boolInt(row.CommandShell), boolInt(row.FilesPull), boolInt(row.FilesPush),
+				boolInt(row.AppsInstall))
 			if err != nil {
 				msg := err.Error()
 				switch {
@@ -365,9 +369,9 @@ func (s *Store) PutSessionGrant(ctx context.Context, row SessionGrantRow, ifRevi
 			}
 			old = &cur
 			if _, err := tx.ExecContext(ctx, `UPDATE session_grant SET level = ?, expires_at = ?, note = ?, command_shell = ?,
-				files_pull = ?, files_push = ?, revision = revision + 1, updated_at = ? WHERE id = ? AND revision = ?`,
+				files_pull = ?, files_push = ?, apps_install = ?, revision = revision + 1, updated_at = ? WHERE id = ? AND revision = ?`,
 				row.Level, nullInt64(row.ExpiresAt), row.Note, boolInt(row.CommandShell), boolInt(row.FilesPull), boolInt(row.FilesPush),
-				now, row.ID, int64(ifRevision)); err != nil {
+				boolInt(row.AppsInstall), now, row.ID, int64(ifRevision)); err != nil {
 				if strings.Contains(err.Error(), "CHECK constraint") {
 					return fmt.Errorf("%w: %v", ErrGrantInvalid, err)
 				}

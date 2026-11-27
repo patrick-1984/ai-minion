@@ -1,0 +1,27 @@
+{{/* The "Install an app from Minion files" panel of the Worker detail page (app_install, v0.25.0): the .apk files at the
+top of the Android Worker's Minion files folder, each with an Install button, and the outcome of the last install. */}}
+{{define "worker_apps_panel"}}{{if .Show}}<section class="panel" aria-labelledby="apps-h" id="apps-section"{{if .Status.Ready}} data-apps-ready="true"{{end}}>
+  <h2 id="apps-h">Install an app from Minion files</h2>
+  {{range .Results}}<div class="result result-{{.Kind}}" role="status"><p class="result-title"><strong>{{.Label}}:</strong> {{.Summary}}</p></div>
+  {{end}}{{if .Error}}<p class="notice notice-info" role="status">{{.Error}}</p>
+  {{else}}{{if not .Status.Ready}}<p class="notice notice-warning" role="status">The app cannot install apps now{{if .Status.BlockReason}}: {{.Status.BlockReason}}{{end}}.</p>
+  {{end}}{{with .Last}}<h3>Last install</h3>
+  <dl class="facts" data-apps-last="{{.Outcome}}">
+    <dt>Outcome</dt><dd>{{.Text}}</dd>
+    {{if or .Label .Package}}<dt>App</dt><dd>{{if .Label}}{{.Label}} {{end}}{{if .Package}}<code>{{.Package}}</code>{{end}}</dd>
+    {{end}}{{if or .VersionName .VersionCode}}<dt>Version</dt><dd>{{if .VersionName}}{{.VersionName}} {{end}}{{if .VersionCode}}(code {{.VersionCode}}){{end}}</dd>
+    {{end}}{{if .SignerSHA256}}<dt>Signer SHA-256</dt><dd><code class="apps-digest">{{.SignerSHA256}}</code></dd>
+    {{end}}{{if .Path}}<dt>File</dt><dd><code>{{.Path}}</code></dd>
+    {{end}}</dl>
+  {{end}}{{if .Status.Files}}<form method="post" action="{{.URL}}" hx-post="{{.URL}}" hx-target="#apps-section" hx-swap="outerHTML" hx-disabled-elt="find button" aria-label="Install an app on {{.Worker}}">
+    <label class="check" for="apps-allow-new"><input type="checkbox" name="allow_new" id="apps-allow-new" value="1"> Allow a new app (not installed yet), or a reinstall of the same version</label>
+    <div class="table-wrap"><table class="table">
+      <thead><tr><th scope="col">APK file</th><th scope="col">Size</th><th scope="col"><span class="sr-only">Install</span></th></tr></thead>
+      <tbody>{{range .Status.Files}}<tr><td><code>{{.Path}}</code></td><td>{{.Size}} bytes</td><td><button type="submit" class="btn" name="path" value="{{.Path}}" data-control="app-install">Install</button></td></tr>
+      {{end}}</tbody>
+    </table></div>
+  </form>
+  {{else}}<p class="muted">No .apk file at the top of the Minion files folder. Copy one there first: <code>minion files push --target {{.Worker}}:&lt;session&gt; ./app.apk</code>.</p>
+  {{end}}<p class="help">Android asks once on the device for an app Minion did not install: press Install &lt;app&gt; on the Minion screen. Updates of apps Minion installed are silent on Android 12 and newer. An update needs the same signer and a version that is not lower.</p>
+  {{end}}
+</section>{{end}}{{end}}

@@ -32,10 +32,15 @@ const (
 	ActionFileWrite Action = "file_write"
 )
 
+// ActionAppInstall installs an app on an Android Worker (app_install,
+// v0.25.0). Like the file actions it implies nothing and nothing implies it:
+// operate does not allow it, and neither does file_write.
+const ActionAppInstall Action = "app_install"
+
 // Valid reports whether a is one of the known actions.
 func (a Action) Valid() bool {
 	switch a {
-	case ActionRead, ActionOperate, ActionMessage, ActionManage, ActionFileRead, ActionFileWrite:
+	case ActionRead, ActionOperate, ActionMessage, ActionManage, ActionFileRead, ActionFileWrite, ActionAppInstall:
 		return true
 	}
 	return false

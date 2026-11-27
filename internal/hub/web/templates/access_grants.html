@@ -67,7 +67,8 @@
   <fieldset class="field grant-files"><legend>Files</legend>
     <label class="check" for="grant-add-files-pull"><input type="checkbox" name="files_pull" id="grant-add-files-pull" value="1"> Pull files: list the target session's folder and copy files out of it</label>
     <label class="check" for="grant-add-files-push"><input type="checkbox" name="files_push" id="grant-add-files-push" value="1"> Push files: copy files into the target session's folder (Control only)</label>
-    <p class="help">Off unless you tick them. File access works only for a source session the Hub has verified, and never into protected folders such as .git.</p>
+    <label class="check" for="grant-add-apps-install"><input type="checkbox" name="apps_install" id="grant-add-apps-install" value="1"> Install apps: install apps from the Minion files folder on the target's Android Worker (Control only)</label>
+    <p class="help">Off unless you tick them. File access and app installs work only for a source session the Hub has verified; files never go into protected folders such as .git.</p>
   </fieldset>
   <fieldset class="field"><legend>4 Until</legend>
     <div class="row">

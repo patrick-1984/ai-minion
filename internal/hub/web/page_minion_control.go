@@ -66,16 +66,18 @@ const (
 type AcceptView struct {
 	Kind     string
 	Sessions []string
+	// AppsInstall is the app install flag of the row (v0.25.0).
+	AppsInstall bool
 }
 
 func acceptView(a ops.ControlAccept) AcceptView {
 	switch {
 	case a.Sessions == nil:
-		return AcceptView{Kind: acceptKindAll}
+		return AcceptView{Kind: acceptKindAll, AppsInstall: a.AppsInstall}
 	case len(*a.Sessions) == 0:
-		return AcceptView{Kind: acceptKindNone}
+		return AcceptView{Kind: acceptKindNone, AppsInstall: a.AppsInstall}
 	}
-	return AcceptView{Kind: acceptKindLimited, Sessions: slices.Clone(*a.Sessions)}
+	return AcceptView{Kind: acceptKindLimited, Sessions: slices.Clone(*a.Sessions), AppsInstall: a.AppsInstall}
 }
 
 // AcceptBadge marks an acceptance that is not the whole Worker.
@@ -98,6 +100,17 @@ func (r ControlRow) Seen(sourceID string) string {
 		return k
 	}
 	return ops.ControlAcceptAbsent
+}
+
+// AppsInstall reports whether the acceptance of the source Worker lets its
+// master sessions install apps on this (Android) Worker (apps_install).
+func (r ControlRow) AppsInstall(sourceID string) bool { return r.States[sourceID].AppsInstall }
+
+// AppsInstallSettable reports whether the page sets apps_install of the
+// source Worker's acceptance: only on a whole-Worker acceptance, whose write
+// carries no session list (a limited one takes it with control_set_accept).
+func (r ControlRow) AppsInstallSettable(sourceID string) bool {
+	return r.States[sourceID].Kind == acceptKindAll
 }
 
 // OnOff is a switch as its forms send it back (if_value).
@@ -443,6 +456,34 @@ func handleControlChange(w http.ResponseWriter, r *http.Request, c OpCaller) {
 			break // nothing to save: the row is answered as the Hub has it
 		}
 		op, args = ops.OpControlSetAccept, a
+	case "apps-install":
+		// v0.25.0: the apps_install flag of an acceptance of the whole
+		// Worker. The write keeps the acceptance as it is (accept, no list,
+		// if_state all) and sets only the flag; the Hub audits it with
+		// control_set_accept.
+		row = f.Get("worker_id")
+		src := f.Get("source_worker_id")
+		before, known := storedAccept(r, c, row, src)
+		seen := f.Get("if_state")
+		if seen == "" {
+			seen = acceptKindAll
+		}
+		switch {
+		case !known:
+			rowErr = "Nothing was changed: the Hub could not say what this Worker accepts now. Try again."
+		case before.View.Kind != acceptKindAll || seen != acceptKindAll:
+			note = "Installing apps is set here only on an acceptance of the whole Worker. Set apps_install of a limited acceptance with the operation control_set_accept."
+		default:
+			op, args = ops.OpControlSetAccept, ops.ControlSetAcceptArgs{WriteArgs: wa, WorkerID: row, SourceWorkerID: src,
+				Accept: true, IfState: acceptKindAll, AppsInstall: &on}
+			if on {
+				saved = "Master sessions of " + before.Source + " may install apps on " + before.Target +
+					" from its Minion files folder. A first install still needs a confirmation on the device; updates of apps Minion installed do not."
+			} else {
+				saved = "Master sessions of " + before.Source + " may no longer install apps on " + before.Target + "."
+			}
+			undo = &UndoView{Action: action, Fields: map[string]string{"worker_id": row, "source_worker_id": src, "value": flip, "if_state": acceptKindAll}}
+		}
 	default:
 		http.NotFound(w, r)
 		return

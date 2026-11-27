@@ -15,6 +15,9 @@ type masterIntegration struct {
 	// the session holds a verified lease (master_files_linux.go); nil where
 	// there is no master lane.
 	files masterFiles
+	// apps sends app_install and app_install_status of a calling session on
+	// the master lane under the same conditions (master_files_linux.go).
+	apps masterFiles
 }
 
 // masterFiles sends the file op op of the local caller pid in session on the

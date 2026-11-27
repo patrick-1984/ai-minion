@@ -112,6 +112,10 @@ type WorkerPage struct {
 	// renders nothing for a Worker that is not Android. Empty when this person
 	// may not operate the Worker.
 	DeviceURL string
+	// AppsURL is the "Install an app from Minion files" panel (app_install,
+	// v0.25.0): set when this person may operate an Android Worker that
+	// announced app.install.v1.
+	AppsURL string
 	// Name is the heading (the Worker's name; the id when it has none).
 	Name    string
 	Context string
@@ -256,6 +260,9 @@ func workerData(get func() LiveSource) func(*http.Request) (any, error) {
 			p.MaxName = ops.MaxWorkerNameLen
 			p.HiddenURL = WorkerHiddenPath(id)
 			p.DeviceURL = WorkerDevicePath(id)
+			if v.Worker.InstallsApps {
+				p.AppsURL = WorkerAppsPath(id)
+			}
 		}
 		if v.Worker.Android && isAdminRequest(r) {
 			p.AppUpdateURL = WorkerAppUpdatePath(id)

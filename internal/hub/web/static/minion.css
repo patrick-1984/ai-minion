@@ -1586,3 +1586,6 @@ main:has(> .access-wide) { max-width: none; }
   .crumb-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .topbar:has(> .top-search) .crumbs ol:has(.crumb-label) > li:not(:has(.crumb-label)) { flex-shrink: 100; min-width: 3ch; }
 }
+
+/* App install panel (v0.25.0): a signer digest is always shown in full. */
+#apps-section .apps-digest { white-space: normal; overflow-wrap: anywhere; word-break: break-all; }
