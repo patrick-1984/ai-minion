@@ -140,6 +140,7 @@ func newOpCmd(op ops.Op, deps opsDeps) (*cobra.Command, error) {
 		Use:           op.CLICommand(),
 		Short:         op.Summary,
 		Long:          longHelp(op),
+		Hidden:        op.Unreleased,
 		Args:          noArgs,
 		SilenceUsage:  true,
 		SilenceErrors: true,

@@ -52,9 +52,9 @@ func (c *Client) open(ctx context.Context, rq Request) (net.Conn, error) {
 		// bridge is not running. The cause is not more useful to a caller.
 		return nil, &Error{Code: ErrBridgeDown}
 	}
-	rq.Type, rq.Version, rq.Token = TypeRequest, ProtocolVersion, c.token()
+	rq.Version, rq.Token = ProtocolVersion, c.token()
 	_ = conn.SetWriteDeadline(time.Now().Add(ConnectTimeout))
-	if err := writeFrame(conn, rq); err != nil {
+	if err := WriteFrame(conn, ChannelControl, rq); err != nil {
 		_ = conn.Close()
 		return nil, &Error{Code: ErrBridgeDown}
 	}
@@ -70,9 +70,9 @@ func (c *Client) Status(ctx context.Context) (Status, error) {
 	}
 	defer func() { _ = conn.Close() }()
 	_ = conn.SetReadDeadline(time.Now().Add(ConnectTimeout))
-	typ, body, err := readFrame(conn)
+	typ, body, err := readControl(conn)
 	if err != nil {
-		return Status{}, &Error{Code: ErrBridgeDown}
+		return Status{}, err
 	}
 	switch typ {
 	case TypeStatus:
@@ -96,9 +96,9 @@ func (c *Client) Disable(ctx context.Context, reason string) error {
 	}
 	defer func() { _ = conn.Close() }()
 	_ = conn.SetReadDeadline(time.Now().Add(ConnectTimeout))
-	typ, body, err := readFrame(conn)
+	typ, body, err := readControl(conn)
 	if err != nil {
-		return &Error{Code: ErrBridgeDown}
+		return err
 	}
 	switch typ {
 	case TypeOK:
@@ -133,7 +133,7 @@ func (c *Client) Run(ctx context.Context, op, command string, timeout time.Durat
 	stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
 	defer stop()
 	for {
-		typ, body, err := readFrame(conn)
+		ch, body, err := ReadFrame(conn, MaxPayload)
 		if err != nil {
 			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 				return 0, &Error{Code: ErrTimeout}
@@ -143,17 +143,20 @@ func (c *Client) Run(ctx context.Context, op, command string, timeout time.Durat
 			}
 			return 0, &Error{Code: ErrBridgeDown, Message: "the device control bridge closed the stream"}
 		}
-		switch typ {
-		case TypeStdout, TypeStderr:
-			var d Data
-			if err := json.Unmarshal(body, &d); err != nil {
-				return 0, &Error{Code: ErrInternal, Message: "the bridge sent unreadable data"}
-			}
+		if ch != ChannelControl {
 			if sink != nil {
-				if err := sink(typ == TypeStderr, d.Data); err != nil {
+				if err := sink(ch == ChannelStderr, body); err != nil {
 					return 0, err
 				}
 			}
+			continue
+		}
+		typ, err := ControlType(body)
+		if err != nil {
+			return 0, &Error{Code: ErrInternal, Message: "the bridge sent an unreadable frame"}
+		}
+		switch typ {
+		case TypeStarted:
 		case TypeExit:
 			var e Exit
 			if err := json.Unmarshal(body, &e); err != nil {
@@ -166,6 +169,22 @@ func (c *Client) Run(ctx context.Context, op, command string, timeout time.Durat
 			return 0, &Error{Code: ErrInternal, Message: fmt.Sprintf("unexpected bridge frame %q", typ)}
 		}
 	}
+}
+
+// readControl reads the one control frame of a status or disable answer.
+func readControl(conn net.Conn) (string, []byte, error) {
+	ch, body, err := ReadFrame(conn, MaxPayload)
+	if err != nil {
+		return "", nil, &Error{Code: ErrBridgeDown}
+	}
+	if ch != ChannelControl {
+		return "", nil, &Error{Code: ErrInternal, Message: "the bridge sent data where a control frame was due"}
+	}
+	typ, err := ControlType(body)
+	if err != nil {
+		return "", nil, &Error{Code: ErrInternal, Message: "the bridge sent an unreadable frame"}
+	}
+	return typ, body, nil
 }
 
 // ClampTimeout applies the default and the bounds of a command timeout.
@@ -181,7 +200,7 @@ func ClampTimeout(d time.Duration) time.Duration {
 	return d
 }
 
-func decodeError(body json.RawMessage) error {
+func decodeError(body []byte) error {
 	var f ErrorFrame
 	if err := json.Unmarshal(body, &f); err != nil || f.Code == "" {
 		return &Error{Code: ErrInternal}

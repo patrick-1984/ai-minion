@@ -132,7 +132,7 @@ func (b *Bridge) serve() {
 }
 
 func fail(c net.Conn, code string) {
-	_ = devctl.WriteFrame(c, devctl.ErrorFrame{Type: devctl.TypeError, Code: code})
+	_ = devctl.WriteFrame(c, devctl.ChannelControl, devctl.ErrorFrame{Type: devctl.TypeError, Code: code})
 }
 
 func (b *Bridge) conn(c net.Conn) {
@@ -161,7 +161,7 @@ func (b *Bridge) conn(c net.Conn) {
 		b.mu.Lock()
 		st.ActiveStreams = len(b.streams)
 		b.mu.Unlock()
-		_ = devctl.WriteFrame(c, st)
+		_ = devctl.WriteFrame(c, devctl.ChannelControl, st)
 		return
 	case devctl.OpDisable:
 		b.mu.Lock()
@@ -172,7 +172,7 @@ func (b *Bridge) conn(c net.Conn) {
 			delete(b.streams, sc)
 		}
 		b.mu.Unlock()
-		_ = devctl.WriteFrame(c, map[string]string{"type": devctl.TypeOK})
+		_ = devctl.WriteFrame(c, devctl.ChannelControl, map[string]string{"type": devctl.TypeOK})
 		return
 	case devctl.OpShell, devctl.OpScreencap, devctl.OpInput:
 	default:
@@ -195,6 +195,9 @@ func (b *Bridge) conn(c net.Conn) {
 		return
 	}
 	res := h(rq.Op, rq.Command)
+	if res.Err == "" {
+		_ = devctl.WriteFrame(c, devctl.ChannelControl, map[string]string{"type": devctl.TypeStarted})
+	}
 	if res.Block {
 		ch := make(chan struct{})
 		b.mu.Lock()
@@ -226,19 +229,19 @@ func (b *Bridge) conn(c net.Conn) {
 		fail(c, res.Err)
 		return
 	}
-	if err := sendChunks(c, devctl.TypeStdout, res.Stdout); err != nil {
+	if err := sendChunks(c, devctl.ChannelStdout, res.Stdout); err != nil {
 		return
 	}
-	if err := sendChunks(c, devctl.TypeStderr, res.Stderr); err != nil {
+	if err := sendChunks(c, devctl.ChannelStderr, res.Stderr); err != nil {
 		return
 	}
-	_ = devctl.WriteFrame(c, devctl.Exit{Type: devctl.TypeExit, Code: res.Code})
+	_ = devctl.WriteFrame(c, devctl.ChannelControl, devctl.Exit{Type: devctl.TypeExit, Code: res.Code})
 }
 
-func sendChunks(c net.Conn, typ string, b []byte) error {
+func sendChunks(c net.Conn, ch byte, b []byte) error {
 	for len(b) > 0 {
-		n := min(len(b), devctl.MaxChunk)
-		if err := devctl.WriteFrame(c, devctl.Data{Type: typ, Data: b[:n]}); err != nil {
+		n := min(len(b), devctl.MaxPayload)
+		if err := devctl.WriteFrame(c, ch, b[:n]); err != nil {
 			return err
 		}
 		b = b[n:]

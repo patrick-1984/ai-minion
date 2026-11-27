@@ -95,7 +95,7 @@ func TestShellRelaysOutputAndExitCode(t *testing.T) {
 
 func TestLargeScreencapStreamsInChunks(t *testing.T) {
 	f := newFixture(t, "android")
-	png := make([]byte, 3*devctl.MaxChunk+17)
+	png := make([]byte, 3*devctl.MaxPayload+17)
 	for i := range png {
 		png[i] = byte(i)
 	}

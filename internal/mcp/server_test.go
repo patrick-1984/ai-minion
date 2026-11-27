@@ -213,9 +213,10 @@ func TestOneToolPerWorkerOpWithCatalogDescription(t *testing.T) {
 	var want []string
 	for _, op := range ops.All() {
 		// workers_list is the one Hub op the local Worker forwards (SC-5).
-		if op.Scope != ops.ScopeWorker && op.Name != ops.OpWorkersList {
+		// An Unreleased op is not a tool yet.
+		if op.Unreleased || op.Scope != ops.ScopeWorker && op.Name != ops.OpWorkersList {
 			if _, ok := byName[op.Name]; ok {
-				t.Errorf("hub op %s is exposed in Solo mode", op.Name)
+				t.Errorf("hub or unreleased op %s is exposed in Solo mode", op.Name)
 			}
 			continue
 		}

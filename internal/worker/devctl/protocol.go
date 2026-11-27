@@ -16,42 +16,52 @@
 package devctl
 
 import (
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-
-	"github.com/patrick-1984/ai-minion/internal/proto"
 )
 
 // ProtocolVersion is the version of the bridge protocol this Worker speaks.
+// It travels in the request; a bridge ignores it today.
 const ProtocolVersion = 1
 
-// FrameLimit bounds one frame body on the bridge socket in both directions.
-// It is the frame limit of the local control socket, so the Kotlin side reads
-// both with the same code.
-const FrameLimit = proto.StreamFrameLimit
-
-// MaxChunk is the largest raw data chunk the bridge sends in one stdout or
-// stderr frame (base64 inflates it by a third, well inside FrameLimit).
-const MaxChunk = 256 << 10
+// Frame layout (the app's BridgeFrames): a uint32 big-endian length n
+// (1..MaxPayload+1), one channel byte, then n-1 payload bytes. Channel 0
+// carries one UTF-8 JSON object with a "type"; channels 1 and 2 carry raw
+// stdout and stderr bytes of a running operation.
+const (
+	ChannelControl = 0
+	ChannelStdout  = 1
+	ChannelStderr  = 2
+	// MaxPayload bounds the payload of one frame in both directions.
+	MaxPayload = 1 << 20
+	// MaxRequest bounds the request frame (the bridge reads at most this).
+	MaxRequest = 256 << 10
+)
 
 // SocketName is the file name of the bridge socket, next to worker.sock in the
 // Worker runtime directory (r/minion/adb-bridge.sock in the app).
 const SocketName = "adb-bridge.sock"
 
-// Frame types. The Worker sends exactly one request frame per connection; the
-// bridge answers with zero or more data frames and exactly one final frame
-// (status, exit, ok or error), then closes. The Worker closing the connection
-// cancels the operation: the bridge closes the adb stream at once.
+// TokenEnvPrefix starts the one line the app writes to the Worker's stdin at
+// launch: "MINION_ADB_BRIDGE_TOKEN=<64 hex>\n".
+const TokenEnvPrefix = "MINION_ADB_BRIDGE_TOKEN="
+
+// Control frame types. The Worker sends exactly one request per connection
+// (no type member needed; the bridge reads op). The bridge answers status with
+// one status frame, disable with one ok frame, and shell, screencap and input
+// with one started frame, any number of stdout and stderr frames and exactly
+// one exit frame; any of them can instead end with one error frame. The
+// Worker closing the connection cancels the operation: the bridge closes the
+// adb stream at once.
 const (
-	TypeRequest = "adb.request"
-	TypeStatus  = "adb.status"
-	TypeStdout  = "adb.stdout"
-	TypeStderr  = "adb.stderr"
-	TypeExit    = "adb.exit"
-	TypeOK      = "adb.ok"
-	TypeError   = "adb.error"
+	TypeStatus  = "status"
+	TypeOK      = "ok"
+	TypeStarted = "started"
+	TypeExit    = "exit"
+	TypeError   = "error"
 )
 
 // Request ops: the four operation classes of DESIGN 4.6 plus disable. The
@@ -64,7 +74,7 @@ const (
 	OpDisable   = "disable"
 )
 
-// Error codes of an adb.error frame. Each maps to one honest text (Reason).
+// Error codes of an error frame. Each maps to one honest text (Reason).
 const (
 	ErrNotAvailable       = "not_available"        // build without the feature flag, or API too old
 	ErrDisabled           = "disabled"             // the owner has not enabled it, or it was disabled
@@ -83,8 +93,7 @@ const (
 
 // Request is the one frame the Worker sends.
 type Request struct {
-	Type    string `json:"type"`
-	Version int    `json:"version"`
+	Version int `json:"version"`
 	// Token is the per-start bridge token the app handed the Worker on its
 	// stdin. It prevents accidental use by other same-uid code; it is not a
 	// security boundary (DESIGN 5).
@@ -101,7 +110,7 @@ type Request struct {
 	Reason string `json:"reason,omitempty"`
 }
 
-// Status is the adb.status frame and the device_control block of the Worker
+// Status is the status frame and the device_control block of the Worker
 // status (without the Worker-side fields the Service adds).
 type Status struct {
 	Type string `json:"type,omitempty"`
@@ -133,21 +142,14 @@ const (
 	StateEndpointUnverified = "ENDPOINT_UNVERIFIED"
 )
 
-// Data is an adb.stdout or adb.stderr frame. encoding/json writes Data as
-// base64.
-type Data struct {
-	Type string `json:"type"`
-	Data []byte `json:"data"`
-}
-
-// Exit is the adb.exit frame: the remote exit code of shell, screencap or
+// Exit is the exit frame: the remote exit code of shell, screencap or
 // input.
 type Exit struct {
 	Type string `json:"type"`
 	Code int    `json:"code"`
 }
 
-// ErrorFrame is the adb.error frame.
+// ErrorFrame is the error frame.
 type ErrorFrame struct {
 	Type    string `json:"type"`
 	Code    string `json:"code"`
@@ -209,31 +211,84 @@ func CodeOf(err error) string {
 	return ""
 }
 
-// writeFrame writes one frame.
-func writeFrame(w io.Writer, v any) error { return proto.WriteFrame(w, FrameLimit, v) }
+// WriteFrame writes one frame on channel ch. A control payload is v encoded
+// as JSON; a data payload is v as []byte.
+func WriteFrame(w io.Writer, ch byte, v any) error {
+	var payload []byte
+	if ch == ChannelControl {
+		b, err := json.Marshal(v)
+		if err != nil {
+			return err
+		}
+		payload = b
+	} else {
+		b, ok := v.([]byte)
+		if !ok {
+			return fmt.Errorf("devctl: data frame needs bytes")
+		}
+		payload = b
+	}
+	if len(payload) > MaxPayload {
+		return fmt.Errorf("devctl: frame of %d bytes is too large", len(payload))
+	}
+	buf := make([]byte, 5+len(payload))
+	binary.BigEndian.PutUint32(buf, uint32(len(payload)+1))
+	buf[4] = ch
+	copy(buf[5:], payload)
+	_, err := w.Write(buf)
+	return err
+}
 
-// readFrame reads one frame and returns its type and body.
-func readFrame(r io.Reader) (string, json.RawMessage, error) {
-	body, err := proto.ReadFrame(r, FrameLimit)
-	if err != nil {
-		return "", nil, err
+// ReadFrame reads one frame of at most limit payload bytes.
+func ReadFrame(r io.Reader, limit int) (byte, []byte, error) {
+	var hdr [5]byte
+	if _, err := io.ReadFull(r, hdr[:4]); err != nil {
+		return 0, nil, err
 	}
-	typ, err := proto.FrameType(body)
-	if err != nil {
-		return "", nil, fmt.Errorf("devctl: bridge frame: %w", err)
+	n := binary.BigEndian.Uint32(hdr[:4])
+	if n < 1 || uint64(n-1) > uint64(limit) {
+		return 0, nil, fmt.Errorf("devctl: bad frame size %d", n)
 	}
-	return typ, body, nil
+	if _, err := io.ReadFull(r, hdr[4:]); err != nil {
+		return 0, nil, unexpected(err)
+	}
+	if hdr[4] > ChannelStderr {
+		return 0, nil, fmt.Errorf("devctl: bad channel %d", hdr[4])
+	}
+	payload := make([]byte, n-1)
+	if _, err := io.ReadFull(r, payload); err != nil {
+		return 0, nil, unexpected(err)
+	}
+	return hdr[4], payload, nil
+}
+
+func unexpected(err error) error {
+	if errors.Is(err, io.EOF) {
+		return io.ErrUnexpectedEOF
+	}
+	return err
+}
+
+// ControlType returns the type member of a control payload.
+func ControlType(payload []byte) (string, error) {
+	var t struct {
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal(payload, &t); err != nil || t.Type == "" {
+		return "", fmt.Errorf("devctl: control frame without type")
+	}
+	return t.Type, nil
 }
 
 // ReadRequest reads the request frame (for bridges written in Go: the fake of
 // the tests).
 func ReadRequest(r io.Reader) (Request, error) {
-	typ, body, err := readFrame(r)
+	ch, body, err := ReadFrame(r, MaxRequest)
 	if err != nil {
 		return Request{}, err
 	}
-	if typ != TypeRequest {
-		return Request{}, fmt.Errorf("devctl: expected %s, got %q", TypeRequest, typ)
+	if ch != ChannelControl {
+		return Request{}, fmt.Errorf("devctl: the request is not a control frame")
 	}
 	var rq Request
 	if err := json.Unmarshal(body, &rq); err != nil {
@@ -241,6 +296,3 @@ func ReadRequest(r io.Reader) (Request, error) {
 	}
 	return rq, nil
 }
-
-// WriteFrame writes one bridge frame (for the fake bridge of the tests).
-func WriteFrame(w io.Writer, v any) error { return writeFrame(w, v) }
