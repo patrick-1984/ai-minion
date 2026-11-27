@@ -24,13 +24,26 @@ type stubBackend struct {
 	mu   sync.Mutex
 	seen []string
 	out  map[string]string
+	// args holds the last arguments of each op, as JSON.
+	args map[string]string
 }
 
-func (s *stubBackend) Call(_ context.Context, op string, _ any) (json.RawMessage, error) {
+func (s *stubBackend) Call(_ context.Context, op string, args any) (json.RawMessage, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.seen = append(s.seen, op)
+	if s.args == nil {
+		s.args = map[string]string{}
+	}
+	b, _ := json.Marshal(args)
+	s.args[op] = string(b)
 	return json.RawMessage(s.out[op]), nil
+}
+
+func (s *stubBackend) argsOf(op string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.args[op]
 }
 
 func (s *stubBackend) Stream(ctx context.Context, op string, args any, _ func(json.RawMessage) error) (json.RawMessage, error) {

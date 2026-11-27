@@ -92,3 +92,31 @@ internal class ReconnectNudge(private val minGapMillis: Long = 5_000) {
         return true
     }
 }
+
+/**
+ * Which network callbacks are a transition worth a "reconnect now" request.
+ * onCapabilitiesChanged fires on every change of a network's capabilities (a
+ * Wi-Fi signal change, for example), so only the first time a given network is
+ * seen validated counts (onAvailable always counts and needs no state). A
+ * network that loses its validation, or is lost, counts again when it is
+ * validated again. Networks are keyed by their handle.
+ */
+internal class NetworkTransitions {
+    private val validated = HashSet<Long>()
+
+    /** onCapabilitiesChanged: whether this change is the network's validation. */
+    @Synchronized
+    fun capabilities(network: Long, isValidated: Boolean): Boolean {
+        if (!isValidated) {
+            validated.remove(network)
+            return false
+        }
+        return validated.add(network)
+    }
+
+    /** onLost: the network is gone. */
+    @Synchronized
+    fun lost(network: Long) {
+        validated.remove(network)
+    }
+}

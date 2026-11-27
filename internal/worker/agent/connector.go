@@ -540,7 +540,8 @@ const (
 
 // Reconnect asks for an immediate reconnect attempt, for example because the
 // device's network just came back. In backoff the wait ends now and the
-// backoff starts over; while connected the link is probed and redialled at
+// backoff starts over (at most once a minute: a nudge within a minute of the
+// last reset dials at once but keeps the backoff growing); while connected the link is probed and redialled at
 // once when it is dead (a connection that answers is kept); while connecting
 // the attempt in flight goes on (it is bounded by the dial and handshake
 // timeouts). It never blocks and never pauses or resumes anything.
@@ -637,9 +638,14 @@ func (c *Connector) setOwnerID(id string) {
 	}
 }
 
+// nudgeResetEvery is the shortest time between two backoff resets by a nudge
+// ([Connector.Reconnect]).
+const nudgeResetEvery = time.Minute
+
 // Run connects and reconnects until ctx ends, then closes the connection and
 // returns. It never gives up.
 func (c *Connector) Run(ctx context.Context) {
+	var lastReset time.Time // when a nudge last reset the backoff
 	for ctx.Err() == nil {
 		if wait := c.cycle(ctx); wait {
 			c.setState(ConnBackoff)
@@ -650,7 +656,14 @@ func (c *Connector) Run(ctx context.Context) {
 			case <-c.clk.After(d):
 			case why := <-c.nudge:
 				c.log.Info("hub connector: reconnecting now", "reason", why)
-				c.bo.Reset()
+				// The dial is at once on every nudge, but the backoff starts
+				// over at most once per nudgeResetEvery: a device that sends a
+				// nudge on every network change must not turn a Hub that
+				// refuses or is down into a steady stream of fast attempts.
+				if now := c.clk.Now(); lastReset.IsZero() || now.Sub(lastReset) >= nudgeResetEvery {
+					lastReset = now
+					c.bo.Reset()
+				}
 			case <-pauseCh:
 				// A pause (or resume) during the backoff takes effect at once.
 			case <-ctx.Done():

@@ -116,6 +116,7 @@ class WorkerService : Service() {
     // network; reconnect requests go through the queue.
     @Volatile private var networkUp: Boolean? = null
     private val nudge = ReconnectNudge()
+    private val transitions = NetworkTransitions()
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
 
     // The Android main thread owns the private Binder observer.
@@ -261,9 +262,10 @@ class WorkerService : Service() {
         watchNetwork()
     }
 
-    // When a network becomes usable (validated) the Worker is told to reconnect
-    // at once: it may still hold a half-open connection from before a standby,
-    // or wait out a long backoff, while the Hub sees it offline.
+    // When a network becomes usable (available, or validated for the first
+    // time) the Worker is told to reconnect at once: it may still hold a
+    // half-open connection from before a standby, or wait out a long backoff,
+    // while the Hub sees it offline.
     private fun watchNetwork() {
         val cm = getSystemService(ConnectivityManager::class.java) ?: return
         val callback = object : ConnectivityManager.NetworkCallback() {
@@ -272,14 +274,18 @@ class WorkerService : Service() {
                 requestReconnect("network-available")
             }
 
+            // Called on every capability change (signal strength, too): only
+            // the first validation of a network asks for a reconnect.
             override fun onCapabilitiesChanged(network: Network, caps: NetworkCapabilities) {
-                if (caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)) {
-                    networkUp = true
+                val isValidated = caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+                if (isValidated) networkUp = true
+                if (transitions.capabilities(network.networkHandle, isValidated)) {
                     requestReconnect("network-validated")
                 }
             }
 
             override fun onLost(network: Network) {
+                transitions.lost(network.networkHandle)
                 networkUp = cm.activeNetwork != null
                 queue.execute { publish() }
             }

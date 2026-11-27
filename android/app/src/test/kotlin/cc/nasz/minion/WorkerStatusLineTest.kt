@@ -60,4 +60,22 @@ class WorkerStatusLineTest {
         assertFalse(n.take(5_999))
         assertTrue(n.take(6_000))
     }
+
+    @Test
+    fun onlyTransitionsOfTheNetworkAskForAReconnect() {
+        val t = NetworkTransitions()
+        assertTrue(t.capabilities(1, isValidated = true))
+        // Signal changes of the same validated network: no request.
+        assertFalse(t.capabilities(1, isValidated = true))
+        assertFalse(t.capabilities(1, isValidated = true))
+        // Another network validated is a transition.
+        assertTrue(t.capabilities(2, isValidated = true))
+        // Validation lost and regained counts again.
+        assertFalse(t.capabilities(1, isValidated = false))
+        assertTrue(t.capabilities(1, isValidated = true))
+        // A lost network that comes back counts again.
+        t.lost(2)
+        assertTrue(t.capabilities(2, isValidated = true))
+        assertFalse(t.capabilities(2, isValidated = true))
+    }
 }

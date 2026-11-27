@@ -430,6 +430,9 @@ func localHubWorker(b client.Backend, worker string) client.Backend {
 type hubWorkerBackend struct {
 	client.Backend
 	worker string
+	// storedID returns the Worker id stored in the enrollment of the state in
+	// stateDir ("" when not known); nil reads it with readPairing.
+	storedID func(ctx context.Context, stateDir string) string
 }
 
 func (h hubWorkerBackend) Call(ctx context.Context, op string, args any) (json.RawMessage, error) {
@@ -533,7 +536,9 @@ func (h hubWorkerBackend) routeOther(op string, args any) (any, error) {
 }
 
 // isLocal reports whether the named Worker is the one behind the local
-// control socket, by the id its live status reports. Not knowing is not local.
+// control socket, by the id its live status reports. While the Worker is not
+// connected (offline, in backoff) its status has no id from a welcome, so the
+// id stored in its enrollment answers instead. Not knowing is not local.
 func (h hubWorkerBackend) isLocal() bool {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -545,7 +550,25 @@ func (h hubWorkerBackend) isLocal() bool {
 	if json.Unmarshal(raw, &reply) != nil {
 		return false
 	}
-	return reply.WorkerID != "" && strings.EqualFold(reply.WorkerID, h.worker)
+	id := reply.WorkerID
+	if id == "" && reply.StateDir != "" {
+		stored := h.storedID
+		if stored == nil {
+			stored = storedWorkerID
+		}
+		id = stored(ctx, reply.StateDir)
+	}
+	return id != "" && strings.EqualFold(id, h.worker)
+}
+
+// storedWorkerID returns the Worker id in the enrollment of the state in
+// stateDir, read only; "" when it cannot be read or the Worker is not paired.
+func storedWorkerID(ctx context.Context, stateDir string) string {
+	enr, ok, err := readPairing(ctx, stateDir)
+	if err != nil || !ok {
+		return ""
+	}
+	return enr.WorkerID
 }
 
 // guardedOp reports whether a request of op can rely on a safeguard of the

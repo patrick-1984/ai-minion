@@ -160,3 +160,48 @@ func TestLocalReconnectOp(t *testing.T) {
 		t.Fatalf("without a connector: %v", err)
 	}
 }
+
+// A device that nudges on every network change (a Wi-Fi signal change, say)
+// must not collapse the backoff: every nudge dials at once, but only the first
+// nudge of a minute starts the backoff over; later ones keep it growing.
+func TestRepeatedNudgesDoNotCollapseTheBackoff(t *testing.T) {
+	f := newConnFixture(t)
+	steps := make([]dialStep, 0, 16)
+	for i := 0; i < 16; i++ {
+		steps = append(steps, failStep("connection refused"))
+	}
+	f.dial.script(steps...)
+	f.run()
+	for i := 0; i < 4; i++ {
+		f.step(time.Minute)
+	}
+	eventually(t, func() bool { return f.dial.count() == 5 && len(f.clk.recorded()) == 5 })
+
+	// nudge dials at once and returns the backoff delay that followed.
+	nudge := func() time.Duration {
+		t.Helper()
+		dials, waits := f.dial.count(), len(f.clk.recorded())
+		if got := f.conn.Reconnect("network-validated"); got != ReconnectWoken {
+			t.Fatalf("Reconnect = %q", got)
+		}
+		eventually(t, func() bool { return f.dial.count() == dials+1 && len(f.clk.recorded()) == waits+1 })
+		d := f.clk.recorded()
+		return d[len(d)-1]
+	}
+	base := func(attempt int) time.Duration { return (&transport.Backoff{}).Base(attempt) }
+
+	if d := nudge(); d > base(0) {
+		t.Fatalf("the first nudge did not start the backoff over: %v", d)
+	}
+	for i := 1; i <= 3; i++ {
+		if d := nudge(); d < base(i)/2 || d > base(i) {
+			t.Fatalf("nudge %d within a minute: delay %v, want the growing backoff %v", i+1, d, base(i))
+		}
+	}
+	// A minute after the last reset a nudge starts the backoff over again.
+	f.clk.Advance(nudgeResetEvery)
+	eventually(t, func() bool { return len(f.clk.recorded()) == 10 })
+	if d := nudge(); d > base(0) {
+		t.Fatalf("a nudge a minute later did not start the backoff over: %v", d)
+	}
+}
