@@ -109,6 +109,46 @@ func TestReconnectKeepsALiveLink(t *testing.T) {
 	}
 }
 
+// reconnectOnWrite calls Reconnect from the console write of the connected
+// box: a moment at which the connector already reports the link connected
+// but its wait for nudges has not started.
+type reconnectOnWrite struct {
+	conn *atomic.Pointer[Connector]
+	got  atomic.Value // string
+}
+
+func (w *reconnectOnWrite) Write(p []byte) (int, error) {
+	if c := w.conn.Load(); c != nil && w.got.Load() == nil {
+		w.got.Store(c.Reconnect("network-available"))
+	}
+	return len(p), nil
+}
+
+// A Reconnect that comes right after the connected state is published (here:
+// while the connected box is written) is probed, not dropped as a stale
+// nudge of before the connection: it answered "probing", so it must probe.
+func TestReconnectRightAfterConnectingIsProbed(t *testing.T) {
+	var cp atomic.Pointer[Connector]
+	out := &reconnectOnWrite{conn: &cp}
+	f := newConnFixture(t, func(c *ConnectorConfig) { c.Out = out })
+	cp.Store(f.conn)
+	ok := &liveFakeSession{fakeSession: newFakeSession()}
+	ok.heard.Store(f.clk.Now().UnixNano())
+	ok.answer.Store(true)
+	f.dial.script(func(p ConnectParams) (*Attempt, error) {
+		a, err := f.welcomeStep(nil, okWelcome())(p)
+		a.Session = ok
+		return a, err
+	})
+	f.run()
+	f.waitState(ConnConnected)
+	eventually(t, func() bool { return out.got.Load() != nil })
+	if got := out.got.Load(); got != ReconnectProbing {
+		t.Fatalf("Reconnect = %v", got)
+	}
+	eventually(t, func() bool { return ok.probes.Load() == 1 })
+}
+
 func TestReconnectWhileIdleSaysSo(t *testing.T) {
 	f := newConnFixture(t, func(c *ConnectorConfig) { c.HubURL = "" })
 	f.run()

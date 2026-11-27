@@ -1207,6 +1207,14 @@ func (c *Connector) serve(ctx context.Context, gen uint64, att *Attempt) (backof
 		}
 	}
 	tlsState, tlsLine := TLSPath(att.TLS, w.HubTLS)
+	// A nudge that came before this connection is stale. It is dropped before
+	// the connected state is published, never after: a Reconnect that sees
+	// the link connected (and answers "probing") must find its nudge served
+	// by the wait below, not dropped as stale.
+	select {
+	case <-c.nudge:
+	default:
+	}
 	c.mu.Lock()
 	c.status.State, c.status.Reason = ConnConnected, ""
 	c.status.ConnectedSince, c.status.Welcome = c.clk.Now(), w
@@ -1267,11 +1275,6 @@ func (c *Connector) serve(ctx context.Context, gen uint64, att *Attempt) (backof
 		"protocol", att.Version.String(), "hub_proto_min", w.Min.String(), "hub_proto_max", w.Max.String())
 	connectedAt := c.clk.Now()
 
-	// A nudge that came before this connection is stale.
-	select {
-	case <-c.nudge:
-	default:
-	}
 	var probing atomic.Bool
 wait:
 	for {
@@ -1281,6 +1284,18 @@ wait:
 		case <-ctx.Done():
 			break wait
 		case why := <-c.nudge:
+			select {
+			case <-att.Session.Done():
+				// The link is gone already (a failed probe closes it and then
+				// sends this nudge): no probe of a dead link; the nudge is
+				// kept for the redial, which then skips the backoff wait.
+				select {
+				case c.nudge <- why:
+				default:
+				}
+				break wait
+			default:
+			}
 			if r.live == nil || !probing.CompareAndSwap(false, true) {
 				continue
 			}
