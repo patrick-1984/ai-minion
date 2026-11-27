@@ -1,8 +1,9 @@
-// Access > Access (grants): the filter box and the two checkboxes, the Add
-// dialog (the form moves into the dialog; without a dialog it shows in its
-// details block), the session lists that follow the chosen Worker, the target
-// choice that is never made for the user, focus after a row swap, and the
-// rows that wait for a list reload.
+// Access > Grants: the filter box and the two checkboxes, the Add dialog (the
+// form moves into the dialog; without a dialog it shows in its details
+// block), the From and To pickers of the chosen scope, the three boxes that
+// require Control, Install apps for Android targets only, the saved rows
+// marked after a save, focus after a row swap, and the rows that wait for a
+// list reload.
 (function () {
   "use strict";
   var filter = document.getElementById("grant-filter");
@@ -71,7 +72,6 @@
     if (t && t.id === "grant-body" && status) { status.textContent = ""; }
     apply();
     wire();
-    confirmShown();
     restoreFocus();
   });
   // A change was sent and the list could not be read back: the row may be
@@ -104,18 +104,13 @@
   function clearResult() {
     var result = document.getElementById("grant-add-result");
     if (result) { result.textContent = ""; }
-    confirmShown();
-  }
-  // With the confirmation on screen its own button is the only way to save.
-  function confirmShown() {
-    var submit = document.getElementById("grant-add-submit");
-    if (submit) { submit.hidden = document.getElementById("grant-add-confirm") !== null; }
   }
   function close() {
     if (!form) { return; }
     form.reset();
     clearResult();
-    syncSessions();
+    syncForm();
+    if (window.htmx) { window.htmx.trigger(form, "change"); }
     if (modal && dialog.open) { dialog.close(); }
   }
   document.addEventListener("click", function (e) {
@@ -126,56 +121,91 @@
     if (t.closest("[data-grant-add]")) { dialog.showModal(); }
     if (t.closest("[data-grant-cancel]")) { close(); }
   });
-  // The Hub saved the new grant: the list reloads itself, the dialog closes.
-  document.body.addEventListener("grants-changed", function () {
+  // The Hub saved the new grants: the list reloads itself and marks them,
+  // the dialog closes.
+  var saved = null;
+  document.body.addEventListener("grants-changed", function (e) {
+    if (e.detail && e.detail.ids) { saved = e.detail; }
     if (!modal || dialog.open) { close(); }
   });
-
-  // A session list shows the sessions of the chosen Worker only. The target
-  // is never chosen for the user: a change of the target Worker clears the
-  // session and the choice between one session and every shared session.
-  function syncSessions(changed) {
-    if (!form) { return; }
-    form.querySelectorAll("select[data-grant-worker]").forEach(function (sel) {
-      var name = sel.getAttribute("data-grant-worker");
-      var list = form.elements[name];
-      if (!list) { return; }
-      if (changed === sel) {
-        list.value = "";
-        if (name === "target_session") {
-          form.querySelectorAll("input[name=target_scope]").forEach(function (r) { r.checked = false; });
-        }
-      }
-      Array.prototype.forEach.call(list.options, function (o) {
-        var w = o.getAttribute("data-worker");
-        if (w === null) { return; }
-        var other = sel.value === "" || w !== sel.value;
-        o.hidden = other;
-        o.disabled = other;
-        if (other && o.selected) { list.value = ""; }
-      });
+  function markSaved() {
+    if (!saved) { return; }
+    var first = null;
+    (saved.ids || []).forEach(function (id) {
+      var tr = document.getElementById("grant-" + id);
+      if (tr) { tr.setAttribute("data-saved", "1"); first = first || tr; }
     });
-    // The session list of the target is used only for "one session".
-    var one = document.getElementById("grant-add-scope-one");
-    var target = form.elements.target_session;
-    if (one && target) {
-      target.disabled = !one.checked;
-      target.required = one.checked;
-      if (!one.checked) { target.value = ""; }
+    if (status && saved.text) { status.textContent = saved.text; }
+    if (first && first.scrollIntoView) { first.scrollIntoView({ block: "nearest" }); }
+    saved = null;
+  }
+  document.addEventListener("htmx:afterSwap", function (e) {
+    var t = e.detail && e.detail.target;
+    if (t && t.id === "grant-body") { markSaved(); }
+  });
+
+  // The three boxes beneath the level: Send files and Install apps require
+  // Control, so below it they are off and say so.
+  function syncBoxes(scope) {
+    var level = scope.querySelector("select[name=level]") || scope.querySelector("input[name=level]:checked");
+    var control = level && level.value === "control";
+    scope.querySelectorAll("[data-needs-control]").forEach(function (box) {
+      box.disabled = !control;
+      if (!control) { box.checked = false; }
+      var note = box.parentNode.querySelector(".grant-needs-control");
+      if (note) { note.hidden = control; }
+    });
+  }
+  document.addEventListener("change", function (e) {
+    var f = e.target.closest && e.target.closest("form");
+    if (f && f !== form && e.target.name === "level" && f.querySelector("[data-grant-boxes]")) { syncBoxes(f); }
+  });
+
+  // From and To: the picker of the chosen scope is the only one sent. Install
+  // apps is offered only while every chosen target is on an Android Worker,
+  // and names the device.
+  function syncForm() {
+    if (!form) { return; }
+    form.querySelectorAll("[data-grant-for]").forEach(function (el) {
+      var radio = document.getElementById(el.getAttribute("data-grant-for"));
+      var on = !!(radio && radio.checked);
+      el.hidden = !on;
+      el.querySelectorAll("select").forEach(function (s) { s.disabled = !on; });
+    });
+    var devices = [], android = true, any = false;
+    var scope = form.querySelector("input[name=target_scope]:checked");
+    var picked = [];
+    if (scope && scope.value === "sessions") {
+      picked = Array.prototype.filter.call(form.elements.target_sessions.options, function (o) { return o.selected; });
+    } else if (scope && scope.value === "worker") {
+      var w = form.elements.target_worker_id;
+      if (w.selectedIndex > 0) { picked = [w.options[w.selectedIndex]]; }
     }
+    picked.forEach(function (o) {
+      any = true;
+      var d = o.getAttribute("data-android");
+      if (d === null) { android = false; return; }
+      if (devices.indexOf(d) === -1) { devices.push(d); }
+    });
+    var apps = form.querySelector("[data-grant-apps]");
+    if (apps) {
+      var show = any && android;
+      apps.hidden = !show;
+      var box = apps.querySelector("input");
+      if (!show && box) { box.checked = false; box.disabled = true; }
+      var name = apps.querySelector("[data-grant-device]");
+      if (name) { name.textContent = devices.join(", "); }
+    }
+    syncBoxes(form);
+    var appsBox = apps && apps.querySelector("input");
+    if (apps && apps.hidden && appsBox) { appsBox.disabled = true; }
   }
   if (form) {
-    form.addEventListener("change", function (e) {
-      var t = e.target;
-      var worker = t.hasAttribute && t.hasAttribute("data-grant-worker");
-      if (worker || t.name === "target_scope") { syncSessions(worker ? t : null); }
-      // A confirmation belongs to the values it was shown for.
+    form.addEventListener("change", function () {
+      syncForm();
       clearResult();
     });
-    form.addEventListener("input", function (e) {
-      if (e.target.name !== "note") { clearResult(); }
-    });
-    syncSessions();
+    syncForm();
     // ?source=<worker>|<session> preselected the source: the form opens.
     if (form.hasAttribute("data-grant-open")) {
       if (modal) {

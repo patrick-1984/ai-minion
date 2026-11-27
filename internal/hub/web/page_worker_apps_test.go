@@ -96,27 +96,3 @@ func TestAppOutcomeTexts(t *testing.T) {
 		}
 	}
 }
-
-func TestGrantAddAppsInstallFlag(t *testing.T) {
-	f := newFakeOps().reply(ops.OpGrantList, grantFixture()).reply(ops.OpGrantSet, ops.GrantSetResult{Outcome: ops.OutcomeDelivered})
-	connect(t, f)
-	d := Dashboard{Workers: []WorkerRow{wPrivate, wInfra}, Sessions: []SessionRow{sAgent, sShell}}
-	s, _ := listServer(t, d, d)
-	add := url.Values{"source_worker_id": {"w1"}, "source_session": {"w1|fix-tests"}, "target_worker_id": {"w1"},
-		"target_scope": {"one"}, "target_session": {"w1|ci"}, "level": {"view"}, "apps_install": {"1"}}
-	mustHave(t, post(t, s, pathAccessGrants+"/add", adminHeader, add).Body.String(), "Installing apps needs the level Control.")
-	add.Set("level", "control")
-	mustHave(t, post(t, s, pathAccessGrants+"/add", adminHeader, add).Body.String(), "It may also install apps on the target")
-	if len(f.called(ops.OpGrantSet)) != 0 {
-		t.Fatal("a grant with apps_install was saved without the confirmation")
-	}
-	add.Set("confirm", "1")
-	add.Set("confirm_for", grantConfirmKeyForTest("w1", "fix-tests", "w1", "one", "ci", "control", "", "apps:install"))
-	post(t, s, pathAccessGrants+"/add", adminHeader, add)
-	calls := f.called(ops.OpGrantSet)
-	if len(calls) != 1 || calls[0].Args["apps_install"] != true || calls[0].Args["files_push"] != nil {
-		t.Fatalf("calls = %+v", calls)
-	}
-	body := get(t, s, pathAccessGrants, "X-Test-Session", adminHeader).Body.String()
-	mustHave(t, body, `<input type="checkbox" name="apps_install" id="grant-add-apps-install" value="1">`)
-}

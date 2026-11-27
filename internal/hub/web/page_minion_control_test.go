@@ -362,60 +362,79 @@ func TestMinionControlShowsAFailedCheck(t *testing.T) {
 	mustNotHave(t, body, "no master session.")
 }
 
-// v0.25.0: an acceptance of the whole Worker has an apps_install box (admins
-// only); a click sets only the flag, keeps the acceptance and offers Undo. A
-// limited acceptance is not widened: the click writes nothing.
-func TestMinionControlAppsInstallBox(t *testing.T) {
+// v0.26.0: an actual acceptance, whole Worker or limited, has the three
+// boxes of a grant (admins only): Receive files from target, Send files to
+// target and, when on or for an Android Worker, Install apps. A click sets
+// only that flag and keeps the acceptance as the page showed it: a limited
+// one with its exact session list. A list changed meanwhile writes nothing.
+func TestMinionControlAcceptanceBoxes(t *testing.T) {
 	f := newFakeOps().reply(ops.OpControlList, controlFixture())
 	connect(t, f)
 	s := adminServer(t)
 	body := get(t, s, pathMinionControl, "X-Test-Session", adminHeader).Body.String()
-	mustHave(t, body, `hx-post="/access/control/apps-install"`, `aria-label="Master sessions of boss-box may install apps on ci"> may install apps (apps_install)`)
-	if rec := post(t, s, pathMinionControl+"/apps-install", userHeader, url.Values{"worker_id": {"wB"}, "source_worker_id": {"wA"}, "value": {"on"}}); rec.Code != http.StatusNotFound {
+	mustHave(t, body, `hx-post="/access/control/accept-flag"`, `<input type="hidden" name="flag" value="files_pull">`,
+		`aria-label="Master sessions of boss-box may receive files from ci"> Receive files from target</label>`,
+		`aria-label="Master sessions of boss-box may send files to ci"> Send files to target</label>`)
+	// ci is not an Android Worker and has no install flag: no install box.
+	mustNotHave(t, body, `may install apps on ci`)
+	if rec := post(t, s, pathMinionControl+"/accept-flag", userHeader, url.Values{"worker_id": {"wB"}, "source_worker_id": {"wA"}, "flag": {"files_pull"}, "value": {"on"}}); rec.Code != http.StatusNotFound {
 		t.Fatalf("user POST = %d", rec.Code)
 	}
 
 	fx := controlFixture()
 	f = newFakeOps().reply(ops.OpControlList, fx).reply(ops.OpControlSetAccept, ops.WriteResult{Outcome: ops.OutcomeDelivered})
 	connect(t, f)
-	rec := post(t, s, pathMinionControl+"/apps-install", adminHeader, url.Values{"worker_id": {"wB"}, "source_worker_id": {"wA"}, "value": {"on"}, "if_state": {"all"}})
+	rec := post(t, s, pathMinionControl+"/accept-flag", adminHeader, url.Values{"worker_id": {"wB"}, "source_worker_id": {"wA"}, "flag": {"files_push"}, "value": {"on"}, "if_state": {"all"}})
 	calls := f.called(ops.OpControlSetAccept)
-	if len(calls) != 1 || calls[0].Args["apps_install"] != true || calls[0].Args["accept"] != true || calls[0].Args["if_state"] != "all" {
+	if len(calls) != 1 || calls[0].Args["files_push"] != true || calls[0].Args["accept"] != true || calls[0].Args["if_state"] != "all" {
 		t.Fatalf("calls = %+v", calls)
 	}
-	if _, has := calls[0].Args["sessions"]; has {
-		t.Fatalf("the flag carried a session list: %+v", calls[0].Args)
+	for _, k := range []string{"sessions", "files_pull", "apps_install"} {
+		if _, has := calls[0].Args[k]; has {
+			t.Fatalf("the box sent %s: %+v", k, calls[0].Args)
+		}
 	}
-	if _, has := calls[0].Args["files_push"]; has {
-		t.Fatalf("the flag changed a file flag: %+v", calls[0].Args)
-	}
-	mustHave(t, rec.Body.String(), `id="ctl-wB"`, "Master sessions of boss-box may install apps on ci", "confirmation on the device",
-		">Undo</button>", `name="value" value="off"`)
-
+	mustHave(t, rec.Body.String(), `id="ctl-wB"`, "Master sessions of boss-box may send files to ci.", ">Undo</button>", `name="value" value="off"`)
 	// Unticked: the flag goes off.
-	post(t, s, pathMinionControl+"/apps-install", adminHeader, url.Values{"worker_id": {"wB"}, "source_worker_id": {"wA"}, "if_state": {"all"}})
-	if calls := f.called(ops.OpControlSetAccept); len(calls) != 2 || calls[1].Args["apps_install"] != false {
+	post(t, s, pathMinionControl+"/accept-flag", adminHeader, url.Values{"worker_id": {"wB"}, "source_worker_id": {"wA"}, "flag": {"files_push"}, "if_state": {"all"}})
+	if calls := f.called(ops.OpControlSetAccept); len(calls) != 2 || calls[1].Args["files_push"] != false {
 		t.Fatalf("calls = %+v", calls)
 	}
+	// An unknown flag is not a box.
+	if rec := post(t, s, pathMinionControl+"/accept-flag", adminHeader, url.Values{"worker_id": {"wB"}, "source_worker_id": {"wA"}, "flag": {"command_shell"}, "value": {"on"}, "if_state": {"all"}}); rec.Code != http.StatusNotFound {
+		t.Fatalf("unknown flag = %d", rec.Code)
+	}
 
-	// A stored flag is ticked.
+	// A stored install flag is shown and ticked.
 	fx.Workers[1].Accepts[0].AppsInstall = true
-	f = newFakeOps().reply(ops.OpControlList, fx)
-	connect(t, f)
+	connect(t, newFakeOps().reply(ops.OpControlList, fx))
 	body = get(t, s, pathMinionControl, "X-Test-Session", adminHeader).Body.String()
-	mustHave(t, body, `value="on" checked aria-label="Master sessions of boss-box may install apps on ci"`)
+	mustHave(t, body, `value="on" checked aria-label="Master sessions of boss-box may install apps on ci"> Install apps on ci</label>`)
 
-	// Limited: no box, and a click writes nothing.
+	// Limited: the boxes are there with the list; a click sends that exact list.
 	lim := acceptStatesFixture()
-	lim.Workers[1].Accepts[0].AppsInstall = true
 	f = newFakeOps().reply(ops.OpControlList, lim).reply(ops.OpControlSetAccept, ops.WriteResult{Outcome: ops.OutcomeDelivered})
 	connect(t, f)
 	body = get(t, s, pathMinionControl, "X-Test-Session", adminHeader).Body.String()
-	mustNotHave(t, body, `aria-label="Master sessions of boss-box may install apps on ci"`)
-	mustHave(t, body, `title="Master sessions of boss-box may install apps on ci">apps_install</span>`)
-	rec = post(t, s, pathMinionControl+"/apps-install", adminHeader, url.Values{"worker_id": {"wB"}, "source_worker_id": {"wA"}, "value": {"on"}, "if_state": {"all"}})
-	if calls := f.called(ops.OpControlSetAccept); len(calls) != 0 {
-		t.Fatalf("a limited acceptance was written: %+v", calls)
+	mustHave(t, body, `<input type="hidden" name="if_state" value="limited"><input type="hidden" name="sessions" value="ci"><input type="hidden" name="sessions" value="ci-2"><input type="hidden" name="flag" value="files_pull">`)
+	post(t, s, pathMinionControl+"/accept-flag", adminHeader, url.Values{"worker_id": {"wB"}, "source_worker_id": {"wA"}, "flag": {"files_pull"},
+		"value": {"on"}, "if_state": {"limited"}, "sessions": {"ci-2", "ci"}})
+	calls = f.called(ops.OpControlSetAccept)
+	if len(calls) != 1 || calls[0].Args["files_pull"] != true || calls[0].Args["if_state"] != "limited" {
+		t.Fatalf("calls = %+v", calls)
 	}
-	mustHave(t, rec.Body.String(), "Set apps_install of a limited acceptance with the operation control_set_accept.")
+	if got, _ := calls[0].Args["sessions"].([]any); len(got) != 2 || got[0] != "ci" || got[1] != "ci-2" {
+		t.Fatalf("sessions = %+v", calls[0].Args["sessions"])
+	}
+	// A list changed meanwhile is not written back.
+	rec = post(t, s, pathMinionControl+"/accept-flag", adminHeader, url.Values{"worker_id": {"wB"}, "source_worker_id": {"wA"}, "flag": {"files_pull"},
+		"value": {"on"}, "if_state": {"limited"}, "sessions": {"ci"}})
+	if calls := f.called(ops.OpControlSetAccept); len(calls) != 1 {
+		t.Fatalf("a changed list was written: %+v", calls)
+	}
+	mustHave(t, rec.Body.String(), "this acceptance was changed meanwhile")
+	// An acceptance that allows nothing has no boxes.
+	_, esp, _ := strings.Cut(body, `id="ctl-wC"`)
+	esp, _, _ = strings.Cut(esp, "</tr>")
+	mustNotHave(t, esp, "accept-flag")
 }
