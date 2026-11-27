@@ -73,6 +73,9 @@ func RegisterSessionControlCalls(cs *CallServer, rt SessionControlRouter) error 
 			return err
 		}
 	}
+	if err := registerFileAppCalls(cs, rt); err != nil {
+		return err
+	}
 	// workers_list is a Hub op: every Worker, narrowed by authz to those the
 	// grant (and the own-Worker rule) may read.
 	return cs.HandleGrantOnly(ops.OpWorkersList, func(ctx context.Context, c *CallContext, _ func(any) error) (any, error) {
@@ -82,6 +85,50 @@ func RegisterSessionControlCalls(cs *CallServer, rt SessionControlRouter) error 
 		}
 		return ops.WorkersListResult{Workers: list}, nil
 	})
+}
+
+// FileAppCallOps are the file and app install ops an ordinary calling session
+// reaches on call streams (v0.26.0): decided by the same rule as on the
+// master lane, a direct grant or an applicable master acceptance that covers
+// this caller, this target and this action.
+var FileAppCallOps = []string{ops.OpFileList, ops.OpFilePull, ops.OpFilePush, ops.OpAppInstall, ops.OpAppInstallStatus}
+
+// registerFileAppCalls makes the [FileAppCallOps] available on call streams
+// for a calling session with a grant, routed through rt. A transfer that
+// outlives the call is re-decided on the call's grants read again (its
+// admission fence), so a revoke stops it.
+func registerFileAppCalls(cs *CallServer, rt SessionControlRouter) error {
+	for _, name := range FileAppCallOps {
+		if err := cs.HandleGrantOnly(name, func(ctx context.Context, c *CallContext, _ func(any) error) (any, error) {
+			req := CallRequest{Principal: c.Principal, Op: c.Op.Name, Args: c.Args, admit: c.admit, source: c.source()}
+			if len(c.Principal.DirectGrants()) > 0 {
+				req.granted = func(ids []string) { c.grantIDs = ids }
+			}
+			switch a := c.Args.(type) {
+			case *ops.AppInstallArgs:
+				req.WorkerID = a.WorkerID
+				// The audit names the apps_install grant or acceptance row the
+				// final admission decided on.
+				req.appBasis = func(b authz.FileBasis) { c.grantIDs = appAuditIDs(b) }
+			case *ops.AppInstallStatusArgs:
+				req.WorkerID = a.WorkerID
+			default:
+				t, ok := targetOfArgs(c.Args)
+				if !ok {
+					return nil, proto.NewError(proto.CodeInternal, "unreadable file operation arguments")
+				}
+				req.WorkerID, req.Session = t.WorkerID, t.SessionName
+			}
+			if c.admit != nil && (c.Op.Name == ops.OpFilePull || c.Op.Name == ops.OpFilePush) {
+				admit := c.admit
+				req.fileRefresh = func(ctx context.Context) (authz.Principal, error) { return admit(ctx, Online{}) }
+			}
+			return rt.Call(ctx, req)
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // MessageJudge says whether a direct grant gives a principal message on one

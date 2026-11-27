@@ -17,29 +17,16 @@ import (
 
 // The Worker-session caller of a file transfer (files.v1, WP12, BRD 5.6):
 //
-//   - file_list, file_pull and file_push of a session caller are served on
-//     the master lane only (master_call_v1 of a bound lease: a verified
-//     source, workers.MasterControl). On an ordinary call stream the calling
-//     session is only named (a claimed source), which never carries file
-//     authority: the Hub answers forbidden and says how to get a verified
-//     source;
+//   - file_list, file_pull, file_push, app_install and app_install_status of a
+//     session caller are served on its call stream
+//     (workers.RegisterSessionControlCalls) and on the master lane, decided
+//     by the same rule: a grant or an applicable master acceptance that
+//     covers this caller, this target and this action;
 //   - file_receipt of a Worker that received a pull is served on its call
 //     stream, bound to the Worker the handshake authenticated and the leg
 //     token (files.Service.Receipt);
 //   - the caller leg a Worker opens on its connection (an inbound fx stream)
 //     is served by files.Service.ServeWorkerLeg, bound to that connection.
-
-// claimedFileMessage is the refusal of a file op with a claimed source.
-const claimedFileMessage = "a session transfers files only with a verified source: this call only names its session (a claimed source), " +
-	"which never carries file authority. Ask the owner to run the session as a bound master (minion master claude, Minion control) " +
-	"or to bind its grant to the session (grant_bind), and to tick files_pull or files_push on that grant or on the master acceptance of the target Worker"
-
-// claimedAppMessage is the refusal of an app install op with a claimed source
-// (v0.25.0): a session installs apps only on the master lane.
-const claimedAppMessage = "a session installs apps only with a verified source: this call only names its session (a claimed source), " +
-	"which never carries the authority to install. Ask the owner to run the session as a bound master (minion master claude, Minion control) " +
-	"or to bind its grant to the session (grant_bind), and to tick apps_install on that grant or on the master acceptance of the Android Worker; " +
-	"or run minion apps install with a Hub API key whose scope names app_install"
 
 // fileCallTimeout bounds the work of a file call stream op.
 const fileCallTimeout = 10 * time.Second
@@ -47,22 +34,6 @@ const fileCallTimeout = 10 * time.Second
 // registerFileCalls registers the call stream ops of the file transfer and
 // the handler of the Workers' data legs.
 func registerFileCalls(svc *workers.Service, fs *files.Service) error {
-	for _, op := range []string{ops.OpFileList, ops.OpFilePull, ops.OpFilePush} {
-		if !svc.HandleCallOp(op, func(_ context.Context, c workers.Call) {
-			replyCall(c.Stream, nil, proto.NewError(proto.CodeForbidden, claimedFileMessage))
-		}) {
-			return errFileCallTaken(op)
-		}
-	}
-	// App installs of a session caller (v0.25.0) are served on the master
-	// lane only, like the file ops.
-	for _, op := range ops.AppInstallOpNames {
-		if !svc.HandleCallOp(op, func(_ context.Context, c workers.Call) {
-			replyCall(c.Stream, nil, proto.NewError(proto.CodeForbidden, claimedAppMessage))
-		}) {
-			return errFileCallTaken(op)
-		}
-	}
 	if !svc.HandleCallOp(ops.OpFileReceipt, func(ctx context.Context, c workers.Call) {
 		ctx, cancel := context.WithTimeout(ctx, fileCallTimeout)
 		defer cancel()

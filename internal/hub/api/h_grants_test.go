@@ -285,7 +285,7 @@ func TestGrantAdministratorBetweenWorkersOfOneOtherUserAndTheAudit(t *testing.T)
 	}
 	evs := k.grantEvents(AuditActionGrantCreate)
 	if len(evs) != 1 || evs[0].Target != a2.ID+":build" || evs[0].Source != a1.ID+":agent" || evs[0].GrantID != g.ID ||
-		evs[0].Detail != "level=view authority=owner expires=none" || evs[0].Outcome != AuditOutcomeSuccess || evs[0].Actor == "" {
+		evs[0].Detail != "level=view authority=owner expires=none source_scope=session" || evs[0].Outcome != AuditOutcomeSuccess || evs[0].Actor == "" {
 		t.Fatalf("create audit = %+v", evs)
 	}
 	// The owner edits the grant an administrator made for them, and it is

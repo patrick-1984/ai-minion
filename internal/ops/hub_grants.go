@@ -70,13 +70,29 @@ func GrantLevelName(rank int) (level string, ok bool) {
 	return "", false
 }
 
+// Grant source scopes (GrantSetArgs.SourceScope, Grant.SourceScope).
+const (
+	// GrantSourceSession is one named source session.
+	GrantSourceSession = "session"
+	// GrantSourceWorker is every shared session of the source Worker,
+	// sessions it shares later included.
+	GrantSourceWorker = "worker"
+	// GrantSourceEveryone is every shared session of every eligible Worker
+	// (administrators only).
+	GrantSourceEveryone = "everyone"
+)
+
 // Grant is one grant as the Hub reports it.
 type Grant struct {
-	ID             string `json:"id"`
+	ID string `json:"id"`
+	// SourceScope is "session", "worker" (every shared session of the source
+	// Worker: SourceSession empty) or "everyone" (no source Worker).
+	SourceScope    string `json:"source_scope"`
 	SourceWorkerID string `json:"source_worker_id"`
 	SourceSession  string `json:"source_session"`
-	// SourceProof is "claimed" (the source is identified by its name) or
-	// "verified" (a bound master incarnation).
+	// SourceProof is "claimed" (the source is identified by its name, its
+	// Worker or everyone) or "verified" (a legacy grant pinned to a bound
+	// master incarnation).
 	SourceProof    string `json:"source_proof"`
 	TargetWorkerID string `json:"target_worker_id"`
 	// TargetSession is empty for every shared session of the target Worker,
@@ -100,15 +116,13 @@ type Grant struct {
 	// one target session.
 	CommandShell bool `json:"command_shell,omitempty"`
 	// FilesPull and FilesPush are the file transfer flags (files.v1): the
-	// source session may list and pull files from the target (needs level
-	// view or more), or push files into it (needs level control). They are
-	// honoured only for a verified source; a grant stored before v0.24 has
-	// neither.
+	// source may list and pull files from the target (needs level view or
+	// more), or push files into it (needs level control).
 	FilesPull bool `json:"files_pull,omitempty"`
 	FilesPush bool `json:"files_push,omitempty"`
-	// AppsInstall lets the source session install apps on the target's
-	// Android Worker from its Minion files folder (app_install, v0.25.0).
-	// Level control and a verified source only; never implied by files_push.
+	// AppsInstall lets the source install apps on the target's Android
+	// Worker from its Minion files folder (app_install, v0.25.0). Level
+	// control only; never implied by files_push.
 	AppsInstall bool `json:"apps_install,omitempty"`
 
 	// Display members, filled by the handler.
@@ -153,16 +167,35 @@ func (r GrantListResult) MarshalJSON() ([]byte, error) {
 	return json.Marshal(plain(r))
 }
 
+// GrantTarget is one target of a grant_set that creates several grants: a
+// session of a Worker, or SessionName empty for every shared session of that
+// Worker.
+type GrantTarget struct {
+	WorkerID    string `json:"worker_id"`
+	SessionName string `json:"session_name,omitempty"`
+}
+
 // GrantSetArgs create a grant (ID empty) or change the level, expiry, note
-// and command shell flag of an existing one (ID with IfRevision).
+// and flags of an existing one (ID with IfRevision).
+//
+// The source is SourceScope: "session" (or absent: the request of before
+// v0.26.0) names SourceWorkerID and SourceSession; "worker" names
+// SourceWorkerID only (every shared session of it); "everyone" names neither
+// (administrators only). The target is TargetWorkerID and TargetSession, or,
+// to create one grant per target in one step, Targets (then TargetWorkerID
+// and TargetSession are empty).
 type GrantSetArgs struct {
 	WriteArgs
 	ID             string `json:"id,omitempty"`
-	SourceWorkerID string `json:"source_worker_id"`
-	SourceSession  string `json:"source_session"`
-	TargetWorkerID string `json:"target_worker_id"`
+	SourceScope    string `json:"source_scope,omitempty"`
+	SourceWorkerID string `json:"source_worker_id,omitempty"`
+	SourceSession  string `json:"source_session,omitempty"`
+	TargetWorkerID string `json:"target_worker_id,omitempty"`
 	// TargetSession is empty for every shared session of the target Worker.
 	TargetSession string `json:"target_session,omitempty"`
+	// Targets are the targets of a create of several grants: one grant per
+	// distinct target, all created together or none.
+	Targets []GrantTarget `json:"targets,omitempty"`
 	Level         string `json:"level"`
 	// ExpiresAt is RFC 3339 UTC with milliseconds; empty means no expiry.
 	ExpiresAt string `json:"expires_at,omitempty"`
@@ -175,9 +208,8 @@ type GrantSetArgs struct {
 	// level control and a target session.
 	CommandShell *bool `json:"command_shell,omitempty"`
 	// FilesPull and FilesPush set the file transfer flags (see
-	// Grant.FilesPull). Absent keeps the stored flag on a change (unset on a
-	// create, so a new grant has no file access); files_push true needs level
-	// control.
+	// Grant.FilesPull). Absent keeps the stored flag on a change (off on a
+	// create); files_push true needs level control.
 	FilesPull *bool `json:"files_pull,omitempty"`
 	FilesPush *bool `json:"files_push,omitempty"`
 	// AppsInstall sets the app install flag (see Grant.AppsInstall). Absent
@@ -205,20 +237,48 @@ func (a GrantSetArgs) Validate() error {
 	} else if a.IfRevision != 0 {
 		return invalid("if_revision", "a new grant has no revision")
 	}
-	if !ValidUUIDv7(a.SourceWorkerID) {
-		return invalid("source_worker_id", "must be a UUIDv7")
+	switch a.SourceScope {
+	case "", GrantSourceSession:
+		if !ValidUUIDv7(a.SourceWorkerID) {
+			return invalid("source_worker_id", "must be a UUIDv7")
+		}
+		if !proto.ValidMasterSessionName(a.SourceSession) {
+			return invalid("source_session", "must be one valid session name")
+		}
+	case GrantSourceWorker:
+		if !ValidUUIDv7(a.SourceWorkerID) {
+			return invalid("source_worker_id", "must be a UUIDv7")
+		}
+		if a.SourceSession != "" {
+			return invalid("source_session", "every shared session of a Worker names no session")
+		}
+	case GrantSourceEveryone:
+		if a.SourceWorkerID != "" || a.SourceSession != "" {
+			return invalid("source_worker_id", "everyone names no source Worker or session")
+		}
+	default:
+		return invalid("source_scope", "must be session, worker or everyone")
 	}
-	if !ValidUUIDv7(a.TargetWorkerID) {
-		return invalid("target_worker_id", "must be a UUIDv7")
+	targets, err := a.targetList()
+	if err != nil {
+		return err
 	}
-	if a.SourceWorkerID == a.TargetWorkerID {
-		return invalid("target_worker_id", "source and target must be different Workers")
+	if a.ID != "" && a.Targets != nil {
+		return invalid("targets", "a change names the one target of its grant")
 	}
-	if !proto.ValidMasterSessionName(a.SourceSession) {
-		return invalid("source_session", "must be one valid session name")
-	}
-	if a.TargetSession != "" && !proto.ValidMasterSessionName(a.TargetSession) {
-		return invalid("target_session", "must be a valid session name, or empty for all shared sessions")
+	for _, t := range targets {
+		if !ValidUUIDv7(t.WorkerID) {
+			return invalid("target_worker_id", "must be a UUIDv7")
+		}
+		if t.WorkerID == a.SourceWorkerID {
+			return invalid("target_worker_id", "source and target must be different Workers")
+		}
+		if t.SessionName != "" && !proto.ValidMasterSessionName(t.SessionName) {
+			return invalid("target_session", "must be a valid session name, or empty for all shared sessions")
+		}
+		if a.CommandShell != nil && *a.CommandShell && t.SessionName == "" {
+			return invalid("command_shell", "a command shell names one target session")
+		}
 	}
 	if _, ok := GrantLevelRank(a.Level); !ok {
 		return invalid("level", "must be view, message or control")
@@ -231,13 +291,8 @@ func (a GrantSetArgs) Validate() error {
 	if !utf8.ValidString(a.Note) || utf8.RuneCountInString(a.Note) > MaxGrantNote {
 		return invalid("note", "must be valid text of at most %d characters", MaxGrantNote)
 	}
-	if a.CommandShell != nil && *a.CommandShell {
-		if a.Level != GrantLevelControl {
-			return invalid("command_shell", "a command shell needs level control")
-		}
-		if a.TargetSession == "" {
-			return invalid("command_shell", "a command shell names one target session")
-		}
+	if a.CommandShell != nil && *a.CommandShell && a.Level != GrantLevelControl {
+		return invalid("command_shell", "a command shell needs level control")
 	}
 	if a.FilesPush != nil && *a.FilesPush && a.Level != GrantLevelControl {
 		return invalid("files_push", "pushing files needs level control")
@@ -248,13 +303,51 @@ func (a GrantSetArgs) Validate() error {
 	return nil
 }
 
+// TargetList returns the targets the arguments name: Targets, or the one
+// TargetWorkerID and TargetSession. Validate has checked them.
+func (a GrantSetArgs) TargetList() []GrantTarget {
+	t, _ := a.targetList()
+	return t
+}
+
+func (a GrantSetArgs) targetList() ([]GrantTarget, error) {
+	if a.Targets == nil {
+		return []GrantTarget{{WorkerID: a.TargetWorkerID, SessionName: a.TargetSession}}, nil
+	}
+	if a.TargetWorkerID != "" || a.TargetSession != "" {
+		return nil, invalid("targets", "name the targets either in targets or in target_worker_id, not both")
+	}
+	if len(a.Targets) == 0 {
+		return nil, invalid("targets", "choose at least one target")
+	}
+	if len(a.Targets) > MaxGrantTargets {
+		return nil, invalid("targets", "at most %d targets", MaxGrantTargets)
+	}
+	seen := make(map[GrantTarget]bool, len(a.Targets))
+	out := make([]GrantTarget, 0, len(a.Targets))
+	for _, t := range a.Targets {
+		if !seen[t] {
+			seen[t] = true
+			out = append(out, t)
+		}
+	}
+	return out, nil
+}
+
+// MaxGrantTargets bounds the targets of one grant_set.
+const MaxGrantTargets = 200
+
 // GrantSetResult is the result of grant_set and grant_approve: the outcome in
-// the form of a write result, and the grant as it now stands.
+// the form of a write result, and the grant as it now stands. A grant_set
+// with targets answers the first grant it created in Grant and every grant in
+// Grants, and the ids of all in CreatedIDs.
 type GrantSetResult struct {
-	Outcome Outcome `json:"outcome"`
-	Reason  string  `json:"reason"`
-	Note    string  `json:"note,omitempty"`
-	Grant   Grant   `json:"grant"`
+	Outcome    Outcome  `json:"outcome"`
+	Reason     string   `json:"reason"`
+	Note       string   `json:"note,omitempty"`
+	Grant      Grant    `json:"grant"`
+	Grants     []Grant  `json:"grants,omitempty"`
+	CreatedIDs []string `json:"created_ids,omitempty"`
 }
 
 // GrantRevokeArgs revoke one grant at the revision the caller looked at

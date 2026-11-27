@@ -53,7 +53,7 @@ func (s *Service) decideEnds(ctx context.Context, p authz.Principal, direction, 
 	}
 	if callerWorker != "" {
 		if callerSession == "" {
-			return decision{}, proto.NewError(proto.CodeForbidden, "a session caller needs a verified calling session")
+			return decision{}, proto.NewError(proto.CodeForbidden, "a Worker caller needs a calling session")
 		}
 		if s.cfg.SessionShared != nil {
 			ok, err := s.cfg.SessionShared(ctx, callerWorker, callerSession)
@@ -84,11 +84,11 @@ func (s *Service) end(ctx context.Context, workerID string) (authz.FileEnd, erro
 	return authz.FileEnd{WorkerID: workerID, Mode: mode, PreviewOnly: preview}, nil
 }
 
-// fileAuthority returns p with the verified file authority of its calling
-// session: the master acceptance rows with file flags that the target
-// Workers have for p's Worker, read now. A principal without a verified
-// session is returned as it is (it holds no file action through flags).
-func (s *Service) fileAuthority(ctx context.Context, p authz.Principal, verified string) (authz.Principal, error) {
+// fileAuthority returns p with the master acceptance rows with flags that the
+// target Workers have for p's Worker, read now, for its calling session
+// (bound: the Hub verified its lease). A principal without a calling session
+// is returned as it is (it holds no file action through flags).
+func (s *Service) fileAuthority(ctx context.Context, p authz.Principal, verified string, bound bool) (authz.Principal, error) {
 	if p.Kind != authz.KindWorker || verified == "" {
 		return p, nil
 	}
@@ -102,17 +102,18 @@ func (s *Service) fileAuthority(ctx context.Context, p authz.Principal, verified
 			ID:             store.AcceptanceID(r.TargetWorkerID, r.SourceWorkerID),
 			TargetWorkerID: r.TargetWorkerID, Sessions: r.Sessions,
 			FilesPull: r.FilesPull != nil && *r.FilesPull, FilesPush: r.FilesPush != nil && *r.FilesPush,
-			AppsInstall: r.AppsInstall != nil && *r.AppsInstall,
+			AppsInstall:    r.AppsInstall != nil && *r.AppsInstall,
+			FilesPullBound: r.FilesPullBound, FilesPushBound: r.FilesPushBound, AppsInstallBound: r.AppsInstallBound,
 		})
 	}
-	return p.WithVerifiedFiles(verified, accepts), nil
+	return p.WithFileAcceptances(verified, bound, accepts), nil
 }
 
-// FileAuthority returns p with the verified file authority of its calling
-// session verified (workers.FileAuthorizer): for file_list and the
-// re-decisions of a file op on the master lane.
-func (s *Service) FileAuthority(ctx context.Context, p authz.Principal, verified string) (authz.Principal, error) {
-	return s.fileAuthority(ctx, p, verified)
+// FileAuthority returns p with the master acceptances of its calling session
+// (workers.FileAuthorizer): for file_list, the app install ops and the
+// re-decisions of a file op.
+func (s *Service) FileAuthority(ctx context.Context, p authz.Principal, session string, bound bool) (authz.Principal, error) {
+	return s.fileAuthority(ctx, p, session, bound)
 }
 
 // redecide decides a live transfer again on the principal it was admitted
@@ -138,7 +139,7 @@ func (s *Service) redecide(ctx context.Context, t *transfer) error {
 		}
 		base = fresh
 	}
-	p, err := s.fileAuthority(ctx, base, t.verified)
+	p, err := s.fileAuthority(ctx, base, t.verified, t.bound)
 	if err != nil {
 		return err
 	}

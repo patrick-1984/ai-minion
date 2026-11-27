@@ -1556,6 +1556,10 @@ func (h *EventHub) confirmPendingOnConnect(workerID string) {
 
 // masterShare requires current, shared live evidence. A pending restrictive
 // share change fences it immediately, just as for sensitive history.
+// SharedSession reports whether the session of the Worker is shared with the
+// Hub now: the Worker is online and synced, lists it, and it is not hidden.
+func (h *EventHub) SharedSession(workerID, name string) bool { return h.masterShare(workerID, name) }
+
 func (h *EventHub) masterShare(workerID, name string) bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()

@@ -2329,6 +2329,9 @@
           "source_proof": {
             "type": "string"
           },
+          "source_scope": {
+            "type": "string"
+          },
           "source_session": {
             "type": "string"
           },
@@ -2375,6 +2378,7 @@
           "level",
           "revision",
           "source_proof",
+          "source_scope",
           "source_session",
           "source_worker_id",
           "suspended",
@@ -2551,6 +2555,9 @@
           "request_id": {
             "type": "string"
           },
+          "source_scope": {
+            "type": "string"
+          },
           "source_session": {
             "type": "string"
           },
@@ -2562,22 +2569,37 @@
           },
           "target_worker_id": {
             "type": "string"
+          },
+          "targets": {
+            "items": {
+              "$ref": "#/components/schemas/GrantTarget"
+            },
+            "type": "array"
           }
         },
         "required": [
           "force",
           "level",
-          "request_id",
-          "source_session",
-          "source_worker_id",
-          "target_worker_id"
+          "request_id"
         ],
         "type": "object"
       },
       "GrantSetResult": {
         "properties": {
+          "created_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
           "grant": {
             "$ref": "#/components/schemas/Grant"
+          },
+          "grants": {
+            "items": {
+              "$ref": "#/components/schemas/Grant"
+            },
+            "type": "array"
           },
           "note": {
             "type": "string"
@@ -2593,6 +2615,20 @@
           "grant",
           "outcome",
           "reason"
+        ],
+        "type": "object"
+      },
+      "GrantTarget": {
+        "properties": {
+          "session_name": {
+            "type": "string"
+          },
+          "worker_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "worker_id"
         ],
         "type": "object"
       },

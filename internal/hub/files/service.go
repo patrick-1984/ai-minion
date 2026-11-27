@@ -176,10 +176,12 @@ type transfer struct {
 	expires                  time.Time
 	limits                   ops.FileTransferLimits
 
-	// principal is the caller's principal with its verified file authority;
-	// verified is the verified calling session ("" for none).
+	// principal is the caller's principal with its file authority; verified
+	// is the calling session ("" for none) and bound whether the Hub verified
+	// it (a bound master lease).
 	principal authz.Principal
 	verified  string
+	bound     bool
 	// refresh, when set, reads the caller's principal again from its
 	// admission path (workers.FileCall.Refresh) for every re-decision.
 	refresh func(ctx context.Context) (authz.Principal, error)
