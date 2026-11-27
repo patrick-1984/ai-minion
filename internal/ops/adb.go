@@ -38,7 +38,6 @@ const (
 	AdbMaxInputArgs = 8
 )
 
-
 func validAdbWorker(id string) error {
 	if id != "" && !ValidUUIDv7(id) {
 		return invalid("worker_id", "must be a UUIDv7")
