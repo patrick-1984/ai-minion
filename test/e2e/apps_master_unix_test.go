@@ -15,8 +15,9 @@ import (
 )
 
 // v0.25.0: a session on one Worker installs apps on another (Android) Worker
-// only through the master lane, decided on the apps_install flag of a
-// verified grant. The Worker side of the lane is played by the test on
+// on the apps_install flag of a grant; here on the master lane with a legacy
+// bound grant (v0.26.0 decides an ordinary call stream by the same rule, see
+// files_ordinary_unix_test.go). The Worker side of the lane is played by the test on
 // Worker A's real Hub link as in files_master_unix_test.go; Worker B has the
 // app install end of the Android Worker without the app, so it answers
 // app_install_status (not ready, the APK files of its Minion files folder)
@@ -33,14 +34,12 @@ func TestAppInstallSessionCallerVerifiedSource(t *testing.T) {
 	status := ops.AppInstallStatusArgs{WorkerID: b.id}
 	install := ops.AppInstallArgs{WorkerID: b.id, Path: "example.apk", AllowNew: true}
 
-	// A claimed source never installs: the call stream is refused with what
-	// to do.
-	err := claimedCall(ctx, a, "boss", ops.OpAppInstall, install)
-	if codeOf(err) != proto.CodeForbidden || !strings.Contains(err.Error(), "verified source") || !strings.Contains(err.Error(), "apps_install") {
-		t.Fatalf("claimed install = %v", err)
+	// Without a grant the call stream is refused.
+	if err := claimedCall(ctx, a, "boss", ops.OpAppInstall, install); codeOf(err) != proto.CodeForbidden {
+		t.Fatalf("install without a grant = %v", err)
 	}
 	if err := claimedCall(ctx, a, "boss", ops.OpAppInstallStatus, status); codeOf(err) != proto.CodeForbidden {
-		t.Fatalf("claimed status = %v", err)
+		t.Fatalf("status without a grant = %v", err)
 	}
 
 	// A bound grant without apps_install: a verified lease, no authority.
