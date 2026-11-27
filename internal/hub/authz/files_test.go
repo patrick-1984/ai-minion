@@ -32,7 +32,7 @@ func TestFileActionsTable(t *testing.T) {
 		return g
 	}
 	verified := func(grants ...authz.DirectGrant) authz.Principal {
-		return authz.NewWorkerSessionPrincipal("A1", "main", nil, grants).WithVerifiedFiles("main", nil)
+		return authz.NewWorkerSessionPrincipal("A1", "main", nil, grants).WithFileAcceptances("main", true, nil)
 	}
 	claimed := func(grants ...authz.DirectGrant) authz.Principal {
 		return authz.NewWorkerSessionPrincipal("A1", "main", nil, grants)
@@ -51,7 +51,10 @@ func TestFileActionsTable(t *testing.T) {
 			cases = append(cases,
 				tc{fmt.Sprintf("verified level %d pull=%t push=%t", level, fl.pull, fl.push), verified(g), x,
 					fl.pull, fl.push && level == authz.LevelControl},
-				tc{fmt.Sprintf("claimed level %d pull=%t push=%t", level, fl.pull, fl.push), claimed(g), x, false, false})
+				// v0.26.0: an ordinary session (no bound lease) is decided
+				// by the same rule.
+				tc{fmt.Sprintf("ordinary level %d pull=%t push=%t", level, fl.pull, fl.push), claimed(g), x,
+					fl.pull, fl.push && level == authz.LevelControl})
 		}
 	}
 	both := flags(ownerGrant("g", "W2", "x", authz.LevelControl), true, true)
@@ -119,7 +122,7 @@ func TestFileAcceptanceDecisions(t *testing.T) {
 	scope := grantScope(tW2, tW3Build)
 	wild := authz.FileAcceptance{ID: "acc-w2", TargetWorkerID: "W2", Sessions: nil, FilesPull: true}
 	limited := authz.FileAcceptance{ID: "acc-w3", TargetWorkerID: "W3", Sessions: []string{"build"}, FilesPull: true, FilesPush: true}
-	p := authz.NewBoundMasterPrincipal("A1", scope).WithVerifiedFiles("main", []authz.FileAcceptance{wild, limited})
+	p := authz.NewBoundMasterPrincipal("A1", scope).WithFileAcceptances("main", true, []authz.FileAcceptance{wild, limited})
 
 	owner, basis, err := a.DecideFile(ctx, p, ops.FileDirectionPull, authz.SessionResource{WorkerID: "W2", Name: "x"})
 	if err != nil || owner != "alice" || basis.AcceptanceID != "acc-w2" || basis.Standing || len(basis.GrantIDs) != 0 {
@@ -134,7 +137,7 @@ func TestFileAcceptanceDecisions(t *testing.T) {
 		t.Errorf("row beyond the owner's reach: pull=%t push=%t", pull, push)
 	}
 	// The same rows for a master of an admin's Worker (W1).
-	pa := authz.NewBoundMasterPrincipal("W1", scope).WithVerifiedFiles("main", []authz.FileAcceptance{wild, limited})
+	pa := authz.NewBoundMasterPrincipal("W1", scope).WithFileAcceptances("main", true, []authz.FileAcceptance{wild, limited})
 	_, basis, err = a.DecideFile(ctx, pa, ops.FileDirectionPush, authz.SessionResource{WorkerID: "W3", Name: "build"})
 	if err != nil || basis.AcceptanceID != "acc-w3" {
 		t.Fatalf("push through the limited row: %+v %v", basis, err)
@@ -153,12 +156,12 @@ func TestFileAcceptanceDecisions(t *testing.T) {
 	if pull, push := fileHeld(t, a, authz.NewBoundMasterPrincipal("A1", scope), sess("W2", "x")); pull || push {
 		t.Errorf("unverified master: pull=%t push=%t", pull, push)
 	}
-	if pull, push := fileHeld(t, a, authz.NewBoundMasterPrincipal("A1", scope).WithVerifiedFiles("main", nil), sess("W2", "x")); pull || push {
+	if pull, push := fileHeld(t, a, authz.NewBoundMasterPrincipal("A1", scope).WithFileAcceptances("main", true, nil), sess("W2", "x")); pull || push {
 		t.Errorf("verified master without flags: pull=%t push=%t", pull, push)
 	}
 	// A row whose scope part is missing (accepted, but the master scope does
 	// not reach the session) gives nothing.
-	narrow := authz.NewBoundMasterPrincipal("A1", grantScope(tW3Build)).WithVerifiedFiles("main", []authz.FileAcceptance{wild})
+	narrow := authz.NewBoundMasterPrincipal("A1", grantScope(tW3Build)).WithFileAcceptances("main", true, []authz.FileAcceptance{wild})
 	if pull, _ := fileHeld(t, a, narrow, sess("W2", "x")); pull {
 		t.Error("a row outside the master scope authorized a pull")
 	}
@@ -173,7 +176,7 @@ func TestDecideFileBasisGrants(t *testing.T) {
 	g2 := ownerGrant("g2", "W2", "x", 3)
 	g2.FilesPull, g2.FilesPush = true, true
 	g3 := ownerGrant("g3", "W2", "x", 3) // no flags
-	p := authz.NewWorkerSessionPrincipal("A1", "main", nil, []authz.DirectGrant{g1, g2, g3}).WithVerifiedFiles("main", nil)
+	p := authz.NewWorkerSessionPrincipal("A1", "main", nil, []authz.DirectGrant{g1, g2, g3}).WithFileAcceptances("main", true, nil)
 	_, basis, err := a.DecideFile(ctx, p, ops.FileDirectionPull, authz.SessionResource{WorkerID: "W2", Name: "x"})
 	if err != nil || !slices.Equal(basis.GrantIDs, []string{"g1", "g2"}) || basis.AcceptanceID != "" {
 		t.Fatalf("pull basis = %+v, %v", basis, err)
@@ -206,21 +209,21 @@ func TestDecideFileBasisGrants(t *testing.T) {
 	}
 }
 
-func TestWithVerifiedFiles(t *testing.T) {
+func TestWithFileAcceptances(t *testing.T) {
 	p := authz.NewWorkerSessionPrincipal("A1", "main", nil, nil)
-	if _, ok := p.WithVerifiedFiles("other", nil).VerifiedFiles(); ok {
+	if _, ok := p.WithFileAcceptances("other", true, nil).FileSession(); ok {
 		t.Error("a session other than the principal's was verified")
 	}
-	if _, ok := p.WithVerifiedFiles("", nil).VerifiedFiles(); ok {
+	if _, ok := p.WithFileAcceptances("", true, nil).FileSession(); ok {
 		t.Error("an empty session was verified")
 	}
-	if s, ok := p.WithVerifiedFiles("main", nil).VerifiedFiles(); !ok || s != "main" {
+	if s, ok := p.WithFileAcceptances("main", true, nil).FileSession(); !ok || s != "main" {
 		t.Errorf("VerifiedFiles = %q %v", s, ok)
 	}
-	if _, ok := authz.NewSessionPrincipal("alice").WithVerifiedFiles("main", nil).VerifiedFiles(); ok {
+	if _, ok := authz.NewSessionPrincipal("alice").WithFileAcceptances("main", true, nil).FileSession(); ok {
 		t.Error("a person carries file authority")
 	}
-	if _, ok := p.VerifiedFiles(); ok {
+	if _, ok := p.FileSession(); ok {
 		t.Error("WithVerifiedFiles changed the original principal")
 	}
 }
@@ -284,7 +287,7 @@ func TestAppInstallFlag(t *testing.T) {
 		return g
 	}
 	verified := func(g authz.DirectGrant) authz.Principal {
-		return authz.NewWorkerSessionPrincipal("A1", "main", nil, []authz.DirectGrant{g}).WithVerifiedFiles("main", nil)
+		return authz.NewWorkerSessionPrincipal("A1", "main", nil, []authz.DirectGrant{g}).WithFileAcceptances("main", true, nil)
 	}
 	for _, c := range []struct {
 		name string
@@ -296,7 +299,8 @@ func TestAppInstallFlag(t *testing.T) {
 		{"flag off by default", verified(grant(authz.LevelControl, false, false)), w2, false},
 		{"files_push does not imply it", verified(grant(authz.LevelControl, false, true)), w2, false},
 		{"flag below control", verified(grant(authz.LevelControl-1, true, false)), w2, false},
-		{"claimed session", authz.NewWorkerSessionPrincipal("A1", "main", nil, []authz.DirectGrant{grant(authz.LevelControl, true, false)}), w2, false},
+		{"ordinary session", authz.NewWorkerSessionPrincipal("A1", "main", nil, []authz.DirectGrant{grant(authz.LevelControl, true, false)}), w2, true},
+		{"ordinary session, flag below control", authz.NewWorkerSessionPrincipal("A1", "main", nil, []authz.DirectGrant{grant(authz.LevelControl-1, true, false)}), w2, false},
 		{"another Worker", verified(grant(authz.LevelControl, true, false)), authz.WorkerResource{ID: "W3"}, false},
 		{"owner", authz.NewSessionPrincipal("alice"), w2, true},
 		{"admin", authz.NewSessionPrincipal("admin"), w2, true},
@@ -314,10 +318,10 @@ func TestAppInstallFlag(t *testing.T) {
 	off := authz.FileAcceptance{ID: "acc-w2", TargetWorkerID: "W2", FilesPush: true}
 	on := off
 	on.AppsInstall = true
-	if a.Decide(ctx, authz.NewBoundMasterPrincipal("A1", scope).WithVerifiedFiles("main", []authz.FileAcceptance{off}), install, w2) == nil {
+	if a.Decide(ctx, authz.NewBoundMasterPrincipal("A1", scope).WithFileAcceptances("main", true, []authz.FileAcceptance{off}), install, w2) == nil {
 		t.Error("an acceptance without apps_install allows app_install")
 	}
-	if err := a.Decide(ctx, authz.NewBoundMasterPrincipal("A1", scope).WithVerifiedFiles("main", []authz.FileAcceptance{on}), install, w2); err != nil {
+	if err := a.Decide(ctx, authz.NewBoundMasterPrincipal("A1", scope).WithFileAcceptances("main", true, []authz.FileAcceptance{on}), install, w2); err != nil {
 		t.Errorf("an acceptance with apps_install: %v", err)
 	}
 	if a.Decide(ctx, authz.NewBoundMasterPrincipal("A1", scope), install, w2) == nil {
@@ -337,7 +341,7 @@ func TestAppInstallBasis(t *testing.T) {
 	flagged.AppsInstall = true
 	plain := ownerGrant("g-plain", "W2", "x", authz.LevelControl)
 	plain.FilesPush = true
-	p := authz.NewWorkerSessionPrincipal("A1", "main", nil, []authz.DirectGrant{plain, flagged}).WithVerifiedFiles("main", nil)
+	p := authz.NewWorkerSessionPrincipal("A1", "main", nil, []authz.DirectGrant{plain, flagged}).WithFileAcceptances("main", true, nil)
 	b, err := a.AppInstallBasis(ctx, p, w2)
 	if err != nil || !slices.Equal(b.GrantIDs, []string{"g-apps"}) || b.AcceptanceID != "" || b.Standing {
 		t.Fatalf("basis of an apps_install grant = %+v, %v", b, err)
@@ -345,19 +349,20 @@ func TestAppInstallBasis(t *testing.T) {
 	if ids, err := a.GrantIDs(ctx, p, install, w2); err != nil || !slices.Equal(ids, []string{"g-apps"}) {
 		t.Fatalf("GrantIDs of app_install = %v, %v", ids, err)
 	}
-	// A claimed session: the flag does not count.
+	// An ordinary session: the flag counts the same way.
 	claimed := authz.NewWorkerSessionPrincipal("A1", "main", nil, []authz.DirectGrant{flagged})
-	if b, err := a.AppInstallBasis(ctx, claimed, w2); err != nil || b.Any() {
-		t.Fatalf("basis of a claimed session = %+v, %v", b, err)
+	if b, err := a.AppInstallBasis(ctx, claimed, w2); err != nil || !slices.Equal(b.GrantIDs, []string{"g-apps"}) {
+		t.Fatalf("basis of an ordinary session = %+v, %v", b, err)
 	}
-	if ids, err := a.GrantIDs(ctx, claimed, install, w2); err != nil || len(ids) != 0 {
-		t.Fatalf("GrantIDs of a claimed session = %v, %v", ids, err)
+	// A bare Worker identity holds none of the three permissions.
+	if a.Decide(ctx, authz.NewWorkerPrincipal("A1"), install, w2) == nil {
+		t.Fatal("a bare Worker identity installs apps")
 	}
 
 	scope := grantScope(tW2, tW3Build)
 	off := authz.FileAcceptance{ID: "acc-off", TargetWorkerID: "W2", FilesPush: true}
 	on := authz.FileAcceptance{ID: "acc-w2", TargetWorkerID: "W2", AppsInstall: true}
-	master := authz.NewBoundMasterPrincipal("A1", scope).WithVerifiedFiles("main", []authz.FileAcceptance{off, on})
+	master := authz.NewBoundMasterPrincipal("A1", scope).WithFileAcceptances("main", true, []authz.FileAcceptance{off, on})
 	if b, err := a.AppInstallBasis(ctx, master, w2); err != nil || len(b.GrantIDs) != 0 || b.AcceptanceID != "acc-w2" {
 		t.Fatalf("basis of an acceptance = %+v, %v", b, err)
 	}
@@ -369,5 +374,52 @@ func TestAppInstallBasis(t *testing.T) {
 	}
 	if b, err := a.AppInstallBasis(ctx, authz.NewSessionPrincipal("bob"), w2); err != nil || b.Any() {
 		t.Fatalf("basis of a foreign user = %+v, %v", b, err)
+	}
+}
+
+// v0.26.0: a grant for everyone matches any calling session of another
+// Worker with admin authority, never the target's own Worker; an acceptance
+// flag from before v0.26.0 (bound-only) counts only for a bound lease, a flag
+// switched on since then for an ordinary nominated session too.
+func TestEveryoneGrantAndBoundOnlyAcceptance(t *testing.T) {
+	a := dgAuthz(grantStore())
+	ctx := context.Background()
+	every := adminGrant("g-all", "W3", "build", authz.LevelControl)
+	every.AnySource, every.SourceOwnerID, every.FilesPull = true, "", true
+	p := authz.NewWorkerSessionPrincipal("A1", "main", nil, []authz.DirectGrant{every})
+	if pull, push := fileHeld(t, a, p, sess("W3", "build")); !pull || push {
+		t.Fatalf("everyone grant: pull=%t push=%t", pull, push)
+	}
+	if err := a.Decide(ctx, p, set(ops.ActionOperate), sess("W3", "build")); err != nil {
+		t.Fatalf("everyone grant at Control: %v", err)
+	}
+	owner := every
+	owner.Authority = authz.AuthorityOwner
+	if a.Decide(ctx, authz.NewWorkerSessionPrincipal("A1", "main", nil, []authz.DirectGrant{owner}), set(ops.ActionRead), sess("W3", "build")) == nil {
+		t.Fatal("an everyone grant with owner authority allows")
+	}
+	own := every
+	own.TargetWorkerID = "A1"
+	if pull, _ := fileHeld(t, a, authz.NewWorkerSessionPrincipal("A1", "main", nil, []authz.DirectGrant{own}), sess("A1", "build")); pull {
+		t.Fatal("an everyone grant reaches the caller's own Worker")
+	}
+
+	scope := grantScope(tW2, tW3Build)
+	old := authz.FileAcceptance{ID: "acc", TargetWorkerID: "W2", FilesPull: true, FilesPullBound: true}
+	ordinary := authz.NewWorkerGrantPrincipal("A1", scope).WithFileAcceptances("main", false, []authz.FileAcceptance{old})
+	if pull, _ := fileHeld(t, a, ordinary, sess("W2", "x")); pull {
+		t.Fatal("a bound-only acceptance flag counts for an ordinary session")
+	}
+	bound := authz.NewBoundMasterPrincipal("A1", scope).WithFileAcceptances("main", true, []authz.FileAcceptance{old})
+	if pull, _ := fileHeld(t, a, bound, sess("W2", "x")); !pull {
+		t.Fatal("a bound-only acceptance flag does not count for a bound lease")
+	}
+	fresh := old
+	fresh.FilesPullBound = false
+	if pull, _ := fileHeld(t, a, authz.NewWorkerGrantPrincipal("A1", scope).WithFileAcceptances("main", false, []authz.FileAcceptance{fresh}), sess("W2", "x")); !pull {
+		t.Fatal("an acceptance flag does not count for an ordinary nominated session")
+	}
+	if pull, _ := fileHeld(t, a, authz.NewWorkerGrantPrincipal("A1", scope), sess("W2", "x")); pull {
+		t.Fatal("a nominated session without the acceptance row holds a file action")
 	}
 }
