@@ -1,12 +1,22 @@
 #!/usr/bin/env bash
 # Validate package identity, launchers, architecture coverage and signed bytes.
-# Usage: verify-apk.sh [--unsigned] <apk> <version>
+# Usage: verify-apk.sh [--unsigned] [--device-control] <apk> <version>
+#   --device-control  the APK is a device control build (-PminionDeviceControl=true, the gate RC): it must have
+#                     libminion_spake2.so per ABI, the BoringSSL notice, the provenance provider and
+#                     SYSTEM_ALERT_WINDOW. Without it the APK must have none of them (device control off).
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 unsigned=0
-if [ "${1:-}" = --unsigned ]; then unsigned=1; shift; fi
-[ "$#" = 2 ] || { echo "usage: $0 [--unsigned] <apk> <version>" >&2; exit 2; }
+device_control=0
+while [ "$#" -gt 2 ]; do
+  case "$1" in
+    --unsigned) unsigned=1; shift ;;
+    --device-control) device_control=1; shift ;;
+    *) break ;;
+  esac
+done
+[ "$#" = 2 ] || { echo "usage: $0 [--unsigned] [--device-control] <apk> <version>" >&2; exit 2; }
 apk="$1"
 version="${2#v}"
 tools="${ANDROID_HOME:-${ANDROID_SDK_ROOT:?set ANDROID_HOME or ANDROID_SDK_ROOT}}/build-tools/35.0.0"
@@ -26,16 +36,28 @@ grep -Eq 'android:extractNativeLibs.*0xffffffff' <<<"$manifest" || die "native e
 grep -Eq 'android:allowBackup.*0x0$' <<<"$manifest" || die "app backup must be disabled"
 entries="$(unzip -Z1 "$apk")"
 expected="$(for abi in arm64-v8a armeabi-v7a; do
-  for lib in libminion-launch.so libminion.so libtmux.so; do
+  libs="libminion-launch.so libminion.so libtmux.so"
+  [ "$device_control" = 1 ] && libs="$libs libminion_spake2.so"
+  for lib in $libs; do
     echo "lib/$abi/$lib"
   done
-done)"
+done | LC_ALL=C sort)"
 actual="$(grep -E '^lib/[^/]+/[^/]+[.]so$' <<<"$entries" | LC_ALL=C sort)"
 [ "$actual" = "$expected" ] || die "native ABI contents differ from the expected package layout"
 for notice in minion-LICENSE.txt tmux-COPYING.txt libevent-LICENSE.txt ncurses-COPYING.txt; do
   grep -Fxq "assets/licenses/$notice" <<<"$entries" || die "missing license notice $notice"
 done
 grep -Fxq 'assets/terminfo/s/screen-256color' <<<"$entries" || die "missing bundled terminfo"
+if [ "$device_control" = 1 ]; then
+  grep -Fxq 'assets/licenses/boringssl-LICENSE.txt' <<<"$entries" || die "missing license notice boringssl-LICENSE.txt"
+  grep -Fq "uses-permission: name='android.permission.SYSTEM_ALERT_WINDOW'" <<<"$badging" ||
+    die "device control build without SYSTEM_ALERT_WINDOW"
+  grep -Fq 'cc.nasz.minion.adbprobe' <<<"$manifest" || die "device control build without the provenance provider"
+else
+  if grep -Fq 'SYSTEM_ALERT_WINDOW' <<<"$badging"; then die "device control is off, but the APK asks for SYSTEM_ALERT_WINDOW"; fi
+  if grep -Fq 'cc.nasz.minion.adbprobe' <<<"$manifest"; then die "device control is off, but the APK has the provenance provider"; fi
+  if grep -Fxq 'assets/licenses/boringssl-LICENSE.txt' <<<"$entries"; then die "device control is off, but the APK has its notice"; fi
+fi
 
 if [ "$unsigned" = 0 ]; then
   "$tools/zipalign" -c -P 16 4 "$apk"

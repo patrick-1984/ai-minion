@@ -52,6 +52,8 @@ android {
         for (type in listOf("debug", "release")) {
             sourceSets.named(type) { manifest.srcFile("src/deviceControl/AndroidManifest.xml") }
         }
+        // Licence notice of the BoringSSL code inside libminion_spake2.so (assets/licenses/boringssl-LICENSE.txt).
+        sourceSets.named("main") { assets.srcDir("src/deviceControl/assets") }
         externalNativeBuild.cmake {
             path = file("src/main/cpp/CMakeLists.txt")
             version = "3.31.6"
