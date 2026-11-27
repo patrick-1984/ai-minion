@@ -239,19 +239,8 @@ class WorkerService : Service() {
         }
         showForeground("Starting")
         if (intent?.action == AUTOSTART) {
-            // After a boot or an app update (autostartAfter decided): start when a Hub is set up.
             val id = requestId
-            queue.execute {
-                if (wanted || busy) return@execute
-                val latest = if (stopping.get()) null else runCatching { native.report() }.getOrNull()
-                if (latest?.optString("hub_url").isNullOrBlank()) {
-                    // No Hub set up yet (or stopped meanwhile): nothing to start, quietly.
-                    main.post { if (id == requestId && foreground) leaveForeground() }
-                } else {
-                    report = latest
-                    safely { restore() }
-                }
-            }
+            queue.execute { autostart(id, AUTOSTART_TRIES) }
         } else if (intent?.action != UI_START) {
             queue.execute {
                 if (!stopping.get() && preferences.getBoolean(Autostart.WANTED, false)) {
@@ -262,6 +251,28 @@ class WorkerService : Service() {
             }
         }
         return START_STICKY
+    }
+
+    // After a boot or an app update (autostartAfter decided), on the queue: start when a Hub is set up. A status
+    // read that fails (a device still busy right after boot) is tried again a few times; a Worker without a Hub
+    // stays stopped quietly.
+    private fun autostart(id: Long, triesLeft: Int) {
+        if (wanted || busy) return
+        if (stopping.get() || id != requestId) {
+            main.post { if (id == requestId && foreground) leaveForeground() }
+            return
+        }
+        val latest = runCatching { native.report() }.getOrNull()
+        if (latest == null && triesLeft > 1) {
+            queue.schedule({ autostart(id, triesLeft - 1) }, AUTOSTART_RETRY_SECONDS, TimeUnit.SECONDS)
+            return
+        }
+        if (latest?.optString("hub_url").isNullOrBlank()) {
+            main.post { if (id == requestId && foreground) leaveForeground() }
+        } else {
+            report = latest
+            safely { restore() }
+        }
     }
 
     private fun launch(
@@ -571,6 +582,8 @@ class WorkerService : Service() {
         private const val STOP = "cc.nasz.minion.STOP"
         private const val UI_START = "cc.nasz.minion.UI_START"
         internal const val AUTOSTART = "cc.nasz.minion.AUTOSTART"
+        private const val AUTOSTART_TRIES = 4
+        private const val AUTOSTART_RETRY_SECONDS = 5L
     }
 }
 
