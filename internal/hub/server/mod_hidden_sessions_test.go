@@ -29,7 +29,7 @@ func TestHiddenSessionsOnTheRealHub(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	w := store.WorkerRow{ID: store.NewID(), Pub: wk.Public(), Name: "patryk-asus", OwnerID: alice,
+	w := store.WorkerRow{ID: store.NewID(), Pub: wk.Public(), Name: "dana-asus", OwnerID: alice,
 		Kind: store.WorkerKindPrivate, CreatedAt: time.Now().UnixMilli()}
 	if err := ah.st.InsertWorker(ctx, nil, w); err != nil {
 		t.Fatal(err)
@@ -95,7 +95,7 @@ func TestHiddenSessionsOnTheRealHub(t *testing.T) {
 
 	// Default: user-controlled, the user never allowed hidden sessions.
 	c, msg := create()
-	if c != proto.CodeForbidden || !strings.Contains(msg, "New sessions on patryk-asus would be hidden (ConPTY inside the Worker: psmux is not installed") ||
+	if c != proto.CodeForbidden || !strings.Contains(msg, "New sessions on dana-asus would be hidden (ConPTY inside the Worker: psmux is not installed") ||
 		!strings.Contains(msg, "Account > Sessions") {
 		t.Fatalf("session_create = %s %q, want the hidden-session refusal", c, msg)
 	}

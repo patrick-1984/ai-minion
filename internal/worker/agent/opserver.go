@@ -219,10 +219,29 @@ func (s *OpServer) Serve(l *Link) {
 	}
 	var wg sync.WaitGroup
 	defer wg.Wait()
+	if fx := s.files(); fx != nil {
+		// Transfers prepared on this connection can never open their leg
+		// once it is gone.
+		defer fx.DropConn(l)
+	}
 	for {
 		st, err := l.Session.Accept(ctx)
 		if err != nil {
 			return
+		}
+		if st.Kind() == transport.KindFiles {
+			// A data leg of a file transfer (files.v1): the session accepts
+			// the kind only when both ends announced the feature.
+			if fx := s.files(); fx != nil {
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					fx.ServeLeg(ctx, l, st)
+				}()
+				continue
+			}
+			st.Reset()
+			continue
 		}
 		if st.Kind() != transport.KindOp {
 			// The session only delivers kinds the Hub may open; anything else
@@ -273,6 +292,14 @@ func (s *OpServer) admit() *proto.Error {
 	default:
 		return proto.NewError(proto.CodeRateLimited, "the Worker serves too many operations at once")
 	}
+}
+
+// files returns the file transfer end of the executor, or nil.
+func (s *OpServer) files() *Files {
+	if ex, ok := s.cfg.Executor.(*Executor); ok {
+		return ex.Files()
+	}
+	return nil
 }
 
 func (s *OpServer) release() {

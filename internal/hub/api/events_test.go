@@ -1580,3 +1580,18 @@ func TestFormerOwnersStreamNeverGetsTheNewOwnersName(t *testing.T) {
 		}
 	}
 }
+
+// session.keep.v1: the keep flag of the Hub's session state is in the list.
+func TestSessionsReportTheKeepFlag(t *testing.T) {
+	r := newEvRig(t, nil)
+	kept := ss("tv", "agent:claude", "busy", "")
+	kept.Keep = true
+	r.feed(wAlice, kept, ss("other", "shell", "stable", ""))
+	got := map[string]bool{}
+	for _, s := range r.sessions("alice", "") {
+		got[s.Session] = s.Keep
+	}
+	if !got["tv"] || got["other"] {
+		t.Fatalf("keep = %v", got)
+	}
+}

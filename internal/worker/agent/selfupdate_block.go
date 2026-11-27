@@ -59,6 +59,23 @@ func ManagedUpdateBlock(m config.ManagedHost) string {
 	return ""
 }
 
+// androidUpdateBlock is the fixed part of the update block of the Android app
+// (the app's readiness is read on every use, apkUpdater.block): the local
+// veto and a development build. The binary lives in the read-only native
+// library directory, so the checks of updateBlock do not apply.
+func androidUpdateBlock(remoteUpdate, stateDir string) string {
+	switch {
+	case remoteUpdate == "off":
+		return "remote updates are turned off on this Worker (remote_update=off)"
+	case stateDir == "":
+		return "the state directory of the app is unknown"
+	}
+	if _, err := version.ParseVersion(version.Version); err != nil {
+		return "a development build: install the APK by hand"
+	}
+	return ""
+}
+
 // runsFromMinionImage reports whether the Worker runs from the Minion image:
 // ko puts the binary in /ko-app, and the image sets MINION_IN_CONTAINER=1.
 func runsFromMinionImage(getenv func(string) string, exe string) bool {

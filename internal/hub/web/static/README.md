@@ -24,3 +24,8 @@ Hub events, shows the connection state, pauses the screen, settles the answer of
 reports a write whose answer never arrived as unknown (never sending it again), sends the Text composer on a plain Enter (once, as the Send button does; Shift+Enter is a line break), runs the explicit keyboard box of the Keys tab (one named key per press, only while the box has the focus), and defines the terminal colour classes in
 a constructed style sheet (the Content-Security-Policy forbids inline styles). It is tested against a
 DOM stub (`testdata/session_live_test.js`); the shell scripts are tested in `testdata/workbench_ui_test.js`.
+
+`session-files.js` and `files.css` are the Files view of the session page and the file transfer history (files.v1): the
+script admits a download or an upload through the page's routes, reads the data leg with the leg token in the
+`Minion-Leg-Token` header (never in a URL), resumes an interrupted file download with `Range` and `If-Range`, saves a
+folder as `.tar.gz` (`CompressionStream`), and uploads one file with progress and cancel (`XMLHttpRequest`).

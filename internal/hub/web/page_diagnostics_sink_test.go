@@ -25,7 +25,7 @@ func TestSinkTextShowsLastSuccessErrorAndDropReasons(t *testing.T) {
 }
 
 func TestTrustedProxyHint(t *testing.T) {
-	q := ops.HubDiagnosticsRequest{PeerAddress: "10.0.2.9", ForwardedHeaders: []ops.HubDiagnosticsHeader{{Name: "X-Forwarded-For", Value: "10.3.3.11"}}}
+	q := ops.HubDiagnosticsRequest{PeerAddress: "10.0.2.9", ForwardedHeaders: []ops.HubDiagnosticsHeader{{Name: "X-Forwarded-For", Value: "192.0.2.11"}}}
 	h := trustedProxyHint(q)
 	for _, w := range []string{"10.0.2.9/32", "MINION_TRUSTED_PROXIES", "only your proxy can reach"} {
 		if !strings.Contains(h, w) {

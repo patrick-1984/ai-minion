@@ -45,11 +45,14 @@ var _ GrantStore = (*store.Store)(nil)
 // audit events of a refused grant_set or grant_approve. The audit row of a
 // change that commits is written by the store in the transaction of the
 // change (grant_revoke included; the dispatcher audits its refusals).
-func RegisterGrants(r *Registry, st GrantStore, workers func(context.Context) ([]GrantWorker, error), dec Decider, au Auditor) error {
+func RegisterGrants(r *Registry, st GrantStore, workers func(context.Context) ([]GrantWorker, error), dec Decider, au Auditor, opts ...GrantOption) error {
 	if st == nil || workers == nil || dec == nil {
 		return errors.New("api: the grant handlers need a store, the Workers and a decider")
 	}
 	h := grantHandlers{st: st, workers: workers, dec: dec, au: au, now: time.Now}
+	for _, o := range opts {
+		o(&h)
+	}
 	for _, reg := range []error{
 		// grant_list is decided on the caller's own user resource, so every
 		// user may call it; the handler filters by the Workers they own.
@@ -71,6 +74,20 @@ type grantHandlers struct {
 	dec     Decider
 	au      Auditor
 	now     func() time.Time
+	// targetGuard refuses a grant to a target Worker that must stay
+	// unshared (device control on); nil refuses nothing.
+	targetGuard func(ctx context.Context, p authz.Principal, workerID string) error
+}
+
+// GrantOption configures the grant handlers.
+type GrantOption func(*grantHandlers)
+
+// WithGrantTargetGuard makes grant_set ask guard before it lets a session of
+// another Worker reach the target Worker: a Worker with device control
+// (on-device adb) on must stay dedicated and unshared, so the guard answers an
+// error for it.
+func WithGrantTargetGuard(guard func(ctx context.Context, p authz.Principal, workerID string) error) GrantOption {
+	return func(h *grantHandlers) { h.targetGuard = guard }
 }
 
 func (h grantHandlers) byID(ctx context.Context) (map[string]GrantWorker, error) {
@@ -188,6 +205,7 @@ func (h grantHandlers) info(g store.SessionGrantRow, ws map[string]GrantWorker) 
 		GrantedBy: g.GrantedBy, Revision: g.Revision,
 		CreatedAt: ops.Timestamp(time.UnixMilli(g.CreatedAt)), UpdatedAt: ops.Timestamp(time.UnixMilli(g.UpdatedAt)),
 		Suspended: g.SuspendedAt != nil, SuspendCause: g.SuspendCause, Note: g.Note, CommandShell: g.CommandShell,
+		FilesPull: g.FilesPull, FilesPush: g.FilesPush,
 		SourceWorkerName: ws[g.SourceWorkerID].Name, TargetWorkerName: ws[g.TargetWorkerID].Name,
 		SourceOwner: ws[g.SourceWorkerID].Owner, TargetOwner: ws[g.TargetWorkerID].Owner,
 		State: ops.GrantStateActive,
@@ -364,6 +382,12 @@ func grantSetEvent(a ops.GrantSetArgs, old, now *store.SessionGrantRow) audit.Ev
 			if old != nil && old.CommandShell != now.CommandShell {
 				ev.Detail += " command_shell=" + strconv.FormatBool(now.CommandShell)
 			}
+			if old != nil && old.FilesPull != now.FilesPull {
+				ev.Detail += " files_pull=" + strconv.FormatBool(now.FilesPull)
+			}
+			if old != nil && old.FilesPush != now.FilesPush {
+				ev.Detail += " files_push=" + strconv.FormatBool(now.FilesPush)
+			}
 		}
 	case now != nil:
 		ev.GrantID = now.ID
@@ -401,6 +425,11 @@ func (h grantHandlers) doSet(ctx context.Context, c *Call, a ops.GrantSetArgs, o
 	}
 	if !src.Approved || !tgt.Approved {
 		return none, NewError(proto.CodeConflict, "both Workers must be approved")
+	}
+	if h.targetGuard != nil {
+		if err := h.targetGuard(ctx, p, tgt.ID); err != nil {
+			return none, err
+		}
 	}
 	admin, err := h.isAdmin(ctx, p)
 	if err != nil {
@@ -471,6 +500,23 @@ func (h grantHandlers) doSet(ctx context.Context, c *Call, a ops.GrantSetArgs, o
 		if level != authz.LevelControl || cur.TargetSession == "" {
 			cur.CommandShell = false
 		}
+		// files.v1: an absent flag keeps the stored one. The flags need a
+		// verified source (a bound grant): a claimed source never carries
+		// file authority. files_push needs Control, so a lower level clears
+		// it (an explicit true below Control is refused by Validate).
+		if a.FilesPull != nil {
+			cur.FilesPull = *a.FilesPull
+		}
+		if a.FilesPush != nil {
+			cur.FilesPush = *a.FilesPush
+		}
+		if level != authz.LevelControl {
+			cur.FilesPush = false
+		}
+		if cur.SourceIncarnation == "" && (cur.FilesPull || cur.FilesPush) {
+			return none, &Error{Code: proto.CodeInvalidArgument, Message: "file transfer needs a verified source: bind the grant to the source session first",
+				Details: map[string]any{"field": "files_pull"}}
+		}
 		g, err := h.st.PutSessionGrant(ctx, cur, a.IfRevision, write)
 		if err != nil {
 			return none, grantStoreErr(err)
@@ -479,6 +525,13 @@ func (h grantHandlers) doSet(ctx context.Context, c *Call, a ops.GrantSetArgs, o
 	}
 	if !src.CanBeSource {
 		return none, NewError(proto.CodeConflict, "this Worker cannot reach others (a thin Worker)")
+	}
+	// files.v1: a new grant names its source by name (claimed), and a
+	// claimed source never carries file authority; the flags are set on the
+	// grant after it was bound to the source session.
+	if a.FilesPull != nil && *a.FilesPull || a.FilesPush != nil && *a.FilesPush {
+		return none, &Error{Code: proto.CodeInvalidArgument, Message: "file transfer needs a verified source: create the grant, bind it to the source session, then set the file flags",
+			Details: map[string]any{"field": "files_pull"}}
 	}
 	// D4: the authority behind the grant. Two Workers of one owner take an
 	// owner grant, also when an administrator decides it for that owner: it

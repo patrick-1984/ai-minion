@@ -21,6 +21,7 @@ import (
 var SessionControlOps = []string{
 	ops.OpSessionsList, ops.OpSessionSnapshot, ops.OpSessionCapture,
 	ops.OpSendText, ops.OpSendKeys, ops.OpSetTask, ops.OpAnswer,
+	ops.OpSessionKeepSet,
 }
 
 // SessionControlRouter is what the session-control call ops need; *Router

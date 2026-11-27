@@ -7,7 +7,7 @@ Run and steer terminal AI agents (Claude Code, Codex and others) in tmux session
 
 One binary, `minion` (also installed as `mn` by the Linux packages), is the Hub, the Worker, the command line and the MCP server.
 
-Version 0.23.0. License: Apache-2.0.
+Version 0.24.0. License: Apache-2.0.
 
 ## Start here
 
@@ -37,7 +37,7 @@ curl -fsSL https://github.com/patrick-1984/ai-minion/releases/latest/download/in
 
 **Docker (Hub):** see [Quick start: the Hub in Docker](#quick-start-the-hub-in-docker).
 
-The scripts install the latest `minion` (`MINION_VERSION=v0.23.0` picks one) after checking it against `checksums.txt` of the release: into `/usr/local/bin` when writable or `~/.local/bin` on Linux and macOS, into `%LOCALAPPDATA%\Programs\minion` (added to your user `PATH`) on Windows. When the session host is missing, the installer installs tmux with the system package manager on Linux and macOS, or psmux with WinGet on Windows. The install guides below also show the manual install that verifies the signature.
+The scripts install the latest `minion` (`MINION_VERSION=v0.24.0` picks one) after checking it against `checksums.txt` of the release: into `/usr/local/bin` when writable or `~/.local/bin` on Linux and macOS, into `%LOCALAPPDATA%\Programs\minion` (added to your user `PATH`) on Windows. When the session host is missing, the installer installs tmux with the system package manager on Linux and macOS, or psmux with WinGet on Windows. The install guides below also show the manual install that verifies the signature.
 
 A minimal local try-out, no Hub and no install beyond the binary and tmux:
 
@@ -73,7 +73,7 @@ docker run -d --name minion-hub --restart unless-stopped \
   -v "$PWD/admin_password.txt:/run/secrets/minion_admin_password:ro" \
   -e MINION_DATA_DIR=/data \
   -e MINION_ADMIN_PASSWORD_FILE=/run/secrets/minion_admin_password \
-  ghcr.io/patrick-1984/minion:v0.23.0 hub serve
+  ghcr.io/patrick-1984/minion:v0.24.0 hub serve
 
 docker logs minion-hub
 ```
@@ -106,7 +106,7 @@ services:
       - ./hub-data:/data
 
   hub:
-    image: ghcr.io/patrick-1984/minion:${MINION_VERSION:-v0.23.0}
+    image: ghcr.io/patrick-1984/minion:${MINION_VERSION:-v0.24.0}
     command: ["hub", "serve"]
     restart: unless-stopped
     depends_on:
@@ -130,7 +130,7 @@ services:
 
 ```dotenv
 # Image tag: an exact release, or a channel that follows new releases (0.8, 0, latest).
-MINION_VERSION=v0.23.0
+MINION_VERSION=v0.24.0
 
 # Where the Hub's port is published on the host. 127.0.0.1 keeps it on this machine
 # (for a reverse proxy on the same host); 0.0.0.0 publishes it on every interface.
@@ -183,12 +183,14 @@ denies later calls from the revoked attachment even if Claude presents a cached 
 | Guide | What it covers |
 | --- | --- |
 | [Desktop tray](docs/guides/tray.md) | Optional tray for Windows, Ubuntu desktop and macOS: start, stop, pause, set up the Hub, shared sessions, block new sessions, Hub key words; the menu-to-command table |
+| [Android app updates](docs/guides/android-updates.md) | The Minion app updates itself from the Hub: the one-time step, Update and Update now, automatic/manual/off per Worker, the device setting, limits |
 | [Pairing and sharing](docs/guides/pairing.md) | Pairing codes, invitation keys, the Hub fingerprint (`--hub-fingerprint`, `minion worker verify-hub`), choosing which sessions the Hub may see, the local share lock |
 | [Reverse proxy](docs/guides/reverse-proxy.md) | TLS in front of the Hub, WebSocket and event-stream settings, trusted proxies |
 | [No direct route](docs/guides/no-direct-route.md) | A Worker that cannot reach the Hub directly: SSH tunnels |
 | [Sign in with OIDC](docs/guides/oidc.md) | An identity provider with role claims |
 | [API keys and MCP](docs/guides/api-keys-and-mcp.md) | Scoped API keys, the CLI against a Hub, the read-only MCP server |
 | [Claude Code without per-command prompts](docs/guides/claude-code-standing-allow.md) | Using Minion from Claude Code without per-command prompts: `minion claude allow`, `status`, `revoke`, the target limit of `minion mcp`, the audit and the security trade-off |
+| [File transfer](docs/guides/file-transfer.md) | Copy files and folders between session folders, the CLI and the browser (v0.24.0): `minion files ls\|pull\|push`, who may transfer, the off switch `file_transfer` on each Worker, protected and sensitive names, limits, resume, security trade-offs |
 | [The pipe](docs/guides/pipe.md) | Sending a message to an agent and reading its replies |
 | [AI agents](docs/guides/agents.md) | `minion llm-help`, the Claude Code and Codex plugin (`/plugin marketplace add patrick-1984/ai-minion`), the Minion master |
 | [Access: who reaches what](docs/guides/access.md) | Start here for access between Workers: grants from one session to another (View, Message, Control), who may decide, Claimed and Verified sessions, the Access pages (matrix, Grants, Why?), revoking, why a call is refused |
@@ -197,6 +199,7 @@ denies later calls from the revoked attachment even if Claude presents a cached 
 | [Hub identity](docs/guides/hub-identity.md) | The sealed root key and its passphrase, certificate re-issue, master-key rotation, `minion hub identity` |
 | [Usage and subscription limits](docs/guides/usage.md) | Harness inventory, session and account telemetry, token buckets, native collectors and enrollment notice |
 | [Log export](docs/guides/observability.md) | Sending the Hub's and the Workers' logs to syslog (RFC 5424, TLS) and OpenTelemetry (OTLP/HTTP), per-sink levels, what is masked |
+| [Android device control](docs/guides/android-device-control.md) | On-device adb for a Worker in the Android app (`minion adb status`, `shell`, `screencap`, `input`): present but off until its device gate passes; one-time steps, limits (needs Wi-Fi), security trade-off, how to disable |
 | [ESP32 and ESPHome](docs/guides/esphome.md) | Install an ESP32 Worker, bridge an ESPHome device over UART, and consume its console, log and UART sessions |
 | [Local integration](docs/guides/integrate-local.md) | How other programs on the machine see whether a Worker runs (user or root), its version, and nominated usage meters for a progress bar: paths, modes, schemas, the checks a reader must make, examples |
 | [Control a Worker](docs/guides/worker-control.md) | `minion worker start`, `pause` and `resume`, blocking new sessions (`allow_new_sessions`), the join token from standard input (`up --join -`) |

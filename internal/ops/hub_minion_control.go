@@ -55,6 +55,12 @@ type ControlAccept struct {
 	// shared sessions, an empty list means none (the last allowed session
 	// ended). A pointer, so that the two never look the same in JSON.
 	Sessions *[]string `json:"sessions,omitempty"`
+	// FilesPull and FilesPush are the file transfer flags of this acceptance
+	// (files.v1): master sessions of the source Worker may list and pull
+	// files from, or push files into, the accepted sessions. A flag applies
+	// only through this acceptance; one stored before v0.24 has neither.
+	FilesPull bool `json:"files_pull,omitempty"`
+	FilesPush bool `json:"files_push,omitempty"`
 }
 
 // ControlWorker is the Minion control state of one Worker.
@@ -154,6 +160,23 @@ type ControlSetAcceptArgs struct {
 	// entry that allows nothing). The change answers conflict when the stored
 	// acceptance is in another state, because someone else changed it.
 	IfState string `json:"if_state,omitempty"`
+	// FilesPull and FilesPush set the file transfer flags of the acceptance
+	// (see ControlAccept.FilesPull). Absent keeps the stored flags (unset on a
+	// new acceptance); they are refused with accept false.
+	FilesPull *bool `json:"files_pull,omitempty"`
+	FilesPush *bool `json:"files_push,omitempty"`
+}
+
+// Validate checks the request id and the file transfer flags: a flag set to
+// true needs accept true. Everything else is the handler's question.
+func (a ControlSetAcceptArgs) Validate() error {
+	if err := a.WriteArgs.Validate(); err != nil {
+		return err
+	}
+	if !a.Accept && ((a.FilesPull != nil && *a.FilesPull) || (a.FilesPush != nil && *a.FilesPush)) {
+		return invalid("files_pull", "file transfer flags need accept true")
+	}
+	return nil
 }
 
 // The values of ControlSetAcceptArgs.IfState.

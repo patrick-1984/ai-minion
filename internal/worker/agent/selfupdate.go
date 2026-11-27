@@ -103,6 +103,9 @@ type selfUpdate struct {
 	now          func() time.Time
 	// earlyWait overrides earlyFailWait (tests); zero means earlyFailWait.
 	earlyWait time.Duration
+	// apk is set on the Android app: the update installs a new APK through
+	// the app instead of replacing the binary (selfupdate_apk.go).
+	apk *apkUpdater
 
 	busy atomic.Bool
 	mu   sync.Mutex
@@ -166,6 +169,9 @@ func (u *selfUpdate) handleUpdate(ctx context.Context, rq Request) (any, error) 
 	}
 	if err := u.fromHub(rq, args.WorkerID); err != nil {
 		return nil, err
+	}
+	if u.apk != nil {
+		return u.handleAPKUpdate(ctx, args)
 	}
 	res := ops.WorkerUpdateResult{From: version.Version, To: args.Version}
 	u.log.Debug("worker update requested", "from", version.Version, "to", args.Version, "force", args.Force, "block", u.block)
@@ -238,6 +244,18 @@ func (u *selfUpdate) handleUpdate(ctx context.Context, rq Request) (any, error) 
 	}
 	res.Accepted = true
 	return res, nil
+}
+
+// blockReason is why the Worker cannot update itself now, "" when it can: the
+// fixed reason of the install, then (Android) the app's readiness.
+func (u *selfUpdate) blockReason() string {
+	if u.block != "" {
+		return u.block
+	}
+	if u.apk != nil {
+		return u.apk.block()
+	}
+	return ""
 }
 
 // release ends an update that did not restart: sessions may be created again.

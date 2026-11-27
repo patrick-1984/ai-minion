@@ -467,6 +467,9 @@ td .action-row { margin-block: 0; }
 .action-row > .row-actions { margin: 0; }
 td .action-row { flex-wrap: nowrap; }
 td .action-row .btn { white-space: nowrap; }
+/* The keep checkbox of a session (session_keep_set): a one-control form inside a cell, a list item or the facts. */
+.keep-form { display: inline; margin: 0; }
+.keep-toggle { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
 .autoscroll-toggle { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; cursor: pointer; }
 .tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border); }
 .tabs [role="tab"] { background: transparent; color: var(--muted); border: 0; border-bottom: 3px solid transparent; border-radius: var(--r-sm) var(--r-sm) 0 0;
@@ -711,7 +714,7 @@ body.embed #session-unknown, body.embed #session-result { max-height: 8rem; over
   .session-table td[data-label]::before { content: attr(data-label) ": "; color: var(--muted); font-size: 12px; font-weight: 600; }
   .session-table td.empty::before { content: none; }
   .session-table td.cell-nowrap { white-space: normal; }
-  .session-table td.col-name.empty, .session-table td.col-activity.empty, .session-table td.col-source.empty, .session-table td.col-last-event.empty { display: none; }
+  .session-table td.col-name.empty, .session-table td.col-activity.empty, .session-table td.col-source.empty, .session-table td.col-last-event.empty, .session-table td.col-keep.empty { display: none; }
   .session-table td.col-name { min-width: 0; }
   .js .session-table[data-sortable] thead { position: sticky; top: 0; z-index: 2; display: block; width: auto; height: auto; overflow: visible; clip: auto; visibility: visible; }
   .js .session-table[data-sortable] thead tr { display: flex; gap: 0 12px; flex-wrap: wrap; padding: 4px 12px; background: var(--surface-subtle); border-bottom: 1px solid var(--border); }
@@ -730,7 +733,7 @@ body.embed #session-unknown, body.embed #session-result { max-height: 8rem; over
   .session-table.has-owner td[data-label]::before { content: attr(data-label) ": "; color: var(--muted); font-size: 12px; font-weight: 600; }
   .session-table.has-owner td.empty::before { content: none; }
   .session-table.has-owner td.cell-nowrap { white-space: normal; }
-  .session-table.has-owner td.col-name.empty, .session-table.has-owner td.col-activity.empty, .session-table.has-owner td.col-source.empty, .session-table.has-owner td.col-last-event.empty { display: none; }
+  .session-table.has-owner td.col-name.empty, .session-table.has-owner td.col-activity.empty, .session-table.has-owner td.col-source.empty, .session-table.has-owner td.col-last-event.empty, .session-table.has-owner td.col-keep.empty { display: none; }
   .js .session-table.has-owner[data-sortable] thead { position: sticky; top: 0; z-index: 2; display: block; width: auto; height: auto; overflow: visible; clip: auto; visibility: visible; }
   .js .session-table.has-owner[data-sortable] thead tr { display: flex; gap: 0 12px; flex-wrap: wrap; padding: 4px 12px; background: var(--surface-subtle); border-bottom: 1px solid var(--border); }
   .js .session-table.has-owner[data-sortable] thead th:not([data-sort]) { display: none; }
@@ -1564,6 +1567,22 @@ main:has(> .access-wide) { max-width: none; }
 .crumb-switch-meta { margin-inline-start: auto; color: var(--muted); font: 11px/1.5 var(--font-mono); white-space: nowrap; }
 .crumb-switch-empty { margin: 8px 6px; color: var(--muted); }
 @media (max-width: 719px) {
-  .crumb-switch-btn { width: 32px; height: 32px; min-height: 32px; }
+  .crumb-switch-btn { width: 44px; height: 44px; min-height: 44px; }
   .crumb-switch-list a { min-height: 44px; align-items: center; }
+}
+/* On a phone the breadcrumb gets its own full-width row under the search, on
+   one line: the ancestors ("Control center", "Workers") give way first and a
+   long Worker or session name ends in an ellipsis (its title holds it in full);
+   the session code and the switch buttons always stay. */
+@media (max-width: 719px) {
+  .topbar:has(> .top-search) > .crumbs { grid-area: 3 / 1 / 4 / -1; overflow-wrap: normal; }
+  .topbar:has(> .top-search) .hub-id { grid-row: 4; }
+  .topbar:has(> .top-search) .crumbs ol { flex-wrap: nowrap; gap: 0 6px; }
+  .topbar:has(> .top-search) .crumbs li { flex: 0 1 auto; min-width: 0; gap: 6px; white-space: nowrap; }
+  .topbar:has(> .top-search) .crumbs li::before { flex: none; }
+  .topbar:has(> .top-search) .crumbs :is(a, [aria-current="page"]) { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .topbar:has(> .top-search) .crumbs :is(a, [aria-current="page"]):has(> .crumb-label) { display: flex; align-items: center; gap: 4px; }
+  .topbar:has(> .top-search) .crumbs .crumb-code { flex: none; }
+  .crumb-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .topbar:has(> .top-search) .crumbs ol:has(.crumb-label) > li:not(:has(.crumb-label)) { flex-shrink: 100; min-width: 3ch; }
 }

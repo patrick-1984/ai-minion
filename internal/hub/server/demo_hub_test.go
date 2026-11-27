@@ -36,9 +36,9 @@ import (
 // identifiers to <MINION_DEMO_STOP>.info (and to standard error), and blocks
 // until the file MINION_DEMO_STOP exists.
 const (
-	demoAdminName = "patryk"
+	demoAdminName = "dana"
 	demoAdminPass = "demo-admin-pw-1"
-	demoUserName  = "marta"
+	demoUserName  = "erin"
 	demoUserPass  = "demo-user-pw-1"
 )
 
@@ -47,8 +47,8 @@ var demoSessions = [][]string{
 	{"master", "minion-1", "minion-2", "minion-3", "review-grants-store", "review-grants-web", "docs-access-architecture",
 		"fix-control-page-accept-states", "release-0-21-0", "codex-gate-hub-core"},
 	{"master", "minion-1", "minion-2", "feat-session-grants-authz", "feat-access-explain", "long-running-benchmark-of-the-pipe-broker",
-		"scratch", "infra-dashboard", "home-lab"},
-	{"minion-1", "minion-2", "marta-notes", "marta-private-research", "frontend-redesign", "billing-export", "support-inbox"},
+		"scratch", "ops-dashboard", "lab-notes"},
+	{"minion-1", "minion-2", "erin-notes", "erin-private-research", "frontend-redesign", "billing-export", "support-inbox"},
 }
 
 func TestDemoHub(t *testing.T) {
@@ -89,7 +89,7 @@ func TestDemoHub(t *testing.T) {
 		}
 		return row, asSession(is.Token, is.CSRFToken)
 	}
-	marta, _ := newUser(demoUserName, "user", hash)
+	erin, _ := newUser(demoUserName, "user", hash)
 	former, asFormer := newUser("former-admin", "admin", "x")
 
 	connect := func(name string, owner store.UserRow, sessions []string) *pipeWorker {
@@ -101,11 +101,11 @@ func TestDemoHub(t *testing.T) {
 		demoDeclare(t, ph, pw, sessions)
 		return pw
 	}
-	w1 := connect("patryk-coder-patryk-work", ph.admin, demoSessions[0])
-	w2 := connect("patryk-ausus-patrykf5", ph.admin, demoSessions[1])
-	w3 := connect("marta-thinkpad-x1-carbon-gen-11", marta, demoSessions[2])
+	w1 := connect("dana-coder-dana-work", ph.admin, demoSessions[0])
+	w2 := connect("dana-asus-danaf5", ph.admin, demoSessions[1])
+	w3 := connect("erin-thinkpad-x1-carbon-gen-11", erin, demoSessions[2])
 	// The fourth Worker is enrolled and never connects: offline.
-	off := store.WorkerRow{ID: store.NewID(), Pub: []byte(strings.Repeat("o", 32)), Name: "patryk-raspberrypi-5-garage", OwnerID: ph.admin.ID,
+	off := store.WorkerRow{ID: store.NewID(), Pub: []byte(strings.Repeat("o", 32)), Name: "dana-raspberrypi-5-lab", OwnerID: ph.admin.ID,
 		Kind: store.WorkerKindPrivate, CreatedAt: time.Now().Add(-48 * time.Hour).UnixMilli()}
 	if err := ph.st.InsertWorker(ctx, nil, off); err != nil {
 		t.Fatal(err)
@@ -147,11 +147,11 @@ func TestDemoHub(t *testing.T) {
 		{ph.asAdmin, w1, w2, "review-grants-store", "feat-session-grants-authz", ops.GrantLevelView, "", "reviewer reads the implementer"},
 		{ph.asAdmin, w1, w2, "review-grants-web", "feat-access-explain", ops.GrantLevelMessage, future, "review findings go back as messages"},
 		{ph.asAdmin, w2, w1, "minion-1", "release-0-21-0", ops.GrantLevelControl, "", "release minion drives the release session"},
-		{ph.asAdmin, w2, w1, "infra-dashboard", "", ops.GrantLevelView, "", "dashboard reads every shared session of the work machine"},
+		{ph.asAdmin, w2, w1, "ops-dashboard", "", ops.GrantLevelView, "", "dashboard reads every shared session of the work machine"},
 		{ph.asAdmin, w1, w2, "docs-access-architecture", "", ops.GrantLevelMessage, "", ""},
 		{ph.asAdmin, w1, w3, "codex-gate-hub-core", "frontend-redesign", ops.GrantLevelView, "", "between users, granted by the administrator"},
 		{ph.asAdmin, w1, w2, "minion-3", "long-running-benchmark-of-the-pipe-broker", ops.GrantLevelControl, past, "expired yesterday"},
-		{asFormer, w2, w3, "home-lab", "support-inbox", ops.GrantLevelMessage, "", "granted by an administrator who was demoted"},
+		{asFormer, w2, w3, "lab-notes", "support-inbox", ops.GrantLevelMessage, "", "granted by an administrator who was demoted"},
 	}
 	for _, x := range grants {
 		args := map[string]any{"source_worker_id": x.src.id, "source_session": x.srcSession, "target_worker_id": x.tgt.id, "level": x.level}

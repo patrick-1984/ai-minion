@@ -129,6 +129,8 @@ func (h controlHandlers) state(ctx context.Context) ([]ops.ControlWorker, map[st
 					names := append([]string{}, a.Sessions...)
 					ca.Sessions = &names
 				}
+				ca.FilesPull = a.FilesPull != nil && *a.FilesPull
+				ca.FilesPush = a.FilesPush != nil && *a.FilesPush
 				w.Accepts = append(w.Accepts, ca)
 			}
 		}
@@ -270,8 +272,10 @@ func (h controlHandlers) setAccept(ctx context.Context, c *Call, a ops.ControlSe
 	}
 	_ = m
 	if a.Accept {
+		// files.v1: absent flags keep the stored ones (unset on a new row).
 		err = h.st.PutAcceptIfState(ctx, store.AcceptRow{TargetWorkerID: a.WorkerID, SourceWorkerID: a.SourceWorkerID,
-			Sessions: sessions, CreatedBy: c.Identity.Actor, CreatedAt: time.Now().UnixMilli()},
+			Sessions: sessions, CreatedBy: c.Identity.Actor, CreatedAt: time.Now().UnixMilli(),
+			FilesPull: a.FilesPull, FilesPush: a.FilesPush},
 			owners[0], owners[1], a.IfState)
 	} else {
 		// Not a plain delete: on a Worker that accepts all, a missing row
@@ -416,7 +420,14 @@ func acceptDetail(a ops.ControlSetAcceptArgs) string {
 	default:
 		reach = "limited"
 	}
-	return "source_worker=" + a.SourceWorkerID + " accept=" + strconv.FormatBool(a.Accept) + " sessions=" + reach
+	d := "source_worker=" + a.SourceWorkerID + " accept=" + strconv.FormatBool(a.Accept) + " sessions=" + reach
+	if a.FilesPull != nil {
+		d += " files_pull=" + strconv.FormatBool(*a.FilesPull)
+	}
+	if a.FilesPush != nil {
+		d += " files_push=" + strconv.FormatBool(*a.FilesPush)
+	}
+	return d
 }
 
 // workerControlDetail is the audit detail of control_set_worker: the

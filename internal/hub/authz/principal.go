@@ -70,6 +70,10 @@ type Principal struct {
 	// direct is the calling session and its direct grants (KindWorker, see
 	// [NewWorkerSessionPrincipal]); nil for every other principal.
 	direct *directGrants
+	// files is the verified file authority of the calling session
+	// (KindWorker, see [Principal.WithVerifiedFiles]); nil for every other
+	// principal and for a claimed source.
+	files *fileAuthority
 }
 
 // NewSessionPrincipal returns the principal of a browser session of userID.

@@ -140,8 +140,8 @@ func TestDirectGrantsDoNotReachPipeOps(t *testing.T) {
 			t.Errorf("%s: principal %+v, grant key %q, %v; want the session principal", op, pr, key, err)
 		}
 	}
-	if len(directGrantOps) != 8 {
-		t.Errorf("%d operations take direct grants, D3 lists 8", len(directGrantOps))
+	if len(directGrantOps) != 9 {
+		t.Errorf("%d operations take direct grants, D3 lists 8 and session_keep_set (v0.24.0) is the ninth", len(directGrantOps))
 	}
 }
 

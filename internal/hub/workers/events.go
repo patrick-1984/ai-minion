@@ -103,6 +103,9 @@ type SessionState struct {
 	// none. It is the Hub's own evidence for the first-seen fence and is never
 	// published on the event feed.
 	InstanceID string `json:"instance_id,omitempty"`
+	// Keep is true when the Worker keeps the session across its restarts
+	// (session.keep.v1); false from a Worker that does not report it.
+	Keep bool `json:"keep,omitempty"`
 }
 
 // WorkerSessions is the latest known state of one Worker.
@@ -143,6 +146,8 @@ type Event struct {
 	Time       ops.Timestamp `json:"time"`
 	ops.PaneStateDetail
 	HarnessName string `json:"harness_name,omitempty"`
+	// Keep is true on session_added and state_changed of a kept session.
+	Keep bool `json:"keep,omitempty"`
 
 	// snapshot are the session names a worker_resynced event's snapshot
 	// listed (never published): consumers that act on the snapshot use them,
@@ -821,7 +826,7 @@ func (f *Feed) Apply(c Change) error {
 			h.rememberInstancesLocked(w, map[string]string{s.Name: s.InstanceID})
 		}
 		ev.Kind, ev.State, ev.ScreenHash = s.Kind, s.State, s.ScreenHash
-		ev.PaneStateDetail, ev.HarnessName = s.PaneStateDetail, s.HarnessName
+		ev.PaneStateDetail, ev.HarnessName, ev.Keep = s.PaneStateDetail, s.HarnessName, s.Keep
 		task := s.Task
 		ev.Task = &task
 	case EventSessionRemoved:
@@ -994,6 +999,7 @@ type eventWire struct {
 	ops.PaneStateDetail
 	HarnessName string `json:"harness_name"`
 	InstanceID  string `json:"instance_id"`
+	Keep        bool   `json:"keep"`
 	// Share is the rule of a share_changed event.
 	Share *ops.ShareDecl `json:"share"`
 }
@@ -1060,7 +1066,7 @@ func feedFrame(feed *Feed, body json.RawMessage, other func(string, json.RawMess
 		}
 		c := Change{Seq: f.Seq, Event: f.Event, HasTask: f.Task != nil, Share: f.Share,
 			Session: SessionState{Name: f.Session, Kind: f.Kind, State: f.State, ScreenHash: f.ScreenHash, PaneStateDetail: f.PaneStateDetail, HarnessName: f.HarnessName,
-				InstanceID: f.InstanceID}}
+				InstanceID: f.InstanceID, Keep: f.Keep}}
 		if f.Task != nil {
 			c.Session.Task = *f.Task
 		}

@@ -1,0 +1,40 @@
+{{define "content"}}
+<link rel="stylesheet" href="/static/files.css">
+<div class="page-head files-history"><div><h1>File transfers</h1><p>Downloads, uploads and copies between sessions that touch your Workers or that you started, newest first. Records show folders and paths relative to the session's folder, never file content.</p></div></div>
+{{if .Data.Error}}<p class="form-error" role="alert">{{.Data.Error}}</p>{{end}}
+{{with .Data.One}}<p><a class="btn btn-secondary btn-sm" href="/files/history">All transfers</a></p>
+<h2>Transfer {{.ID}}</h2>
+<dl>
+  <dt>When (UTC)</dt><dd>{{if .When}}<time datetime="{{.WhenAt}}">{{.When}}</time>{{end}}</dd>
+  <dt>Direction</dt><dd>{{.Direction}}</dd>
+  <dt>State</dt><dd><span class="badge" data-tone="{{.Tone}}">{{.State}}</span>{{if .Reason}} <code>{{.Reason}}</code>{{end}}</dd>
+  <dt>Started by</dt><dd>{{.Who}}</dd>
+  <dt>Session</dt><dd>{{.Target}}</dd>
+  <dt>Other end</dt><dd>{{.Source}}</dd>
+  {{if .Root}}<dt>Folder</dt><dd><code>{{.Root}}</code></dd>{{end}}
+  <dt>Path</dt><dd><code>{{.Path}}</code>{{if .Kind}} ({{.Kind}}){{end}}</dd>
+  <dt>Files and bytes</dt><dd>{{.Files}} files, {{.Bytes}}</dd>
+  {{if .Manifest}}<dt>Manifest SHA-256</dt><dd><code>{{.Manifest}}</code></dd>{{end}}
+</dl>{{end}}
+{{if .Data.One}}{{if .Data.Entries}}<div class="table-wrap"><table>
+  <caption class="sr-only">Files of the transfer</caption>
+  <thead><tr><th scope="col">Path</th><th scope="col">Size</th><th scope="col">SHA-256 or reason</th></tr></thead>
+  <tbody>{{range .Data.Entries}}<tr><td data-label="Path"><code>{{.Path}}</code></td><td data-label="Size">{{.Size}}</td><td data-label="SHA-256">{{if .Skipped}}<span class="muted">{{.Skipped}}</span>{{else}}<code>{{.SHA256}}</code>{{end}}</td></tr>{{end}}</tbody>
+</table></div>{{if .Data.Omitted}}<p class="muted">{{.Data.Omitted}} more entries are not listed.</p>{{end}}{{else}}<p class="muted">No file entries are recorded for this transfer.</p>{{end}}
+{{else if not .Data.Error}}{{if .Data.Rows}}<div class="table-wrap"><table data-sortable>
+  <caption class="sr-only">File transfers</caption>
+  <thead><tr><th scope="col" data-sort="text">When (UTC)</th><th scope="col" data-sort="text">Direction</th><th scope="col" data-sort="text">State</th><th scope="col" data-sort="text">Session</th><th scope="col" data-sort="text">Path</th><th scope="col" data-sort="text">Started by</th><th scope="col" data-sort="text">Size</th><th scope="col"><span class="sr-only">Details</span></th></tr></thead>
+  <tbody>{{range .Data.Rows}}<tr>
+    <td data-label="When">{{if .When}}<time datetime="{{.WhenAt}}">{{.When}}</time>{{end}}</td>
+    <td data-label="Direction">{{.Direction}}</td>
+    <td data-label="State"><span class="badge" data-tone="{{.Tone}}">{{.State}}</span>{{if .Reason}} <code>{{.Reason}}</code>{{end}}</td>
+    <td data-label="Session">{{.Target}}</td>
+    <td data-label="Path"><code>{{.Path}}</code></td>
+    <td data-label="Started by">{{.Who}}</td>
+    <td data-label="Size">{{.Files}} files, {{.Bytes}}</td>
+    <td data-label="Details"><a href="{{.Link}}" aria-label="Details of transfer {{.ID}}">Details</a></td>
+  </tr>{{end}}</tbody>
+</table></div>
+{{if .Data.Next}}<p><a class="btn btn-secondary" href="{{.Data.Next}}">Older transfers</a></p>{{end}}
+{{else}}<p class="muted">No file transfers yet.</p>{{end}}{{end}}
+{{end}}

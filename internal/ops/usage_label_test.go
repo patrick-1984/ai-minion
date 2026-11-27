@@ -56,12 +56,12 @@ func TestUsageSanitizeDropsAnAccountNeverTheReport(t *testing.T) {
 
 func TestUsageSessionIgnoresTheDeprecatedEndpointHost(t *testing.T) {
 	var s UsageSession
-	if err := json.Unmarshal([]byte(`{"id":"x","name":"n","endpoint":"cpa.internal.example:8443"}`), &s); err != nil {
+	if err := json.Unmarshal([]byte(`{"id":"x","name":"n","endpoint":"gateway.internal.example:8443"}`), &s); err != nil {
 		t.Fatal(err)
 	}
 	s.DropEndpoint()
 	b, _ := json.Marshal(s)
-	if !s.CustomEndpoint || strings.Contains(string(b), "cpa.internal") {
+	if !s.CustomEndpoint || strings.Contains(string(b), "gateway.internal") {
 		t.Fatalf("endpoint host kept: %s", b)
 	}
 }

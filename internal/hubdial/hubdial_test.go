@@ -20,13 +20,13 @@ func TestParse(t *testing.T) {
 	}{
 		{"", ""},
 		{"   ", ""},
-		{"minion.example=10.3.3.6", "minion.example=10.3.3.6"},
-		{" Minion.Example. = 10.3.3.6 ", "minion.example=10.3.3.6"},
+		{"minion.example=192.0.2.10", "minion.example=192.0.2.10"},
+		{" Minion.Example. = 192.0.2.10 ", "minion.example=192.0.2.10"},
 		{"hub.example=2001:db8::1", "hub.example=2001:db8::1"},
 		{"hub.example=[2001:db8::1]", "hub.example=2001:db8::1"},
 		{"hub.example=::ffff:10.0.0.1", "hub.example=10.0.0.1"},
 		{"localhost=127.0.0.1", "localhost=127.0.0.1"},
-		{"a-b.c1.example=192.168.1.2", "a-b.c1.example=192.168.1.2"},
+		{"a-b.c1.example=192.0.2.2", "a-b.c1.example=192.0.2.2"},
 	} {
 		o, err := Parse(tc.in)
 		if err != nil {
@@ -53,14 +53,14 @@ func TestParse(t *testing.T) {
 }
 
 func TestTargetOnlyNamedHostKeepsPort(t *testing.T) {
-	o, err := Parse("minion.example=10.3.3.6")
+	o, err := Parse("minion.example=192.0.2.10")
 	if err != nil {
 		t.Fatal(err)
 	}
 	for in, want := range map[string]string{
-		"minion.example:443":     "10.3.3.6:443",
-		"MINION.example.:80":     "10.3.3.6:80",
-		"minion.example:8443":    "10.3.3.6:8443",
+		"minion.example:443":     "192.0.2.10:443",
+		"MINION.example.:80":     "192.0.2.10:80",
+		"minion.example:8443":    "192.0.2.10:8443",
 		"other.example:443":      "other.example:443",
 		"sub.minion.example:443": "sub.minion.example:443",
 		"proxy.lan:3128":         "proxy.lan:3128",
@@ -78,7 +78,7 @@ func TestTargetOnlyNamedHostKeepsPort(t *testing.T) {
 }
 
 func TestWrapPassesNetworkAndRewrittenAddress(t *testing.T) {
-	o, _ := Parse("minion.example=10.3.3.6")
+	o, _ := Parse("minion.example=192.0.2.10")
 	var gotNet, gotAddr string
 	sentinel := errors.New("recorded")
 	dial := o.Wrap(func(_ context.Context, network, addr string) (net.Conn, error) {
@@ -88,7 +88,7 @@ func TestWrapPassesNetworkAndRewrittenAddress(t *testing.T) {
 	if _, err := dial(context.Background(), "tcp", "minion.example:443"); !errors.Is(err, sentinel) {
 		t.Fatalf("err = %v", err)
 	}
-	if gotNet != "tcp" || gotAddr != "10.3.3.6:443" {
+	if gotNet != "tcp" || gotAddr != "192.0.2.10:443" {
 		t.Fatalf("dialled %s %s", gotNet, gotAddr)
 	}
 }
@@ -180,13 +180,13 @@ func TestDialWith(t *testing.T) {
 	if _, err := dialWith(nil, perr, nil)(context.Background(), "tcp", "minion.example:443"); err == nil {
 		t.Fatal("an invalid override must fail the dial")
 	}
-	o, _ := Parse("minion.example=10.3.3.6")
+	o, _ := Parse("minion.example=192.0.2.10")
 	var got string
 	_, _ = dialWith(o, nil, func(_ context.Context, _, addr string) (net.Conn, error) {
 		got = addr
 		return nil, errors.New("stop")
 	})(context.Background(), "tcp", "minion.example:443")
-	if got != "10.3.3.6:443" {
+	if got != "192.0.2.10:443" {
 		t.Fatalf("dialled %q", got)
 	}
 }

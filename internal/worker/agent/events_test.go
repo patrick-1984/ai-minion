@@ -596,6 +596,10 @@ func TestFrameJSONShape(t *testing.T) {
 			`{"type":"event","seq":3,"time":"2026-11-09T12:00:00.000Z","event":"state_changed","session":"a","kind":"shell","state":"busy","task":""}`},
 		{"state with a task", eventFrameOf(3, at, Change{EventStateChanged, SessionState{Name: "a", Kind: "shell", State: "busy", Task: "x", ScreenHash: "ff"}}),
 			`{"type":"event","seq":3,"time":"2026-11-09T12:00:00.000Z","event":"state_changed","session":"a","kind":"shell","state":"busy","task":"x"}`},
+		{"state of a kept session", eventFrameOf(3, at, Change{EventStateChanged, SessionState{Name: "a", Kind: "shell", State: "busy", Keep: true}}),
+			`{"type":"event","seq":3,"time":"2026-11-09T12:00:00.000Z","event":"state_changed","session":"a","kind":"shell","state":"busy","task":"","keep":true}`},
+		{"snapshot of a kept session", SnapshotFrame{Type: proto.TypeEventsSnap, Time: ops.Timestamp(at), Sessions: []SessionState{{Name: "a", Kind: "shell", State: "stable", Keep: true}}},
+			`{"type":"events.snapshot","seq":0,"time":"2026-11-09T12:00:00.000Z","sessions":[{"name":"a","kind":"shell","state":"stable","task":"","keep":true}]}`},
 		{"screen", eventFrameOf(4, at, Change{EventScreenChanged, SessionState{Name: "a", Kind: "shell", State: "busy", ScreenHash: "ee"}}),
 			`{"type":"event","seq":4,"time":"2026-11-09T12:00:00.000Z","event":"screen_changed","session":"a","screen_hash":"ee"}`},
 		{"op.request", OpRequestFrame{Type: proto.TypeOpRequest, Op: "sessions_list", Actions: []ops.Action{ops.ActionRead}},
@@ -942,5 +946,18 @@ func TestOnFrameRegistrationAfterServeStarted(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("the registration did not survive the new stream")
+	}
+}
+
+// Keeping or forgetting a session is a state change the Hub learns at once.
+func TestDiffReportsAKeepChange(t *testing.T) {
+	a := SessionState{Name: "a", Kind: "shell", State: "stable"}
+	kept := a
+	kept.Keep = true
+	for _, c := range []struct{ prev, cur SessionState }{{a, kept}, {kept, a}} {
+		got := Diff(View{"a": c.prev}, View{"a": c.cur})
+		if len(got) != 1 || got[0].Event != EventStateChanged || got[0].Session.Keep != c.cur.Keep {
+			t.Errorf("%v -> %v: %+v", c.prev.Keep, c.cur.Keep, got)
+		}
 	}
 }

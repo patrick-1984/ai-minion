@@ -16,6 +16,7 @@ import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.os.SystemClock
+import cc.nasz.minion.devicecontrol.DeviceControl
 import org.json.JSONObject
 import java.time.Instant
 import java.util.concurrent.ScheduledThreadPoolExecutor
@@ -38,10 +39,42 @@ internal data class WorkerView(
     val expires: String = "",
     val usage: UsageRegistration? = null,
     val dialOverride: String = "",
+    val update: UpdateView = UpdateView(),
+    // "" unless device control is compiled in and enabled; else its status line (design 4.7).
+    val deviceControl: String = "",
+    // The local file transfer switch (on, send_only, receive_only or off; ""
+    // before the first read), the Minion files folder, and why this device
+    // cannot transfer files ("" when it can or when the Worker does not say).
+    val fileTransfer: String = "",
+    val filesFolder: String = "",
+    val filesUnavailable: String = "",
 )
 
 internal fun workerPreferences(context: Context): SharedPreferences =
     context.getSharedPreferences("supervisor", Context.MODE_PRIVATE)
+
+/** Enabled (start after restarts): true unless the person chose otherwise. */
+internal fun autostartEnabled(preferences: SharedPreferences): Boolean =
+    Autostart.enabled(if (preferences.contains(Autostart.ENABLED)) preferences.getBoolean(Autostart.ENABLED, true) else null)
+
+/**
+ * A device restart or an app install/update: an earlier Stop is over, and the
+ * Worker starts when Autostart says so (it starts only with a Hub set up).
+ */
+internal fun autostartAfter(context: Context, trigger: Autostart.Trigger) {
+    val preferences = workerPreferences(context)
+    val running = preferences.getBoolean(Autostart.WANTED, false)
+    val edit = preferences.edit().remove(Autostart.STOPPED_BY_USER)
+    // Nothing runs after a boot; a stale intent must not start a Disabled Worker later.
+    if (trigger == Autostart.Trigger.BOOT) edit.putBoolean(Autostart.WANTED, false)
+    edit.commit()
+    if (!Autostart.shouldStart(trigger, autostartEnabled(preferences), running, stoppedByUser = false)) return
+    try {
+        context.startForegroundService(Intent(context, WorkerService::class.java).setAction(WorkerService.AUTOSTART))
+    } catch (_: IllegalStateException) {
+        // A restricted app may have to be opened; opening it starts an Enabled Worker.
+    }
+}
 
 class WorkerService : Service() {
     private val queue = ScheduledThreadPoolExecutor(1)
@@ -49,6 +82,7 @@ class WorkerService : Service() {
     private val stopping = AtomicBoolean()
     private lateinit var native: NativeWorker
     private lateinit var preferences: SharedPreferences
+    private lateinit var updater: ApkUpdater
     private var worker: java.lang.Process? = null
     private var tmux: java.lang.Process? = null
 
@@ -59,6 +93,7 @@ class WorkerService : Service() {
     private var notice = ""
     private var report: JSONObject? = null
     private var usage: UsageRegistration? = null
+    private var fileTransfer = ""
     private var nextUsageReport = 0L
     private var restartAt = 0L
     private var nextReport = 0L
@@ -92,11 +127,51 @@ class WorkerService : Service() {
             launch(server, null, share, acceptUsage, dialOverride)
         fun stop() = stopWorker()
         fun pause(paused: Boolean) = runCommand(if (paused) "resume" else "pause")
-        fun share(share: Boolean) = runCommand("config", "share", if (share) "all" else "none")
-        fun boot(boot: Boolean) {
+        fun share(share: Boolean) {
+            // Design 5: device control needs a dedicated Worker; sharing is refused while it is enabled.
+            if (share && DeviceControl.available && DeviceControl.get(this@WorkerService).enabled) {
+                queue.execute {
+                    notice = "Disable Device control before sharing this Worker's terminal sessions."
+                    nextReport = 0
+                    publish()
+                }
+                return
+            }
+            runCommand("config", "share", if (share) "all" else "none")
+        }
+        // Saved in the Worker config file, which the Worker reads again at every
+        // file request and before every publish: it applies at once, also to a
+        // transfer in progress that has not published yet.
+        fun fileTransfer(allow: Boolean) = runCommand(
+            "config", "set", NativeWorker.FILE_TRANSFER_KEY,
+            if (allow) NativeWorker.FILE_TRANSFER_ON else NativeWorker.FILE_TRANSFER_OFF,
+        )
+        // Enable / Disable: whether the Worker starts after restarts. Enable also
+        // starts a stopped Worker now; Disable leaves a running one running.
+        fun autostart(enabled: Boolean) {
             queue.execute {
-                preferences.edit().putBoolean("boot", boot).commit()
+                if (!preferences.edit().putBoolean(Autostart.ENABLED, enabled).commit()) {
+                    notice = "Android could not save the change. Try again."
+                }
                 publish()
+            }
+            if (enabled && !view.wanted && !view.busy && view.hub.isNotBlank()) launch(null, null, "all")
+        }
+
+        // The screen opened: an Enabled, set-up Worker that is not running and
+        // was not stopped with Stop since the last restart starts now (A124).
+        fun opened() {
+            val id = requestId
+            queue.execute {
+                if (wanted || busy) return@execute
+                val start = Autostart.shouldStart(
+                    Autostart.Trigger.APP_OPENED, autostartEnabled(preferences), running = false,
+                    stoppedByUser = preferences.getBoolean(Autostart.STOPPED_BY_USER, false),
+                )
+                if (!start) return@execute
+                val configured = runCatching { !native.report()?.optString("hub_url").isNullOrBlank() }.getOrDefault(false)
+                // A Stop or Start pressed meanwhile wins.
+                if (configured) main.post { if (id == requestId) launch(null, null, "all") }
             }
         }
 
@@ -110,6 +185,23 @@ class WorkerService : Service() {
                 tick()
             }
         }
+
+        // Updates: Automatic / Ask / Off. Off is also the Worker's local veto
+        // (remote_update=off, read at its next start); the app enforces it at once.
+        fun updatePolicy(policy: UpdatePolicy) {
+            updater.setPolicy(policy)
+            queue.execute {
+                if (busy) return@execute
+                val value = if (policy == UpdatePolicy.OFF) "off" else "on"
+                val saved = runCatching { native.workerCommand("config", "set", "remote_update", value) }.getOrDefault(false)
+                if (!saved && !report?.optString("hub_url").isNullOrBlank()) {
+                    notice = "The Worker could not save the update setting. The app still applies it."
+                }
+                publish()
+            }
+        }
+
+        fun installUpdate() = updater.installNow()
 
         // Takes effect on the next start; only offered while the Worker is stopped.
         fun clearDialOverride() {
@@ -144,6 +236,8 @@ class WorkerService : Service() {
         super.onCreate()
         native = NativeWorker(this)
         preferences = workerPreferences(this)
+        updater = ApkUpdater.get(this)
+        updater.onChange = { queue.execute { publish() } }
         getSystemService(NotificationManager::class.java).createNotificationChannel(
             NotificationChannel(CHANNEL, "Minion Worker", NotificationManager.IMPORTANCE_LOW)
         )
@@ -158,9 +252,12 @@ class WorkerService : Service() {
             return START_NOT_STICKY
         }
         showForeground("Starting")
-        if (intent?.action != UI_START) {
+        if (intent?.action == AUTOSTART) {
+            val id = requestId
+            queue.execute { autostart(id, AUTOSTART_TRIES) }
+        } else if (intent?.action != UI_START) {
             queue.execute {
-                if (!stopping.get() && preferences.getBoolean("wanted", false)) {
+                if (!stopping.get() && preferences.getBoolean(Autostart.WANTED, false)) {
                     safely { restore() }
                 } else {
                     main.post { leaveForeground() }
@@ -168,6 +265,28 @@ class WorkerService : Service() {
             }
         }
         return START_STICKY
+    }
+
+    // After a boot or an app update (autostartAfter decided), on the queue: start when a Hub is set up. A status
+    // read that fails (a device still busy right after boot) is tried again a few times; a Worker without a Hub
+    // stays stopped quietly.
+    private fun autostart(id: Long, triesLeft: Int) {
+        if (wanted || busy) return
+        if (stopping.get() || id != requestId) {
+            main.post { if (id == requestId && foreground) leaveForeground() }
+            return
+        }
+        val latest = runCatching { native.report() }.getOrNull()
+        if (latest == null && triesLeft > 1) {
+            queue.schedule({ autostart(id, triesLeft - 1) }, AUTOSTART_RETRY_SECONDS, TimeUnit.SECONDS)
+            return
+        }
+        if (latest?.optString("hub_url").isNullOrBlank()) {
+            main.post { if (id == requestId && foreground) leaveForeground() }
+        } else {
+            report = latest
+            safely { restore() }
+        }
     }
 
     private fun launch(
@@ -227,7 +346,9 @@ class WorkerService : Service() {
     }
 
     private fun saveWanted(value: Boolean) {
-        check(preferences.edit().putBoolean("wanted", value).commit())
+        val edit = preferences.edit().putBoolean(Autostart.WANTED, value)
+        if (value) edit.remove(Autostart.STOPPED_BY_USER)
+        check(edit.commit())
         wanted = value
     }
 
@@ -235,7 +356,7 @@ class WorkerService : Service() {
         wanted = false
         busy = false
         notice = message
-        preferences.edit().putBoolean("wanted", false).commit()
+        preferences.edit().putBoolean(Autostart.WANTED, false).commit()
         publish()
         main.post { if (foreground) leaveForeground() }
     }
@@ -245,7 +366,9 @@ class WorkerService : Service() {
         stopping.set(true)
         native.cancelCommand()
         queue.execute {
-            val saved = preferences.edit().putBoolean("wanted", false).commit()
+            // Stop holds until the next restart or update (or Start / Enable); Enabled stays.
+            val saved = preferences.edit().putBoolean(Autostart.WANTED, false)
+                .putBoolean(Autostart.STOPPED_BY_USER, true).commit()
             wanted = false
             busy = false
             restartAt = 0
@@ -268,6 +391,7 @@ class WorkerService : Service() {
             NativeWorker.reap(worker)
         } finally {
             worker = null
+            runCatching { native.stopBridge() }
             NativeWorker.reap(tmux)
             tmux = null
             expectingTmux = false
@@ -292,7 +416,9 @@ class WorkerService : Service() {
             if (wanted && !stopping.get()) supervise(now)
             if (now >= nextReport) {
                 report = native.report()
+                fileTransfer = native.fileTransferMode()
                 nextReport = now + 4_000
+                updater.poll(report, wanted && !busy && !stopping.get() && worker?.isAlive == true)
                 if (report?.optBoolean("paired") != true) {
                     usage = null
                     nextUsageReport = 0
@@ -392,16 +518,22 @@ class WorkerService : Service() {
             }
         }
         val share = r?.optJSONObject("share")
+        if (DeviceControl.available) {
+            // Fail closed: a share change while enabled disables device control and closes its streams.
+            DeviceControl.get(this).observeShare(if (worker?.isAlive == true) share?.optString("mode") else null)
+        }
         val v = WorkerView(
             wanted, busy, status, notice, r?.optString("hub_url").orEmpty(), workerWords, hubWords,
             r?.optBoolean("paired") == true, r?.optInt("sessions", -1)?.takeIf { it >= 0 }?.toString().orEmpty(),
-            share?.optString("mode") != "none", preferences.getBoolean("boot", false),
+            share?.optString("mode") != "none", autostartEnabled(preferences),
             livePairing?.optString("code").orEmpty(), if (livePairing != null) expires else "",
-            usage, preferences.getString(HubDialOverride.PREFERENCE, null).orEmpty(),
+            usage, preferences.getString(HubDialOverride.PREFERENCE, null).orEmpty(), updater.view,
+            if (DeviceControl.available && DeviceControl.get(this).enabled) DeviceControl.get(this).statusLine() else "",
+            fileTransfer, native.minionFilesPath, filesUnavailable(r),
         )
         main.post {
             if (v != view) {
-                val changed = view.status != v.status
+                val changed = view.status != v.status || view.deviceControl != v.deviceControl
                 view = v
                 listener?.invoke(v)
                 if (foreground && changed) {
@@ -409,6 +541,15 @@ class WorkerService : Service() {
                 }
             }
         }
+    }
+
+    // A running Worker whose probe found no safe confinement on this device
+    // does not announce files.v1 and says why in its status ("files" object:
+    // available, reason). A Worker that does not report it shows nothing.
+    private fun filesUnavailable(report: JSONObject?): String {
+        val files = report?.optJSONObject("files") ?: return ""
+        if (files.optBoolean("available", true)) return ""
+        return files.optString("reason").ifBlank { "no reason given" }
     }
 
     private fun showForeground(status: String) {
@@ -429,7 +570,9 @@ class WorkerService : Service() {
         return Notification.Builder(this, CHANNEL)
             .setSmallIcon(R.drawable.notification_icon)
             .setContentTitle(getString(R.string.app_name))
-            .setContentText(status)
+            .setContentText(
+                view.deviceControl.ifEmpty { null }?.let { "$status · $it" } ?: status
+            )
             .setContentIntent(open)
             .setOngoing(true)
             .setVisibility(Notification.VISIBILITY_PRIVATE)
@@ -445,6 +588,7 @@ class WorkerService : Service() {
 
     override fun onDestroy() {
         listener = null
+        updater.onChange = null
         stopping.set(true)
         native.cancelCommand()
         queue.execute {
@@ -462,19 +606,17 @@ class WorkerService : Service() {
         private const val NOTIFICATION = 1
         private const val STOP = "cc.nasz.minion.STOP"
         private const val UI_START = "cc.nasz.minion.UI_START"
+        internal const val AUTOSTART = "cc.nasz.minion.AUTOSTART"
+        private const val AUTOSTART_TRIES = 4
+        private const val AUTOSTART_RETRY_SECONDS = 5L
     }
 }
 
+// BOOT_COMPLETED only: the app's settings live in credential-encrypted
+// storage, which LOCKED_BOOT_COMPLETED (before the first unlock) cannot read.
 class BootReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         if (intent.action != Intent.ACTION_BOOT_COMPLETED) return
-        val preferences = workerPreferences(context)
-        if (preferences.getBoolean("boot", false) && preferences.getBoolean("wanted", false)) {
-            try {
-                context.startForegroundService(Intent(context, WorkerService::class.java))
-            } catch (_: IllegalStateException) {
-                // A restricted app may have to be opened and started manually.
-            }
-        }
+        autostartAfter(context, Autostart.Trigger.BOOT)
     }
 }

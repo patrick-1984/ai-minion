@@ -50,6 +50,11 @@ type Op struct {
 	SessionOnly bool
 	// Stream marks ops whose result is a stream of Result values.
 	Stream bool
+	// Unreleased marks an op whose contract is declared (catalog, OpenAPI,
+	// wire name) while its implementation is still being built: the MCP
+	// server offers no tool for it and the CLI command is not listed in the
+	// help. Nothing serves it yet, so a call is answered unsupported_op.
+	Unreleased bool
 	// Guards lists the action-contract class of each guard of a write op.
 	Guards []Guard
 	// Args is the Go argument type (a struct). Its JSON encoding is the wire

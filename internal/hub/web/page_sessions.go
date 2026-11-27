@@ -128,6 +128,15 @@ type WorkerRow struct {
 	// Hub's release is not published on GitHub yet).
 	UpdateFailed      string
 	UpdateUnpublished string
+	// UpdateProgress is "Updating to vX: <state>" while an Android app update
+	// runs (downloading, verifying, waiting for idle, installing, needs
+	// confirmation on the device).
+	UpdateProgress string
+	// Android is true for the Minion Android app (an update restarts every
+	// session); AppUpdate is the Hub's update policy of the Worker: auto,
+	// off, or empty for manual (worker_app_update_set).
+	Android   bool
+	AppUpdate string
 	// Version is the protocol version of the current connection; empty while
 	// the Worker is offline.
 	Version string
@@ -246,6 +255,16 @@ type SessionRow struct {
 	// HideWorker is set on the Worker's own page, where the Worker column would
 	// repeat the heading.
 	HideWorker bool
+	// Keep is true when the Worker keeps the session across its restarts
+	// (session_keep_set). CanKeep is true when the Worker announces
+	// session.keep.v1, is online and the person may change the flag (the
+	// owner or an admin; the API decides again); KeepURL is then the form
+	// that sets it (filled by [newDashboardView]).
+	Keep    bool
+	CanKeep bool
+	KeepURL string
+	// ShowKeep is the table's ShowKeep: the row has a Keep cell.
+	ShowKeep bool
 }
 
 // Dashboard is the data of the home page as a [LiveSource] returns it.
@@ -395,6 +414,9 @@ type DashboardView struct {
 	ShowOwner bool
 	// OnWorker is false for the lists; the Worker's own page sets it (see [WorkerView]).
 	OnWorker bool
+	// ShowKeep adds the Keep column to the session table: a session of the
+	// scope is kept or may be marked as kept.
+	ShowKeep bool
 	Filter   ListFilter
 	// TotalWorkers, OnlineWorkers, TotalSessions and WaitingSessions count the
 	// whole scope, not the filtered rows.
@@ -613,7 +635,9 @@ func newFilteredView(d Dashboard, all bool, f ListFilter) DashboardView {
 			if d.Admin && w.Online && !w.Pending && w.SelfUpdate {
 				w.UpdateUnpublished = notPublishedText(target)
 			}
-			if d.Admin && w.Online && !w.Pending && w.SelfUpdate {
+			if w.AppUpdate == ops.WorkerAppUpdateOff {
+				w.UpdateBlock = "updates from the Hub are off for this worker"
+			} else if d.Admin && w.Online && !w.Pending && w.SelfUpdate {
 				w.UpdateURL = WorkerUpdatePath(w.ID)
 				if w.UpdateUnpublished == "" {
 					// The bulk action would only be refused for a known draft.
@@ -650,6 +674,12 @@ func newFilteredView(d Dashboard, all bool, f ListFilter) DashboardView {
 		x.Path = SessionPath(ref, x.Name)
 		x.WorkerURL = WorkerPath(x.WorkerID, all)
 		x.StateLabel = stateLabel(x.State)
+		if x.CanKeep {
+			x.KeepURL = SessionKeepPath(ref, x.Name)
+		}
+		if x.CanKeep || x.Keep {
+			v.ShowKeep = true
+		}
 		if x.State == ops.PaneStateDialog {
 			v.WaitingSessions++
 			if len(v.Attention) < maxAttention {
@@ -663,6 +693,9 @@ func newFilteredView(d Dashboard, all bool, f ListFilter) DashboardView {
 		if i, ok := workerAt[x.WorkerID]; ok && len(v.Workers[i].Sessions) < maxWorkerSessions {
 			v.Workers[i].Sessions = append(v.Workers[i].Sessions, x)
 		}
+	}
+	for i := range v.Sessions {
+		v.Sessions[i].ShowKeep = v.ShowKeep
 	}
 	v.WorkersText = countText(len(v.Workers), v.TotalWorkers, "worker", "workers")
 	v.SessionsText = countText(len(v.Sessions), v.TotalSessions, "session", "sessions")
@@ -1203,6 +1236,7 @@ type sessionsBody struct {
 		HarnessName string `json:"harness_name"`
 		Task        string `json:"task"`
 		Online      bool   `json:"online"`
+		Keep        bool   `json:"keep"`
 	} `json:"sessions"`
 }
 
@@ -1250,20 +1284,53 @@ func (s *handlerSource) Snapshot(r *http.Request, all bool) (Dashboard, error) {
 			SessionsSynced:    w.SessionsSynced, SessionsListError: w.SessionsListError,
 			LoginStartupOutdated: w.LoginStartupOutdated,
 			SelfUpdate:           proto.HasFeature(w.Features, proto.FeatureSelfUpdate),
+			Android:              w.OS == "android", AppUpdate: w.AppUpdate,
 		})
-		if row := &d.Workers[len(d.Workers)-1]; d.Admin && w.Online && !w.Pending && row.SelfUpdate {
+		if row := &d.Workers[len(d.Workers)-1]; d.Admin && w.Online && !w.Pending && (row.SelfUpdate || row.Android) {
 			if target, ok := updateTarget(); ok && workerOutdated(w.Build, target) {
-				row.UpdateFailed = updateFailureText(r, s.c, w.ID, target)
+				// An Android app update in progress can take the Worker's
+				// self.update away (the app reports it is busy): ask anyway.
+				if text := updateFailureText(r, s.c, w.ID, target); isUpdateProgress(text) {
+					row.UpdateProgress = text
+				} else if row.SelfUpdate {
+					row.UpdateFailed = text
+				}
 			}
 		}
 	}
+	canKeep := keepWorkers(r, wl.Workers)
 	for _, x := range sb.Sessions {
 		d.Sessions = append(d.Sessions, SessionRow{
 			Code: x.Code, WorkerID: x.WorkerID, Worker: x.Worker, Owner: x.Owner, Name: x.Session,
 			Kind: x.Kind, State: x.State, Task: x.Task, Online: x.Online, PaneStateDetail: x.PaneStateDetail, HarnessName: x.HarnessName,
+			Keep: x.Keep, CanKeep: x.Online && canKeep[x.WorkerID],
 		})
 	}
 	return d, nil
+}
+
+// keepWorkers are the Workers whose sessions the person of r may mark as kept:
+// online and approved, announcing session.keep.v1, and owned by that person
+// unless the person is an admin. It only decides whether the page offers the
+// checkbox; the API decides every change again.
+func keepWorkers(r *http.Request, list []ops.WorkerInfo) map[string]bool {
+	uid, admin, ok := requestUser(r)
+	if !ok {
+		return nil
+	}
+	out := map[string]bool{}
+	for _, w := range list {
+		if canKeepOn(w, uid, admin) {
+			out[w.ID] = true
+		}
+	}
+	return out
+}
+
+// canKeepOn reports whether user uid (an admin when admin is set) is offered
+// the keep checkbox on the sessions of w.
+func canKeepOn(w ops.WorkerInfo, uid string, admin bool) bool {
+	return w.Online && !w.Pending && proto.HasFeature(w.Features, proto.FeatureSessionKeepV1) && (admin || w.OwnerID == uid)
 }
 
 // noticeNotServed is shown when the Hub has no Worker list or session list
@@ -1437,4 +1504,9 @@ func readLine(br *bufio.Reader) (line string, long bool, err error) {
 		sb = append(sb, part...)
 		return strings.TrimRight(string(sb), "\r\n"), false, nil
 	}
+}
+
+// KeepBox is the keep checkbox of the row.
+func (x SessionRow) KeepBox() KeepBox {
+	return KeepBox{Class: keepBoxClass(x.WorkerID, x.Name), Name: x.Name, Worker: x.Worker, Keep: x.Keep}
 }

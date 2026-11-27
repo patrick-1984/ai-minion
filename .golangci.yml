@@ -250,6 +250,13 @@ linters:
           deny:
             - pkg: github.com/sigstore/sigstore-go
               desc: only internal/version may import sigstore-go (AD-1)
+        lib-compress:
+          files:
+            - $all
+            - "!**/internal/filexfer/**"
+          deny:
+            - pkg: github.com/klauspost/compress
+              desc: only internal/filexfer may import klauspost/compress (file transfer codings, BRD NFR-10)
 
   exclusions:
     rules:

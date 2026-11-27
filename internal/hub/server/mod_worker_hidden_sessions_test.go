@@ -34,7 +34,7 @@ func TestWorkerHiddenSessionsOnTheRealHub(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	w := store.WorkerRow{ID: store.NewID(), Pub: wk.Public(), Name: "patryk-asus", OwnerID: alice,
+	w := store.WorkerRow{ID: store.NewID(), Pub: wk.Public(), Name: "dana-asus", OwnerID: alice,
 		Kind: store.WorkerKindPrivate, CreatedAt: time.Now().UnixMilli()}
 	if err := ah.st.InsertWorker(ctx, nil, w); err != nil {
 		t.Fatal(err)

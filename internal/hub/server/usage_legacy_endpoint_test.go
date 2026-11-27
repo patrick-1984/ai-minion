@@ -23,17 +23,17 @@ func TestUsageHTTPNeverReturnsALegacyEndpointHost(t *testing.T) {
 	at := now.UnixMilli()
 	id := ops.UsageID("account", "gateway")
 	report := ops.UsageReport{Version: ops.UsageVersion, ObservedAt: at, Complete: true,
-		Sessions: []ops.UsageSession{{ID: ops.UsageID("session", "gw"), Name: "gw", AuthMode: "api", AccountID: id, Endpoint: "cpa.internal.example:8443", StartedAt: &at, ObservedAt: at, Source: "test"}},
-		Accounts: []ops.UsageAccount{{ID: id, Provider: "Anthropic", Label: "Custom endpoint cpa.internal.example", AuthMode: "api", EndpointOrigin: "https://cpa.internal.example:8443", ObservedAt: at, Source: "session-host"}}}
+		Sessions: []ops.UsageSession{{ID: ops.UsageID("session", "gw"), Name: "gw", AuthMode: "api", AccountID: id, Endpoint: "gateway.internal.example:8443", StartedAt: &at, ObservedAt: at, Source: "test"}},
+		Accounts: []ops.UsageAccount{{ID: id, Provider: "Anthropic", Label: "Custom endpoint gateway.internal.example", AuthMode: "api", EndpointOrigin: "https://gateway.internal.example:8443", ObservedAt: at, Source: "session-host"}}}
 	if err := d.st.SaveUsage(context.Background(), worker, rootID, report, now); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := d.st.DB().Exec(`UPDATE usage_accounts SET body=json_set(body,'$.endpoint_origin','https://cpa.internal.example:8443','$.label','Custom endpoint cpa.internal.example')`); err != nil {
+	if _, err := d.st.DB().Exec(`UPDATE usage_accounts SET body=json_set(body,'$.endpoint_origin','https://gateway.internal.example:8443','$.label','Custom endpoint gateway.internal.example')`); err != nil {
 		t.Fatal(err)
 	}
 	for _, section := range []string{"accounts", "sessions"} {
 		code, body, _ := d.hc.do(http.MethodPost, ops.RESTPrefix+ops.OpUsageList, ops.UsageListArgs{Section: section}, root)
-		if code != http.StatusOK || strings.Contains(body, "cpa.internal") {
+		if code != http.StatusOK || strings.Contains(body, "gateway.internal") {
 			t.Fatalf("%s: %d %s", section, code, body)
 		}
 		if section == "accounts" && !strings.Contains(body, "Anthropic custom endpoint (not told apart)") {

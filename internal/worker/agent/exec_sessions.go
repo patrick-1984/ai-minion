@@ -232,10 +232,12 @@ func (e *Executor) listShared(ctx context.Context, sel store.ShareState) (any, e
 	sem := make(chan struct{}, listParallel)
 	var wg sync.WaitGroup
 	reader, _ := e.state.(nativeStateReader)
+	kept := e.keptNames(ctx)
 	for i, s := range shared {
 		out[i] = ops.SessionInfo{
 			Name: s.Name, Created: ops.Timestamp(s.Created), Windows: s.Windows,
 			Attached: s.Attached, Task: s.Task, Probe: s.Probe, InstanceID: s.Instance,
+			Keep: kept[s.Name],
 		}
 		p, ok := s.ActivePane()
 		if !ok {

@@ -42,8 +42,11 @@ func (s *Store) BindSessionGrant(ctx context.Context, id, incarnation string, if
 		if err := grantActorMay(ctx, tx, w, may, false); err != nil {
 			return err
 		}
-		if _, err := tx.ExecContext(ctx, `UPDATE session_grant SET source_incarnation = ?, revision = revision + 1,
-			updated_at = ? WHERE id = ? AND revision = ?`, incarnation, time.Now().UnixMilli(), id, int64(ifRevision)); err != nil {
+		// A claimed grant carries no file authority: unbinding clears the
+		// file transfer flags (files.v1).
+		if _, err := tx.ExecContext(ctx, `UPDATE session_grant SET source_incarnation = ?1,
+			files_pull = CASE WHEN ?1 = '' THEN 0 ELSE files_pull END, files_push = CASE WHEN ?1 = '' THEN 0 ELSE files_push END,
+			revision = revision + 1, updated_at = ?2 WHERE id = ?3 AND revision = ?4`, incarnation, time.Now().UnixMilli(), id, int64(ifRevision)); err != nil {
 			if strings.Contains(err.Error(), "UNIQUE constraint") {
 				return ErrGrantExists
 			}

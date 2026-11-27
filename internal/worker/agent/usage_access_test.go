@@ -30,7 +30,7 @@ func TestDetectSessionAccess(t *testing.T) {
 	}
 	fakeEnv(t, home, map[int][]string{
 		1: {"PATH=/bin", "ANTHROPIC_API_KEY=sk-ant-SECRET"},
-		2: {"ANTHROPIC_AUTH_TOKEN=SECRET", "ANTHROPIC_BASE_URL=https://cpa.example:8443/v1/path"},
+		2: {"ANTHROPIC_AUTH_TOKEN=SECRET", "ANTHROPIC_BASE_URL=https://gateway.example:8443/v1/path"},
 		3: {"ANTHROPIC_BASE_URL=https://api.anthropic.com", "ANTHROPIC_API_KEY=x"},
 		4: {"PATH=/bin"},
 		5: {"OPENAI_API_KEY=sk-SECRET", "OPENAI_BASE_URL=http://gw.internal/v1"},
@@ -70,7 +70,7 @@ func TestDetectSessionAccess(t *testing.T) {
 }
 
 func TestUsageSnapshotReportsAccessWithoutSecrets(t *testing.T) {
-	fakeEnv(t, t.TempDir(), map[int][]string{300: {"ANTHROPIC_API_KEY=sk-ant-VERYSECRET", "ANTHROPIC_BASE_URL=https://cpa.example/v1"}})
+	fakeEnv(t, t.TempDir(), map[int][]string{300: {"ANTHROPIC_API_KEY=sk-ant-VERYSECRET", "ANTHROPIC_BASE_URL=https://gateway.example/v1"}})
 	old := usageDetector
 	t.Cleanup(func() { usageDetector = old })
 	usageDetector = agentdetect.New(agentdetect.WithProcessSource(usageProcs{
@@ -86,7 +86,7 @@ func TestUsageSnapshotReportsAccessWithoutSecrets(t *testing.T) {
 	if s.AuthMode != "api" || s.Endpoint != "" || !s.CustomEndpoint || !r.Accounts[0].CustomEndpoint || s.AccountID == "" || len(r.Accounts) != 1 || r.Accounts[0].ID != s.AccountID || r.Accounts[0].Label != "Anthropic custom endpoint (not told apart)" {
 		t.Fatalf("session %+v accounts %+v", s, r.Accounts)
 	}
-	if body := strings.ToLower(string(mustJSON(t, r))); strings.Contains(body, "verysecret") || strings.Contains(body, "/v1") || strings.Contains(body, "cpa.example") {
+	if body := strings.ToLower(string(mustJSON(t, r))); strings.Contains(body, "verysecret") || strings.Contains(body, "/v1") || strings.Contains(body, "gateway.example") {
 		t.Fatalf("secret or path leaked: %s", body)
 	}
 }

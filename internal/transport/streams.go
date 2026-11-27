@@ -39,8 +39,8 @@ func (r Role) String() string {
 // Kind is the kind of a yamux stream (AD-3).
 type Kind uint8
 
-// The three stream kinds. On the wire a kind is exactly two ASCII bytes
-// (A-7): the 4-byte string "call" is never written, the call kind is "ca".
+// The stream kinds. On the wire a kind is exactly two ASCII bytes (A-7): the
+// 4-byte string "call" is never written, the call kind is "ca".
 const (
 	// KindOp is opened by the Hub, one per request to the Worker.
 	KindOp Kind = iota + 1
@@ -48,6 +48,12 @@ const (
 	KindCall
 	// KindEvents is the long-lived event stream, opened by the Worker.
 	KindEvents
+	// KindFiles is a data leg of a file transfer ("fx", files.v1): one
+	// HTTP/1.1 request and its response (see fxconn.go). Either role opens it
+	// (the Hub to a target Worker, a Worker to the Hub for its caller leg),
+	// and only on a session whose two ends announced files.v1
+	// ([SessionOptions.Files]); the opener is always the HTTP client.
+	KindFiles
 )
 
 // KindPrefixLen is the length of the stream kind prefix.
@@ -62,11 +68,13 @@ func (k Kind) Prefix() [KindPrefixLen]byte {
 		return [KindPrefixLen]byte{'c', 'a'}
 	case KindEvents:
 		return [KindPrefixLen]byte{'e', 'v'}
+	case KindFiles:
+		return [KindPrefixLen]byte{'f', 'x'}
 	}
 	return [KindPrefixLen]byte{}
 }
 
-// String returns the logical name of the kind: op, call or ev.
+// String returns the logical name of the kind: op, call, ev or fx.
 func (k Kind) String() string {
 	switch k {
 	case KindOp:
@@ -75,22 +83,37 @@ func (k Kind) String() string {
 		return "call"
 	case KindEvents:
 		return "ev"
+	case KindFiles:
+		return "fx"
 	}
 	return fmt.Sprintf("kind(%d)", uint8(k))
 }
 
-// Opener returns the role that is allowed to open streams of this kind.
+// Opener returns the role that is allowed to open streams of this kind. For
+// [KindFiles], which both roles open, it returns 0; use [Kind.OpenableBy].
 func (k Kind) Opener() Role {
-	if k == KindOp {
+	switch k {
+	case KindOp:
 		return RoleHub
+	case KindFiles:
+		return 0
 	}
 	return RoleWorker
 }
 
+// OpenableBy reports whether role r may open streams of this kind.
+func (k Kind) OpenableBy(r Role) bool {
+	if k == KindFiles {
+		return r == RoleHub || r == RoleWorker
+	}
+	return k.Opener() == r
+}
+
 // ParseKind decodes a two-byte stream prefix. ok is false for any prefix other
-// than the three exact ones.
+// than the four exact ones. A known kind is not yet an allowed one: a session
+// accepts [KindFiles] only when files.v1 was negotiated.
 func ParseKind(p [KindPrefixLen]byte) (k Kind, ok bool) {
-	for _, c := range []Kind{KindOp, KindCall, KindEvents} {
+	for _, c := range []Kind{KindOp, KindCall, KindEvents, KindFiles} {
 		if c.Prefix() == p {
 			return c, true
 		}
@@ -115,6 +138,14 @@ var (
 	ErrStreamReset = errors.New("transport: stream reset")
 	// ErrSessionClosed is returned by operations on a closed Session.
 	ErrSessionClosed = errors.New("transport: session closed")
+	// ErrFilesNotNegotiated is returned when a data leg (kind fx) is opened
+	// on a session without files.v1, and is the reason for resetting an
+	// inbound fx stream there. Nothing is opened; the session goes on.
+	ErrFilesNotNegotiated = errors.New("transport: files.v1 not negotiated on this connection")
+	// ErrTooManyLegs is returned when a data leg is opened while
+	// proto.MaxActiveLegsPerConn legs are active on the session, and is the
+	// reason for resetting an inbound fx stream beyond that number.
+	ErrTooManyLegs = errors.New("transport: too many active data legs on this connection")
 )
 
 // ReleaseBound is the longest a stream that was closed stays in the session
@@ -156,7 +187,26 @@ type Stream struct {
 	// accepted by yamux until its host takes over; nil without a budget.
 	pre     func()
 	preOnce sync.Once
+
+	// leg is the data-leg slot of an fx stream (nil for other kinds): it is
+	// given back once, when the stream is closed, reset or released. pacer is
+	// the bulk pacer of the session that fx writes go through.
+	leg     func()
+	legOnce sync.Once
+	pacer   *Pacer
 }
+
+// endLeg gives back the data-leg slot of an fx stream.
+func (s *Stream) endLeg() {
+	s.legOnce.Do(func() {
+		if s.leg != nil {
+			s.leg()
+		}
+	})
+}
+
+// ID returns the yamux stream id (for logs and taps; it names no transfer).
+func (s *Stream) ID() uint32 { return s.ys.StreamID() }
 
 // DropReservation gives back the shared-budget unit that the stream held while
 // it was accepted and classified. A host calls it once it has taken the stream
@@ -204,8 +254,11 @@ func (s *Stream) Read(p []byte) (int, error) {
 func (s *Stream) Write(p []byte) (int, error) { return s.ys.Write(p) }
 
 // Close closes the write side gracefully (yamux FIN); the stream is released
-// when the peer closes too.
-func (s *Stream) Close() error { return s.ys.Close() }
+// when the peer closes too. A data leg counts as ended from here on.
+func (s *Stream) Close() error {
+	s.endLeg()
+	return s.ys.Close()
+}
 
 // SetDeadline sets the read and write deadlines.
 func (s *Stream) SetDeadline(t time.Time) error { return s.ys.SetDeadline(t) }
@@ -227,6 +280,7 @@ func (s *Stream) SetWriteDeadline(t time.Time) error { return s.ys.SetWriteDeadl
 // competes with the handler for yamux's one-slot read notification nor resets
 // the read deadline that wakes it.
 func (s *Stream) Reset() {
+	s.endLeg()
 	s.tapEnd()
 	s.markReset()
 	_ = s.ys.Close()
@@ -300,6 +354,7 @@ func (s *Stream) Release() {
 	_ = s.ys.Close()
 	s.startDrain()
 	<-s.drained
+	s.endLeg()
 	s.DropReservation()
 }
 
@@ -404,7 +459,9 @@ type TapFrame struct {
 }
 
 // readKind reads and validates the two-byte prefix of an inbound stream.
-func readKind(ys *yamux.Stream, peer Role) (Kind, error) {
+// files says whether files.v1 was negotiated: without it an fx stream is
+// refused like a kind the peer must not open.
+func readKind(ys *yamux.Stream, peer Role, files bool) (Kind, error) {
 	var p [KindPrefixLen]byte
 	if _, err := io.ReadFull(ys, p[:]); err != nil {
 		return 0, err
@@ -413,7 +470,10 @@ func readKind(ys *yamux.Stream, peer Role) (Kind, error) {
 	if !ok {
 		return 0, fmt.Errorf("%w: %#x", ErrBadKind, p[:])
 	}
-	if k.Opener() != peer {
+	if k == KindFiles && !files {
+		return 0, ErrFilesNotNegotiated
+	}
+	if !k.OpenableBy(peer) {
 		return 0, fmt.Errorf("%w: %s stream opened by the %s", ErrWrongSide, k, peer)
 	}
 	return k, nil

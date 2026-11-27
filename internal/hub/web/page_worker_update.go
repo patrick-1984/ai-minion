@@ -49,10 +49,20 @@ func workerOutdated(b, target string) bool {
 	return err1 == nil && err2 == nil && bv.Compare(tv) < 0
 }
 
-// updatable reports whether the Hub offers the Update button for w.
+// updatable reports whether the Hub offers the Update button for w. A Worker
+// whose updates from the Hub are off is never updated.
 func updatable(w ops.WorkerInfo, target string) bool {
-	return w.Online && !w.Pending && proto.HasFeature(w.Features, proto.FeatureSelfUpdate) && workerOutdated(w.Build, target)
+	return w.Online && !w.Pending && w.AppUpdate != ops.WorkerAppUpdateOff &&
+		proto.HasFeature(w.Features, proto.FeatureSelfUpdate) && workerOutdated(w.Build, target)
 }
+
+// updateProgressPrefix starts the status text of an update that is still
+// running (an Android app update); see [isUpdateProgress].
+const updateProgressPrefix = "Updating to "
+
+// isUpdateProgress reports whether text from [updateStatusText] describes an
+// update in progress rather than a failure.
+func isUpdateProgress(text string) bool { return strings.HasPrefix(text, updateProgressPrefix) }
 
 // PublishedSource says whether the release tag is published on GitHub as far
 // as the Hub's release check knows: known is false when it has no recent list
@@ -204,7 +214,21 @@ func updateFailureText(r *http.Request, c OpCaller, id, target string) string {
 // rolled back after the new binary did not start (its From is then the target).
 func updateStatusText(st ops.WorkerUpdateStatus, target string) string {
 	var text string
+	detail := ""
+	if st.Detail != "" {
+		detail = " (" + st.Detail + ")"
+	}
 	switch {
+	case st.To == target && st.State == ops.UpdateStateDownloading:
+		text = updateProgressPrefix + target + ": downloading and verifying the signed release"
+	case st.To == target && st.State == ops.UpdateStateStaged:
+		text = updateProgressPrefix + target + ": verified" + detail
+	case st.To == target && st.State == ops.UpdateStateWaitingIdle:
+		text = updateProgressPrefix + target + ": waiting until no client is attached and no agent is busy" + detail
+	case st.To == target && st.State == ops.UpdateStateInstalling:
+		text = updateProgressPrefix + target + ": installing on the device; the app restarts" + detail
+	case st.To == target && st.State == ops.UpdateStateNeedsConfirmation:
+		text = updateProgressPrefix + target + ": needs confirmation on the device: open the Minion app and choose Install update"
 	case st.State == ops.UpdateStateFailed && st.To == target:
 		text = "Update to " + target + " failed: " + friendlyUpdateError(st.Error, target)
 	case st.State == ops.UpdateStateRolledBack && st.From == target:
@@ -231,7 +255,7 @@ func friendlyUpdateError(msg, target string) string {
 	return msg
 }
 
-func updateOne(r *http.Request, c OpCaller, id string, force bool) (ops.WorkerUpdateResult, error) {
+func updateOne(r *http.Request, c OpCaller, id string, force, now bool) (ops.WorkerUpdateResult, error) {
 	target, ok := updateTarget()
 	if !ok {
 		return ops.WorkerUpdateResult{}, fmt.Errorf("this Hub is a development build: there is no release to update Workers to")
@@ -241,7 +265,7 @@ func updateOne(r *http.Request, c OpCaller, id string, force bool) (ops.WorkerUp
 		return ops.WorkerUpdateResult{Reason: reason}, nil
 	}
 	var res ops.WorkerUpdateResult
-	err := c.CallOp(r, ops.OpWorkerUpdate, ops.WorkerUpdateArgs{WorkerID: id, Version: target, Force: force}, &res)
+	err := c.CallOp(r, ops.OpWorkerUpdate, ops.WorkerUpdateArgs{WorkerID: id, Version: target, Force: force, Now: now}, &res)
 	if err == nil && res.Accepted {
 		// Only an update the Hub accepted makes the old status obsolete.
 		forgetUpdateFailure(id)
@@ -253,12 +277,17 @@ func updateOne(r *http.Request, c OpCaller, id string, force bool) (ops.WorkerUp
 }
 
 func handleWorkerUpdate(w http.ResponseWriter, r *http.Request, c OpCaller, _ pageUser) {
-	res, err := updateOne(r, c, r.PathValue("worker"), r.PostFormValue("force") == "1")
+	now := r.PostFormValue("now") == "1"
+	res, err := updateOne(r, c, r.PathValue("worker"), r.PostFormValue("force") == "1", now)
 	switch {
 	case err != nil:
 		writeResultError(w, failureText(err))
 	case !res.Accepted:
 		writeResultError(w, "The Worker did not start the update: "+res.Reason+".")
+	case r.PostFormValue("android") == "1" && now:
+		done(w, r, fmt.Sprintf("Updating the Minion app from %s to %s now: it installs the new version and restarts; every session restarts, kept sessions come back. The Version column shows the new version when it reconnects.", res.From, res.To), ops.WriteResult{})
+	case r.PostFormValue("android") == "1":
+		done(w, r, fmt.Sprintf("Updating the Minion app from %s to %s: it downloads and verifies the release now and installs it when no client is attached and no agent is busy. The Version column shows each step.", res.From, res.To), ops.WriteResult{})
 	default:
 		done(w, r, fmt.Sprintf("Updating the Worker from %s to %s. It restarts by itself and shows the new version when it reconnects.", res.From, res.To), ops.WriteResult{})
 	}
@@ -295,7 +324,7 @@ func handleWorkersUpdateAll(w http.ResponseWriter, r *http.Request, c OpCaller, 
 			queued++
 			continue
 		}
-		res, err := updateOne(r, c, wk.ID, false)
+		res, err := updateOne(r, c, wk.ID, false, false)
 		switch {
 		case err != nil:
 			skipped = append(skipped, wk.Name+" ("+failureText(err)+")")

@@ -667,6 +667,9 @@ func (d *Dispatcher) decode(w http.ResponseWriter, r *http.Request, op ops.Op, r
 	// declare.
 	hidden := ""
 	for name := range obj {
+		if callerDeclared[op.Name][name] {
+			continue
+		}
 		if ops.HiddenMember(op.Name, name) {
 			if hidden == "" || name < hidden {
 				hidden = name
@@ -692,6 +695,15 @@ func (d *Dispatcher) decode(w http.ResponseWriter, r *http.Request, op ops.Op, r
 		}
 	}
 	return args, requestWorker, nil
+}
+
+// callerDeclared are hidden members that the caller side of an operation
+// declares itself and the Hub reads (file_push: the kind, logical bytes and
+// entry count of the source, checked at admission). They have no flag or
+// schema property, but a REST caller (the REST CLI) sends them, so they are
+// neither dropped nor refused.
+var callerDeclared = map[string]map[string]bool{
+	ops.OpFilePush: {"kind": true, "size": true, "entries": true},
 }
 
 // routingMembers are the request members of an operation that are no

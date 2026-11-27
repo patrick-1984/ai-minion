@@ -32,7 +32,8 @@ type BlobVerifier interface {
 //
 //   - a certificate chain to the trusted Fulcio root;
 //   - the certificate identity of the release workflow for the tag
-//     (see [ReleaseIdentity]): SAN, OIDC issuer, source ref refs/tags/<tag>
+//     (see [ReleaseIdentity]; android-release.yml for an APK-only
+//     "android-vX.Y.Z" tag): SAN, OIDC issuer, source ref refs/tags/<tag>
 //     and source repository;
 //   - an entry in the Rekor transparency log with a verified inclusion proof
 //     (a bare signed inclusion promise is not enough, see
@@ -58,8 +59,7 @@ func (v *SigstoreVerifier) VerifyBlob(artifact, bundleJSON []byte, tag string) e
 }
 
 func (v *SigstoreVerifier) verifyBlob(artifact, bundleJSON []byte, tag string) error {
-	ver, err := ParseVersion(tag)
-	if err != nil || ver.String() != tag {
+	if _, _, err := ParseReleaseTag(tag); err != nil {
 		return fmt.Errorf("%q is not a release tag", tag)
 	}
 	if len(bundleJSON) == 0 || len(bundleJSON) > maxBundleSize {

@@ -15,6 +15,7 @@ import (
 	"github.com/patrick-1984/ai-minion/internal/ops"
 	"github.com/patrick-1984/ai-minion/internal/proto"
 	"github.com/patrick-1984/ai-minion/internal/worker/agentdetect"
+	"github.com/patrick-1984/ai-minion/internal/worker/devctl"
 	"github.com/patrick-1984/ai-minion/internal/worker/store"
 	"github.com/patrick-1984/ai-minion/internal/worker/term"
 )
@@ -134,9 +135,21 @@ type Executor struct {
 	memMu sync.Mutex
 	mem   map[string]memEntry
 
+	// keep is the keep list (session_keep_set); nil until the keep module
+	// attaches it.
+	keep atomic.Pointer[KeepService]
+
+	// files is the file transfer end (files.v1, exec_files.go); nil until
+	// the files module attaches it.
+	files atomic.Pointer[Files]
+
 	// localWrites is told about every write of a local caller that this
 	// executor really ran (see [Executor.OnLocalWrite]); nil when unset.
 	localWrites atomic.Pointer[func(LocalWrite)]
+
+	// devctl is device control of the Android Worker (exec_adb.go); nil
+	// elsewhere.
+	devctl atomic.Pointer[devctl.Service]
 }
 
 // NewExecutor builds an executor with the release-1 session and write ops

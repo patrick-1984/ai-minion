@@ -97,7 +97,9 @@ func initRoute(ctx context.Context, env *Env) error {
 		// Each Worker's own choice (v0.23.0) wins over the caller's
 		// account-wide preference.
 		WorkerHiddenSessions: st,
-		Codes:                &workers.SessionCodes{Store: st, Log: cfg.logger()},
+		// How the Hub updates each Worker (v0.24.0): off refuses worker_update.
+		WorkerAppUpdate: st,
+		Codes:           &workers.SessionCodes{Store: st, Log: cfg.logger()},
 	})
 	if err != nil {
 		return fmt.Errorf("route: %w", err)
@@ -118,7 +120,23 @@ func initRoute(ctx context.Context, env *Env) error {
 	// (the dispatcher decides the action manage on the named Worker). Remote
 	// debug (v0.10.0): the owner or an admin (operate or manage), audited; the
 	// Worker itself refuses unless it allows it.
+	// Device control (on-device adb) of an Android Worker: the Hub reads the
+	// status and can disable, never enable. The shell-power ops stay local to
+	// the Worker, which refuses them from the Hub.
+	for _, name := range ops.AdbHubOpNames {
+		if err := api.RegisterWorkerOp(handlers, name, rt); err != nil {
+			return fmt.Errorf("route: %w", err)
+		}
+	}
 	for _, name := range []string{ops.OpWorkerUpdate, ops.OpWorkerUpdateStatus, ops.OpWorkerDebug, ops.OpWorkerLogs} {
+		if err := api.RegisterWorkerOp(handlers, name, rt); err != nil {
+			return fmt.Errorf("route: %w", err)
+		}
+	}
+	// Kept sessions (v0.24.0): session_keep_set is a session write routed
+	// like set_task (the dispatcher decides operate on the named session; a
+	// Worker that does not serve it answers unsupported_op).
+	for _, name := range ops.KeepWorkerOpNames {
 		if err := api.RegisterWorkerOp(handlers, name, rt); err != nil {
 			return fmt.Errorf("route: %w", err)
 		}
@@ -134,6 +152,10 @@ func initRoute(ctx context.Context, env *Env) error {
 	// The Worker's own hidden-sessions choice (v0.23.0): its owner or an
 	// administrator.
 	if err := api.RegisterWorkerHiddenSessions(handlers, st, az, hubPolicy); err != nil {
+		return fmt.Errorf("route: %w", err)
+	}
+	// How the Hub updates a Worker (v0.24.0): administrators only.
+	if err := api.RegisterWorkerAppUpdate(handlers, st); err != nil {
 		return fmt.Errorf("route: %w", err)
 	}
 	// The same router resolves the human form of a target (pi-1:minion-3)

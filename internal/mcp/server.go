@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"slices"
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -57,10 +58,13 @@ type Gate interface {
 // workers_list. The other Hub ops cannot run on the Solo backend, so they are
 // not tools there; workers_list can, because the local Worker forwards it to its
 // Hub, which answers a session with a session-control grant (SC-5). The tools
-// are the same with a Hub backend.
+// are the same with a Hub backend. An Unreleased op is not a tool yet.
 func DefaultOps() []ops.Op {
 	var out []ops.Op
 	for _, op := range ops.All() {
+		if op.Unreleased {
+			continue
+		}
 		if op.Scope == ops.ScopeWorker || op.Name == ops.OpWorkersList {
 			out = append(out, op)
 		}
@@ -85,6 +89,10 @@ func New(cfg Config) (*Server, error) {
 	if list == nil {
 		list = DefaultOps()
 		if _, ok := cfg.Backend.(*client.HubBackend); ok {
+			// A transfer needs a caller end that moves the bytes: the local
+			// Worker. Through the Hub's REST API the tool would only hand the
+			// model an admission and its leg token, so it is not a tool there.
+			list = slices.DeleteFunc(list, func(o ops.Op) bool { return o.Name == ops.OpFilePull || o.Name == ops.OpFilePush })
 			for _, name := range []string{ops.OpUsageList, ops.OpUsageBucketList, ops.OpUsageReadback} {
 				if operation, exists := ops.Default.Lookup(name); exists {
 					list = append(list, operation)

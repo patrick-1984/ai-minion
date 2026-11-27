@@ -207,6 +207,7 @@ case_ "MCP SDK in cli" cli github.com/modelcontextprotocol/go-sdk/mcp lib-mcp
 case_ "kardianos/service in cli" cli github.com/kardianos/service lib-service
 case_ "go-pty in cli" cli github.com/aymanbagabas/go-pty lib-pty
 case_ "sigstore-go in cli" cli github.com/sigstore/sigstore-go/pkg/root lib-sigstore
+case_ "klauspost/compress in cli" cli github.com/klauspost/compress/zstd lib-compress
 case_ "OpenTelemetry SDK in cli" cli go.opentelemetry.io/otel/sdk/log lib-otel
 case_ "logr in hub/server" hub/server github.com/go-logr/logr lib-otel
 # go-winio has one importer, worker/localapi (AD-1): the client dials through

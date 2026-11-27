@@ -175,6 +175,8 @@ func scArgs(op string, target any) map[string]any {
 		return map[string]any{"request_id": ops.NewUUIDv7(), "target": target, "task": "t"}
 	case ops.OpAnswer:
 		return map[string]any{"request_id": ops.NewUUIDv7(), "target": target, "choice": "1"}
+	case ops.OpSessionKeepSet:
+		return map[string]any{"request_id": ops.NewUUIDv7(), "target": target, "keep": true}
 	}
 	return map[string]any{"target": target}
 }

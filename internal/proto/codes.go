@@ -57,6 +57,16 @@ const (
 	CodePassphraseInvalid       Code = "passphrase_invalid"
 	CodePaused                  Code = "paused"
 	CodeNewSessionsBlocked      Code = "new_sessions_blocked"
+	CodeFilesDisabled           Code = "files_disabled"
+	CodeFilesRootUnknown        Code = "files_root_unknown"
+	CodeFilesRootRefused        Code = "files_root_refused"
+	CodePathOutsideRoot         Code = "path_outside_root"
+	CodePathProtected           Code = "path_protected"
+	CodePathSensitive           Code = "path_sensitive"
+	CodeFileTypeRefused         Code = "file_type_refused"
+	CodeTransferTooLarge        Code = "transfer_too_large"
+	CodeIntegrityFailed         Code = "integrity_failed"
+	CodeTransferExpired         Code = "transfer_expired"
 )
 
 type codeInfo struct {
@@ -114,6 +124,16 @@ var codeTable = []codeInfo{
 	{CodePassphraseInvalid, 403, "The passphrase was not accepted."},
 	{CodePaused, 503, "The Worker is paused: it has no Hub connection until it is resumed."},
 	{CodeNewSessionsBlocked, 403, "New sessions are blocked on this Worker (allow_new_sessions off)."},
+	{CodeFilesDisabled, 403, "File transfer is switched off for this direction on this end (local switch or Hub policy)."},
+	{CodeFilesRootUnknown, 409, "The Worker cannot prove the folder of the session, so no file transfer is possible there."},
+	{CodeFilesRootRefused, 403, "The folder of the session is a system folder, the home folder or inside a sensitive folder."},
+	{CodePathOutsideRoot, 400, "The path is not a valid relative path inside the folder of the session."},
+	{CodePathProtected, 403, "The path names a protected file or folder that cannot be written by a transfer."},
+	{CodePathSensitive, 403, "The path names a sensitive file or folder that cannot be read by a transfer."},
+	{CodeFileTypeRefused, 403, "The entry is not a regular file or folder (symlink, device, FIFO, socket, hard link or mount)."},
+	{CodeTransferTooLarge, 413, "The transfer exceeds a size, count, depth, header, manifest or free-space limit."},
+	{CodeIntegrityFailed, 502, "The transferred data failed verification; nothing was published."},
+	{CodeTransferExpired, 410, "The transfer expired or its leg token was already used."},
 }
 
 var codeIndex = func() map[Code]codeInfo {

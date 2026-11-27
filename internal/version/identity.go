@@ -19,6 +19,10 @@ const (
 	// WorkflowPath is the path of the release workflow in the repository.
 	WorkflowPath = ".github/workflows/release.yml"
 
+	// AndroidWorkflowPath is the workflow that publishes an APK-only release
+	// "android-vX.Y.Z" (android-release.yml). It signs only such tags.
+	AndroidWorkflowPath = ".github/workflows/android-release.yml"
+
 	// OIDCIssuer is the issuer of the GitHub Actions identity token.
 	OIDCIssuer = "https://token.actions.githubusercontent.com"
 )
@@ -55,10 +59,17 @@ type Identity struct {
 func SourceRef(tag string) string { return "refs/tags/" + tag }
 
 // ReleaseIdentity returns the identity that must have signed the release with
-// the given tag, for example "v1.4.2".
+// the given tag, for example "v1.4.2". An APK-only tag "android-vX.Y.Z" is
+// signed by android-release.yml, every other tag by release.yml: neither
+// workflow can stand in for the other, because the SAN names the workflow and
+// the exact tag.
 func ReleaseIdentity(tag string) Identity {
+	workflow := WorkflowPath
+	if strings.HasPrefix(tag, AndroidTagPrefix) {
+		workflow = AndroidWorkflowPath
+	}
 	return Identity{
-		SubjectAlternativeName: strings.Join([]string{RepositoryURI, WorkflowPath}, "/") + "@" + SourceRef(tag),
+		SubjectAlternativeName: strings.Join([]string{RepositoryURI, workflow}, "/") + "@" + SourceRef(tag),
 		Issuer:                 OIDCIssuer,
 		SourceRef:              SourceRef(tag),
 		SourceRepositoryURI:    RepositoryURI,

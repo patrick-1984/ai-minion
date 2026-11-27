@@ -11,6 +11,7 @@ import (
 
 	"github.com/patrick-1984/ai-minion/internal/config"
 	"github.com/patrick-1984/ai-minion/internal/identity"
+	"github.com/patrick-1984/ai-minion/internal/ops"
 	"github.com/patrick-1984/ai-minion/internal/proto"
 	"github.com/patrick-1984/ai-minion/internal/transport"
 	"github.com/patrick-1984/ai-minion/internal/worker/store"
@@ -36,7 +37,12 @@ func (e *Executor) Ops() []string {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	out := make([]string, 0, len(e.handlers))
+	files := e.filesAnnounced()
 	for name := range e.handlers {
+		if ops.IsFileOp(name) && !files {
+			// The file ops are announced only with files.v1 (NFR-8).
+			continue
+		}
 		out = append(out, name)
 	}
 	sort.Strings(out)
@@ -59,6 +65,12 @@ func (e *Executor) Features() []string {
 	}
 	if term.ReportsInstances(e.host) {
 		out = append(out, proto.FeatureSessionInstanceIDListV1)
+	}
+	if e.keepService() != nil {
+		out = append(out, proto.FeatureSessionKeepV1)
+	}
+	if e.filesAnnounced() {
+		out = append(out, proto.FeatureFilesV1)
 	}
 	return proto.NormaliseFeatures(out)
 }

@@ -118,6 +118,10 @@ func addOpCommands(root *cobra.Command, deps opsDeps, list []ops.Op) {
 			// identity` asks for the passphrase on the terminal instead.
 			continue
 		}
+		if replacedByFiles(op.Name) {
+			// `minion files ls|pull|push` (files.go) run a transfer.
+			continue
+		}
 		cmd, err := newOpCmd(op, deps)
 		if err != nil {
 			panic("cli: op " + op.Name + ": " + err.Error())
@@ -140,6 +144,7 @@ func newOpCmd(op ops.Op, deps opsDeps) (*cobra.Command, error) {
 		Use:           op.CLICommand(),
 		Short:         op.Summary,
 		Long:          longHelp(op),
+		Hidden:        op.Unreleased || op.Name == ops.OpFileReceipt, // a receipt is sent by a receiving end
 		Args:          noArgs,
 		SilenceUsage:  true,
 		SilenceErrors: true,

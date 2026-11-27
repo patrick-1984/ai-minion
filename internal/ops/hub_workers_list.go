@@ -88,6 +88,9 @@ type WorkerInfo struct {
 	// own and each caller's account-wide preference decides. The Hub setting
 	// hidden_sessions (allowed, disabled) still overrides it.
 	AllowHiddenSessions *bool `json:"allow_hidden_sessions,omitempty"`
+	// AppUpdate is how the Hub updates this Worker (v0.24.0,
+	// worker_app_update_set): auto or off; absent for manual (the default).
+	AppUpdate string `json:"app_update,omitempty"`
 	// SessionsSynced is true once the connected Worker sent its first session
 	// list on this connection: before that an empty list means "not known
 	// yet", not "no sessions".

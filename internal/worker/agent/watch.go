@@ -92,6 +92,10 @@ type SessionState struct {
 	// instance_id), "" when the host reports none (psmux, an old tmux). A Hub
 	// that predates it ignores it.
 	InstanceID string `json:"instance_id,omitempty"`
+	// Keep is true when the session is on the Worker's keep list
+	// (session_keep_set, v0.24.0): the Hub shows it beside the session. A Hub
+	// that predates it ignores it.
+	Keep bool `json:"keep,omitempty"`
 }
 
 // View is the shared sessions at one moment, by session name.
@@ -125,8 +129,8 @@ type Change struct {
 // between two looks, also by a restart of the tmux server) is another
 // terminal: it is removed and added, so that the Hub never carries what was
 // set up for the old terminal over to the new one. For a session in both, a
-// change of kind, state, state provenance, task or of an instance that becomes
-// known or unknown is state_changed. A change
+// change of kind, state, state provenance, task, keep flag or of an instance
+// that becomes known or unknown is state_changed. A change
 // of the screen hash is independently screen_changed.
 func Diff(prev, cur View) []Change {
 	names := make([]string, 0, len(prev)+len(cur))
@@ -152,7 +156,7 @@ func Diff(prev, cur View) []Change {
 			out = append(out, Change{EventSessionRemoved, SessionState{Name: n}}, Change{EventSessionAdded, c})
 		default:
 			if c.Kind != p.Kind || c.State != p.State || c.Task != p.Task || c.PaneStateDetail != p.PaneStateDetail || c.HarnessName != p.HarnessName ||
-				c.InstanceID != p.InstanceID {
+				c.InstanceID != p.InstanceID || c.Keep != p.Keep {
 				out = append(out, Change{EventStateChanged, c})
 			}
 			if c.ScreenHash != p.ScreenHash {
@@ -191,6 +195,9 @@ type HostObserverConfig struct {
 	Classifier  Classifier
 	Policy      *Policy
 	nativeState nativeStateReader
+	// Kept returns the names on the keep list (nil when there is none); nil
+	// reports no session as kept.
+	Kept func(ctx context.Context) map[string]bool
 	// Logger receives a debug line when the share filter's result changes
 	// (counts only); nil writes nothing.
 	Logger *slog.Logger
@@ -279,11 +286,15 @@ func (o *HostObserver) observeOnce(ctx context.Context) (View, store.ShareState,
 	o.dedup.Debug(o.cfg.Logger, fmt.Sprintf("%d|%d|%s|%d", len(all), len(shared), sel.Mode, sel.Revision),
 		"share filter", "listed", len(all), "shared", len(shared), "not_shared", len(all)-len(shared),
 		"share_mode", string(sel.Mode), "share_revision", sel.Revision)
+	var kept map[string]bool
+	if o.cfg.Kept != nil {
+		kept = o.cfg.Kept(ctx)
+	}
 	states := make([]SessionState, len(shared))
 	sem := make(chan struct{}, listParallel)
 	var wg sync.WaitGroup
 	for i, s := range shared {
-		states[i] = SessionState{Name: s.Name, Kind: ops.PaneKindUnknown, State: ops.PaneStateUnknown, Task: s.Task, InstanceID: s.Instance}
+		states[i] = SessionState{Name: s.Name, Kind: ops.PaneKindUnknown, State: ops.PaneStateUnknown, Task: s.Task, InstanceID: s.Instance, Keep: kept[s.Name]}
 		p, ok := s.ActivePane()
 		if !ok {
 			continue

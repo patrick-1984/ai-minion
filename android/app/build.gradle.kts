@@ -12,6 +12,14 @@ require(major <= 209 && minor <= 99 && patch <= 99 && (parts[4].isEmpty() || rc 
     "The Minion version does not fit the Android version code"
 }
 val nativePackage = providers.gradleProperty("minionNativePackage").map(::file)
+// The release signing certificate (SHA-256 of its DER encoding). The updater
+// installs only APKs signed with exactly this certificate.
+val signingCert = rootProject.file("signing-cert.sha256").readText().trim().lowercase()
+require(Regex("[0-9a-f]{64}").matches(signingCert)) { "android/signing-cert.sha256 must hold one SHA-256 in hex" }
+// Device control (on-device adb, design docs/minion-android-adb/DESIGN.md): compiled in, off by default.
+// Only a build with -PminionDeviceControl=true (the gate RC) declares its components, permission and native
+// library; every other build, release included, has no reachable device-control entry point.
+val deviceControl = providers.gradleProperty("minionDeviceControl").map { it == "true" }.getOrElse(false)
 
 android {
     namespace = "cc.nasz.minion"
@@ -25,6 +33,11 @@ android {
         versionCode = (major * 10_000_000 + minor * 100_000 + patch * 1_000 + rc).toInt()
         versionName = minionVersion
         ndk.abiFilters += listOf("arm64-v8a", "armeabi-v7a")
+        buildConfigField("String", "SIGNING_CERT_SHA256", "\"$signingCert\"")
+    }
+
+    buildFeatures {
+        buildConfig = true
     }
 
     compileOptions {
@@ -39,6 +52,30 @@ android {
         }
     }
 
+    defaultConfig.buildConfigField("boolean", "DEVICE_CONTROL", deviceControl.toString())
+
+    if (deviceControl) {
+        ndkVersion = "28.2.13676358"
+        // Overlay manifest: provider, pairing activity, SYSTEM_ALERT_WINDOW. Both build types get it.
+        for (type in listOf("debug", "release")) {
+            sourceSets.named(type) { manifest.srcFile("src/deviceControl/AndroidManifest.xml") }
+        }
+        // Licence notice of the BoringSSL code inside libminion_spake2.so (assets/licenses/boringssl-LICENSE.txt).
+        sourceSets.named("main") { assets.srcDir("src/deviceControl/assets") }
+        externalNativeBuild.cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+            version = "3.31.6"
+        }
+        // Optional offline checkout of the pinned BoringSSL tag (else CMake downloads it and checks the hash).
+        providers.gradleProperty("minionBoringsslDir").orNull?.let { dir ->
+            defaultConfig.externalNativeBuild.cmake.arguments += "-DMINION_BORINGSSL_DIR=$dir"
+        }
+    }
+
+    testOptions.unitTests.all { test ->
+        providers.gradleProperty("minionSpake2HostLib").orNull?.let { test.systemProperty("minion.spake2.lib", it) }
+    }
+
     packaging.jniLibs {
         // Package Manager extracts the PIEs into APK-owned nativeLibraryDir.
         // These are already stripped and still contain Go build information.
@@ -47,8 +84,17 @@ android {
     }
 }
 
+dependencies {
+    testImplementation("junit:junit:4.13.2")
+}
+
 kotlin {
     compilerOptions {
         jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
     }
+}
+
+// Belt and braces: without the flag the SPAKE2 library never goes into any APK.
+if (!deviceControl) {
+    androidComponents.onVariants { variant -> variant.packaging.jniLibs.excludes.add("**/libminion_spake2.so") }
 }

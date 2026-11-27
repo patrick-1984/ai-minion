@@ -28,7 +28,7 @@ func dbSchemaVersion(t *testing.T, s *Store) int {
 }
 
 // The embedded migrations are numbered without gaps or duplicates (branches
-// that each added a "0037" are renumbered when merged), up to v0.23.0's at least.
+// that each added a "0037" are renumbered when merged), up to v0.24.0's at least.
 func TestHubMigrationsSequential(t *testing.T) {
 	entries, err := hubMigrations.ReadDir(migrationsDir)
 	if err != nil {
@@ -45,8 +45,8 @@ func TestHubMigrationsSequential(t *testing.T) {
 			t.Fatalf("migration %q is number %d in order, want its prefix to be %04d", e.Name(), n, n)
 		}
 	}
-	if n < v0230Schema {
-		t.Fatalf("%d migrations, want at least %d", n, v0230Schema)
+	if n < v0240Schema {
+		t.Fatalf("%d migrations, want at least %d", n, v0240Schema)
 	}
 }
 

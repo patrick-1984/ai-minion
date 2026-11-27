@@ -134,6 +134,11 @@ func (e *Executor) shareSet(ctx context.Context, rq Request) (any, error) {
 	if !ok {
 		return nil, apiErr(proto.CodeForbidden, "", "this Worker cannot save a share selection")
 	}
+	// Device control needs an unshared Worker: sharing is refused while it is
+	// on (exec_adb.go).
+	if err := e.guardShareForDevice(ctx, args.Mode); err != nil {
+		return nil, err
+	}
 	e.shareMu.Lock()
 	cur, err := e.policy.State(ctx)
 	if err != nil {
@@ -167,6 +172,7 @@ func (e *Executor) shareSet(ctx context.Context, rq Request) (any, error) {
 	if err != nil {
 		return nil, internalErr("save the share selection", err)
 	}
+	e.shareChangedForDevice(ctx, string(saved.Mode))
 	e.log.Info("share selection changed from the Hub", "mode", string(saved.Mode), "selected", len(saved.Sessions), "revision", saved.Revision)
 	// Answer with what was stored, not with what was sent. A failing listing is
 	// not an error here: the change is made.

@@ -223,6 +223,21 @@ func laneOf(k transport.Kind) (lane, bool) {
 // refuses it otherwise.
 func (s *hostedSession) admit(ctx context.Context, st *transport.Stream) {
 	h := s.handler(st.Kind())
+	if st.Kind() == transport.KindFiles {
+		// A data leg the Worker opened (files.v1, the caller leg of a session
+		// caller): it holds no call or event slot. The session bounds the
+		// active legs of the connection itself (proto.MaxActiveLegsPerConn),
+		// and the handler serves only a leg bound to an admitted transfer.
+		if h == nil {
+			st.DropReservation()
+			st.Reset()
+			return
+		}
+		st.DropReservation()
+		var once sync.Once
+		h.Serve(ctx, st, func() { once.Do(st.Release) })
+		return
+	}
 	l, ok := laneOf(st.Kind())
 	if h == nil || !ok {
 		s.refuse(st)

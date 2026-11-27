@@ -248,6 +248,10 @@ type RouterConfig struct {
 	// (v0.23.0), which wins over the caller's preference while the Hub
 	// setting is user-controlled. Nil: no Worker has a choice of its own.
 	WorkerHiddenSessions WorkerHiddenSessionsSource
+	// WorkerAppUpdate reads how the Hub updates each Worker (v0.24.0): the
+	// list shows it, and worker_update is refused for a Worker set to off.
+	// Nil: every Worker is manual.
+	WorkerAppUpdate WorkerAppUpdateSource
 	// Monitor records the calls routed to Workers for compliance monitoring;
 	// nil: none.
 	Monitor *compliance.Monitor
@@ -272,13 +276,18 @@ type Router struct {
 	hidden    HiddenSessionsPolicyFunc
 	// workerHidden reads the Workers' own hidden-sessions choices.
 	workerHidden WorkerHiddenSessionsSource
-	mon          *compliance.Monitor
-	contentMgd   func(ctx context.Context, workerID string) (bool, error)
-	telemetry    func() Telemetry
-	codes        *SessionCodes
+	// appUpdate reads the Workers' update policies (worker_app_update_set).
+	appUpdate  WorkerAppUpdateSource
+	mon        *compliance.Monitor
+	contentMgd func(ctx context.Context, workerID string) (bool, error)
+	telemetry  func() Telemetry
+	codes      *SessionCodes
 	// synced reports whether a Worker's current connection sent its session
 	// list (the event hub, set after the Router is built).
 	synced atomic.Pointer[func(workerID string) bool]
+	// files admits file_pull and file_push (SetFileAdmitter); nil refuses
+	// them.
+	files atomic.Pointer[FileAdmitter]
 }
 
 // SetSessionsSynced sets the source of [ops.WorkerInfo.SessionsSynced]: the
@@ -301,7 +310,7 @@ func NewRouter(c RouterConfig) (*Router, error) {
 		userMgd:   c.UserManaged, hidden: c.HiddenSessions, workerHidden: c.WorkerHiddenSessions, mon: c.Monitor, contentMgd: c.ContentManaged,
 		backend: c.Backend, dir: c.Directory, az: c.Authz, catalog: c.Catalog,
 		ownerName: c.OwnerName, timeout: c.ResultTimeout, log: c.Logger,
-		codes: c.Codes,
+		codes: c.Codes, appUpdate: c.WorkerAppUpdate,
 	}
 	if rt.catalog == nil {
 		rt.catalog = ops.Default
@@ -384,6 +393,11 @@ func (rt *Router) ListWorkers(ctx context.Context, p authz.Principal, all bool) 
 			choices, choicesFailed = nil, true
 		}
 	}
+	// The Hub's update policies, read once; a failed read shows none.
+	var appUpdates map[string]string
+	if rt.appUpdate != nil {
+		appUpdates, _ = rt.appUpdate.WorkerAppUpdatePolicies(ctx)
+	}
 	out := make([]ops.WorkerInfo, 0, len(recs))
 	numbers := rt.codes.WorkerNumbers(ctx)
 	for _, w := range recs {
@@ -402,6 +416,7 @@ func (rt *Router) ListWorkers(ctx context.Context, p authz.Principal, all bool) 
 		if v, ok := choices[w.ID]; ok {
 			info.AllowHiddenSessions = &v
 		}
+		info.AppUpdate = appUpdates[w.ID]
 		if on, ok := rt.backend.Get(w.ID); ok {
 			at := ops.Timestamp(on.ConnectedAt)
 			info.Online, info.ProtoVersion, info.ConnectedAt, info.Ops = true, on.Version.String(), &at, on.Ops
@@ -618,6 +633,11 @@ type CallRequest struct {
 	// (a verified bound master lease, or a session named on a call stream);
 	// it only attributes the request in its origin.
 	source originSource
+	// fileRefresh, for a file op of a verified calling session, reads the
+	// caller's principal again from its admission path (the lease and its
+	// grants, now): the transfer service re-decides a running transfer on
+	// it, so a revoked grant or an ended lease stops the transfer.
+	fileRefresh func(context.Context) (authz.Principal, error)
 	// commandShell, when set, is told the command shell grant (A116) that let
 	// the origin carry shell_ok, "" for none, each time the request is decided
 	// (before the dispatch and at the final admission); for the audit of the
@@ -676,6 +696,161 @@ func (rt *Router) debugRouted(req CallRequest, start time.Time, res any, err err
 }
 
 func (rt *Router) call(ctx context.Context, req CallRequest, out **call) (any, error) {
+	if req.Op == ops.OpFilePull || req.Op == ops.OpFilePush {
+		return rt.callFile(ctx, req, out)
+	}
+	if req.Op == ops.OpFileList {
+		var err error
+		if req, err = rt.withFileAuthority(ctx, req); err != nil {
+			return nil, err
+		}
+	}
+	return rt.callRouted(ctx, req, out)
+}
+
+// verifiedSession is the calling session of req when its admission path
+// verified it, "" otherwise.
+func (req CallRequest) verifiedSession() string {
+	if req.source.proof == proto.OriginProofVerified {
+		return req.source.session
+	}
+	return ""
+}
+
+// withFileAuthority gives the principal of a file_list of a verified calling
+// session its file authority (the file flags of its verified grants and
+// master acceptances), also at the final admission. A request without a
+// verified session, or a Hub without a transfer service that can tell it, is
+// returned as it is: it holds no file action through flags.
+func (rt *Router) withFileAuthority(ctx context.Context, req CallRequest) (CallRequest, error) {
+	verified := req.verifiedSession()
+	ap := rt.files.Load()
+	if verified == "" || ap == nil {
+		return req, nil
+	}
+	fa, ok := (*ap).(FileAuthorizer)
+	if !ok {
+		return req, nil
+	}
+	p, err := fa.FileAuthority(ctx, req.Principal, verified)
+	if err != nil {
+		return req, err
+	}
+	req.Principal = p
+	if inner := req.admit; inner != nil {
+		req.admit = func(ctx context.Context, on Online) (authz.Principal, error) {
+			p, err := inner(ctx, on)
+			if err != nil {
+				return p, err
+			}
+			return fa.FileAuthority(ctx, p, verified)
+		}
+	}
+	return req, nil
+}
+
+// FileCall is a file_pull or file_push as the Router got it, before the Hub's
+// transfer service admitted it (files.v1, BRD 5.6).
+type FileCall struct {
+	// Principal is the caller as its path authenticated it.
+	Principal authz.Principal
+	Op        string
+	WorkerID  string
+	Session   string
+	// Args are the caller's arguments (ops.FilePullArgs or ops.FilePushArgs,
+	// a value or a pointer).
+	Args any
+	// VerifiedSession is the calling session when its admission path verified
+	// it (the session of a bound master lease); "" for a claimed source or no
+	// session. Only a verified session carries file authority.
+	VerifiedSession string
+	// Refresh, when set, reads the caller's principal again from its
+	// admission path (a bound master lease and its verified grants, now);
+	// the transfer service re-decides a running transfer on it. Nil: the
+	// principal of the admission is re-decided as it is.
+	Refresh func(ctx context.Context) (authz.Principal, error)
+}
+
+// FileDispatch is what the transfer service answers to an admitted
+// [FileCall]: the request the Router sends to the target Worker, and what
+// happens with its answer.
+type FileDispatch struct {
+	// Principal is the principal the request is decided on (with the verified
+	// file authority of its calling session, if any).
+	Principal authz.Principal
+	// Args are the arguments with the Hub's hidden members (transfer id, the
+	// target's leg token, limits) set.
+	Args any
+	// Reprincipal, when set, turns the principal a final admission rebuilt
+	// from what it read now into the one the request is decided on again.
+	Reprincipal func(ctx context.Context, p authz.Principal) (authz.Principal, error)
+	// Finish gets the Worker's answer (result or error) and returns what the
+	// caller gets. Required.
+	Finish func(ctx context.Context, result any, err error) (any, error)
+}
+
+// FileAdmitter admits file_pull and file_push before the Router sends them
+// (the Hub's transfer service, internal/hub/files).
+type FileAdmitter interface {
+	AdmitFile(ctx context.Context, c FileCall) (FileDispatch, error)
+}
+
+// FileAuthorizer is the optional part of a [FileAdmitter] that gives a
+// Worker principal the file authority of its verified calling session (the
+// file flags of its verified grants and master acceptances, read now), for
+// file_list and the re-decisions of a file op.
+type FileAuthorizer interface {
+	FileAuthority(ctx context.Context, p authz.Principal, verifiedSession string) (authz.Principal, error)
+}
+
+// SetFileAdmitter installs the transfer service. Without one the Router
+// refuses file_pull and file_push with unsupported_op: their hidden members
+// are the Hub's, and a request that bypassed the admission would carry the
+// caller's.
+func (rt *Router) SetFileAdmitter(a FileAdmitter) {
+	if a == nil {
+		rt.files.Store(nil)
+		return
+	}
+	rt.files.Store(&a)
+}
+
+// callFile routes a file_pull or file_push through the transfer service.
+func (rt *Router) callFile(ctx context.Context, req CallRequest, out **call) (any, error) {
+	ap := rt.files.Load()
+	if ap == nil {
+		return nil, proto.NewError(proto.CodeUnsupportedOp, "file transfer is not available on this Hub")
+	}
+	verified := req.verifiedSession()
+	fc := FileCall{
+		Principal: req.Principal, Op: req.Op, WorkerID: req.WorkerID, Session: req.Session,
+		Args: req.Args, VerifiedSession: verified,
+	}
+	if verified != "" {
+		fc.Refresh = req.fileRefresh
+	}
+	d, err := (*ap).AdmitFile(ctx, fc)
+	if err != nil {
+		return nil, err
+	}
+	if d.Finish == nil {
+		return nil, proto.NewError(proto.CodeInternal, "the file transfer admission is incomplete")
+	}
+	req.Principal, req.Args = d.Principal, d.Args
+	if inner := req.admit; inner != nil && d.Reprincipal != nil {
+		req.admit = func(ctx context.Context, on Online) (authz.Principal, error) {
+			p, err := inner(ctx, on)
+			if err != nil {
+				return p, err
+			}
+			return d.Reprincipal(ctx, p)
+		}
+	}
+	res, err := rt.callRouted(ctx, req, out)
+	return d.Finish(ctx, res, err)
+}
+
+func (rt *Router) callRouted(ctx context.Context, req CallRequest, out **call) (any, error) {
 	c, err := rt.prepare(ctx, req, false)
 	if err != nil {
 		return nil, err
@@ -914,6 +1089,15 @@ func (rt *Router) Redecide(ctx context.Context, p authz.Principal, req CallReque
 	if err != nil {
 		return err
 	}
+	if req.Op == ops.OpFileList || req.Op == ops.OpFilePull || req.Op == ops.OpFilePush {
+		// A file op is decided on the file authority of the verified
+		// calling session, as at its dispatch.
+		req.Principal, req.admit = p, nil
+		if req, err = rt.withFileAuthority(ctx, req); err != nil {
+			return err
+		}
+		p = req.Principal
+	}
 	return rt.az.Decide(ctx, p, accepted, res)
 }
 
@@ -938,6 +1122,9 @@ func (rt *Router) prepare(ctx context.Context, req CallRequest, wantStream bool)
 		return nil, err
 	}
 	if err := rt.checkUserManaged(ctx, req.Principal, op.Name, req.WorkerID); err != nil {
+		return nil, err
+	}
+	if err := rt.checkAppUpdate(ctx, op.Name, req.WorkerID); err != nil {
 		return nil, err
 	}
 	check, err := rt.hiddenSessionCheck(ctx, req.Principal, op.Name, req.WorkerID)
@@ -1062,7 +1249,7 @@ func routedTargetWorker(op string, args []byte, workerID string) string {
 var userControlOps = map[string]bool{
 	ops.OpSessionsList: true, ops.OpSessionSnapshot: true, ops.OpSessionCapture: true,
 	ops.OpSendText: true, ops.OpSendKeys: true, ops.OpSetTask: true, ops.OpAnswer: true,
-	ops.OpSessionCreate: true, ops.OpPipeSend: true,
+	ops.OpSessionCreate: true, ops.OpPipeSend: true, ops.OpSessionKeepSet: true,
 }
 
 // checkUserManaged refuses a person or an API key on the sessions of a Worker

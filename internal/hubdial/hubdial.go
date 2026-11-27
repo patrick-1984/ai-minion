@@ -22,7 +22,7 @@ import (
 
 // EnvName is the environment variable the Android app sets on every native
 // process it starts, as "hostname=address", for example
-// "minion.example=10.3.3.6".
+// "minion.example=192.0.2.10".
 const EnvName = "MINION_HUB_DIAL_ADDRESS"
 
 // DialFunc is the signature of net.Dialer.DialContext and

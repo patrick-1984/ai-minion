@@ -1,6 +1,6 @@
 # A77. Session-scoped Minion master integration
 
-Discovery proposal, 2026-11-21. Canonical ask and release status are in A77 of `/home/coder/code/wb-1/docs/ASKS.md`. This wave starts from ai-minion `c8aaf50` and follows the recovery and Usage releases.
+Discovery proposal, 2026-11-21. Canonical ask and release status are tracked outside the repository (A77). This wave starts from ai-minion `c8aaf50` and follows the recovery and Usage releases.
 
 > “when minion worked is installed and starts to see sessions ... one ... nominated ... master ... expose skill/plugin for this one only session ... make most of the minion network (interact, give tasks etc ... very effective) ... only ... nominated ... only during duration ... skill/plugin files dropped in proper places ... depending ... harness ... and/or modified this session setting on fly ... once its master status ... removed ... removed”
 

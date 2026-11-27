@@ -72,6 +72,10 @@ type HubWelcome struct {
 	// LocalAuditV1 says that the Hub records local-write reports
 	// (proto.OpLocalAuditV1); false from a v0.20.1 or older Hub.
 	LocalAuditV1 bool `json:"local_audit_v1,omitempty"`
+	// FilesV1 says that this connection carries data legs (files.v1): the
+	// Hub sets it only when this Worker announced proto.FeatureFilesV1; false
+	// from a v0.23 or older Hub.
+	FilesV1 bool `json:"files_v1,omitempty"`
 	proto.Range
 }
 

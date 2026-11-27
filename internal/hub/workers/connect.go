@@ -49,12 +49,17 @@ type Welcome struct {
 	// LocalAuditV1 tells the Worker that this Hub records its local-write
 	// reports (proto.OpLocalAuditV1); an older Hub omits it and the Worker
 	// does not report.
-	LocalAuditV1 bool   `json:"local_audit_v1,omitempty"`
-	UsagePolicy  int    `json:"usage_policy,omitempty"`
-	Type         string `json:"type"`
-	WorkerID     string `json:"worker_id"`
-	Name         string `json:"name"`
-	Owner        string `json:"owner"`
+	LocalAuditV1 bool `json:"local_audit_v1,omitempty"`
+	// FilesV1 tells the Worker that this connection carries data legs
+	// (stream kind fx, files.v1): set only when the Worker announced
+	// proto.FeatureFilesV1, and then both sessions enable them
+	// (transport.SessionOptions.Files). An older Hub omits it.
+	FilesV1     bool   `json:"files_v1,omitempty"`
+	UsagePolicy int    `json:"usage_policy,omitempty"`
+	Type        string `json:"type"`
+	WorkerID    string `json:"worker_id"`
+	Name        string `json:"name"`
+	Owner       string `json:"owner"`
 	// OwnerID is the stable id of the Worker's owner (protocol 2.0); Owner is
 	// the display name. The Worker uses OwnerID for pipe_accept_from.
 	OwnerID string `json:"owner_id"`
@@ -850,8 +855,12 @@ func (c *Conn) Welcome(ctx context.Context, w store.WorkerRow) error {
 	}
 	masterV1 := !w.Pending && slices.Contains(c.res.Worker.Features, proto.FeatureMasterSessionV1) && h.callOp(proto.OpMasterCallV1) != nil
 	link := masterConnection{enabled: masterV1, transcript: append([]byte(nil), c.res.TranscriptHash[:]...)}
+	// Data legs (files.v1) only when the Worker announced the feature: an
+	// older Worker resets an unknown stream kind.
+	filesV1 := !w.Pending && slices.Contains(c.res.Worker.Features, proto.FeatureFilesV1)
 	if err := c.write(Welcome{
 		MasterSessionV1: masterV1,
+		FilesV1:         filesV1,
 		LocalAuditV1:    !w.Pending && h.callOp(proto.OpLocalAuditV1) != nil,
 		UsagePolicy:     usagePolicy,
 		Type:            proto.TypeWelcome,
@@ -873,6 +882,7 @@ func (c *Conn) Welcome(ctx context.Context, w store.WorkerRow) error {
 	adm := h.streamAdmission().attach(w.ID)
 	sopts := h.cfg.Session
 	sopts.Budget = adm
+	sopts.Files = filesV1
 	if t := h.telemetry.get(); t != nil {
 		sopts.FrameTap = t.FrameTap(w.ID, w.Name)
 	}

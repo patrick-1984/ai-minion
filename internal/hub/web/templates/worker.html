@@ -48,6 +48,11 @@
   <h2 id="hidden-h">Hidden sessions</h2>
   <div id="hidden-panel" hx-get="{{.Data.HiddenURL}}" hx-trigger="load" hx-swap="innerHTML" aria-live="polite"><p class="muted">Loading the hidden-sessions choice...</p></div>
 </section>
+{{end}}{{if .Data.AppUpdateURL}}<section class="panel" aria-labelledby="app-update-h" id="app-update-section">
+  <h2 id="app-update-h">App updates</h2>
+  <div id="app-update-panel" hx-get="{{.Data.AppUpdateURL}}" hx-trigger="load" hx-swap="innerHTML" aria-live="polite"><p class="muted">Loading the update setting...</p></div>
+</section>
+{{end}}{{if .Data.DeviceURL}}<div id="device-section" hx-get="{{.Data.DeviceURL}}" hx-trigger="load" hx-swap="outerHTML"></div>
 {{end}}{{if .Data.DebugURL}}<section class="panel" aria-labelledby="debug-h" id="debug-section">
   <h2 id="debug-h">Debug</h2>
   <div id="debug-panel" hx-get="{{.Data.DebugURL}}" hx-trigger="load" hx-swap="innerHTML" aria-live="polite"><p class="muted">Loading the debug state...</p></div>

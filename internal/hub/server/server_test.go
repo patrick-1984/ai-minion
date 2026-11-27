@@ -437,11 +437,11 @@ func TestNormalizePublicURL(t *testing.T) {
 }
 
 func TestParseTrustedProxies(t *testing.T) {
-	got, err := ParseTrustedProxies(" 10.0.0.0/8, 192.168.1.7 ,, fd00::/8, ::ffff:172.16.0.0/108")
+	got, err := ParseTrustedProxies(" 10.0.0.0/8, 198.51.100.7 ,, fd00::/8, ::ffff:172.16.0.0/108")
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"10.0.0.0/8", "192.168.1.7/32", "fd00::/8", "172.16.0.0/12"}
+	want := []string{"10.0.0.0/8", "198.51.100.7/32", "fd00::/8", "172.16.0.0/12"}
 	if len(got) != len(want) {
 		t.Fatalf("got %v", got)
 	}
@@ -459,7 +459,7 @@ func TestParseTrustedProxies(t *testing.T) {
 }
 
 func TestClientIP(t *testing.T) {
-	n, err := NewNetwork("", true, mustPrefixes(t, "10.0.0.0/8, 192.168.5.5, fd00::/8"))
+	n, err := NewNetwork("", true, mustPrefixes(t, "10.0.0.0/8, 198.51.100.5, fd00::/8"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -473,7 +473,7 @@ func TestClientIP(t *testing.T) {
 		{"untrusted proxy cannot spoof", reqFrom("198.51.100.1:80", "X-Forwarded-For", "1.2.3.4"), "198.51.100.1"},
 		{"trusted proxy single hop", reqFrom("10.1.1.1:80", "X-Forwarded-For", "203.0.113.9"), "203.0.113.9"},
 		{"client-supplied entries to the left are ignored", reqFrom("10.1.1.1:80", "X-Forwarded-For", "6.6.6.6, 203.0.113.9"), "203.0.113.9"},
-		{"chain of trusted proxies", reqFrom("10.1.1.1:80", "X-Forwarded-For", "203.0.113.9, 10.2.2.2, 192.168.5.5"), "203.0.113.9"},
+		{"chain of trusted proxies", reqFrom("10.1.1.1:80", "X-Forwarded-For", "203.0.113.9, 10.2.2.2, 198.51.100.5"), "203.0.113.9"},
 		{"several header lines", reqFrom("10.1.1.1:80", "X-Forwarded-For", "6.6.6.6", "X-Forwarded-For", "203.0.113.9"), "203.0.113.9"},
 		{"no header from a trusted proxy", reqFrom("10.1.1.1:80"), "10.1.1.1"},
 		{"junk at the right falls back to the peer", reqFrom("10.1.1.1:80", "X-Forwarded-For", "203.0.113.9, not-an-ip"), "10.1.1.1"},

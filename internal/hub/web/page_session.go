@@ -45,11 +45,14 @@ package web
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"html/template"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -60,6 +63,7 @@ import (
 	"github.com/patrick-1984/ai-minion/internal/hub/auth/session"
 	"github.com/patrick-1984/ai-minion/internal/hub/authz"
 	"github.com/patrick-1984/ai-minion/internal/ops"
+	"github.com/patrick-1984/ai-minion/internal/proto"
 )
 
 // Paths of the session view. The patterns use net/http wildcards; the helpers
@@ -87,6 +91,12 @@ const (
 // Worker's name (or its id); both parts are escaped.
 func SessionPath(worker, session string) string {
 	return "/s/" + url.PathEscape(worker) + "/" + url.PathEscape(session)
+}
+
+// SessionKeepPath returns the path of the form that marks a session as kept
+// across Worker restarts, or not (POST, keep=1 or keep=0).
+func SessionKeepPath(worker, session string) string {
+	return SessionPath(worker, session) + "/keep"
 }
 
 // NewSessionPath returns the path that creates a session on a Worker (POST).
@@ -384,7 +394,12 @@ type SessionPage struct {
 	Session  string
 	Online   bool
 	Task     string
-	Notice   string
+	// Keep is true when the Worker keeps the session across its restarts;
+	// KeepURL is the form that changes it, "" when the Worker cannot keep
+	// sessions or the person may not change it.
+	Keep    bool
+	KeepURL string
+	Notice  string
 	// Monitoring is the compliance monitoring level while it is on ("" when off).
 	Monitoring string
 	Operate    bool
@@ -664,22 +679,31 @@ func panelFor(r *http.Request, t target) (PanelView, error) {
 	return p, nil
 }
 
-// sessionTask reads the task of the session from sessions_list; it is a
-// convenience, so a failure shows an empty field.
-func sessionTask(r *http.Request, t target) string {
+// sessionListed reads the task and the keep flag of the session from
+// sessions_list; it is a convenience, so a failure shows an empty task and
+// the session as not kept.
+func sessionListed(r *http.Request, t target) (task string, keep bool) {
+	task, keep, _ = listedSession(r, t)
+	return task, keep
+}
+
+// listedSession reads the task and the keep flag of the target session from
+// the Worker's listing; found is false when it cannot be read or does not
+// list the session.
+func listedSession(r *http.Request, t target) (task string, keep, found bool) {
 	var res ops.SessionsListResult
 	args := struct {
 		WorkerID string `json:"worker_id"`
 	}{t.worker.ID}
 	if err := t.c.CallOp(r, ops.OpSessionsList, args, &res); err != nil {
-		return ""
+		return "", false, false
 	}
 	for _, s := range res.Sessions {
 		if s.Name == t.session {
-			return s.Task
+			return s.Task, s.Keep, true
 		}
 	}
-	return ""
+	return "", false, false
 }
 
 func sessionData(r *http.Request) (any, error) {
@@ -726,7 +750,10 @@ func sessionData(r *http.Request) (any, error) {
 	page.Panel = panel
 	page.Operate = t.operate
 	if t.operate {
-		page.Task = sessionTask(r, t)
+		page.Task, page.Keep = sessionListed(r, t)
+		if proto.HasFeature(t.worker.Features, proto.FeatureSessionKeepV1) {
+			page.KeepURL = SessionKeepPath(t.ref, t.session)
+		}
 	}
 	page.Panes = renderSessionPanes(r, t, page)
 	page.Conversation = conversationOf(page.Panes)
@@ -749,7 +776,7 @@ func conversationOf(panes []PaneView) template.HTML {
 // sessionTemplates parses session.html with the screen partial, so that a route
 // can render the "panel" and "result" fragments the file defines.
 var sessionTemplates = sync.OnceValue(func() *template.Template {
-	return template.Must(template.ParseFS(templateFiles, "templates/session.html", "templates/_screen.html"))
+	return template.Must(template.ParseFS(templateFiles, "templates/session.html", "templates/_screen.html", "templates/_session_row.html"))
 })
 
 func renderFragment(w http.ResponseWriter, name string, data any) {
@@ -879,16 +906,7 @@ func answerResultSignals(w http.ResponseWriter, t target, results []ActionResult
 		trigger += `,"minion-input-unknown":` + string(detail)
 	}
 	w.Header().Set("HX-Trigger", trigger+"}")
-	now := time.Now().UTC().Format("15:04:05") + " UTC"
-	for i := range results {
-		if results[i].Target == "" {
-			results[i].Target = t.label()
-		}
-		if results[i].At == "" {
-			results[i].At = now
-		}
-	}
-	renderFragment(w, "result", ResultView{Results: results})
+	renderResults(w, t, results...)
 }
 
 // label names the session of a request for a result: "minion-1 on pi-1".
@@ -983,6 +1001,101 @@ func handleSetTask(w http.ResponseWriter, r *http.Request, t target) {
 	answerResultSignals(w, t, []ActionResult{ar}, resultEvents{taskSaved: ok && res.Outcome == ops.OutcomeDelivered}.withOutcome(ok, res))
 }
 
+// keepLabel names the keep action in a result.
+const keepLabel = "Keep after restart"
+
+// handleSessionKeep marks the session as kept across Worker restarts (keep=1)
+// or forgets it (keep=0). The form always posts keep=0 and, while its box is
+// checked, also keep=1: a post without keep is no request at all.
+func handleSessionKeep(w http.ResponseWriter, r *http.Request, t target) {
+	vals, ok := r.PostForm["keep"]
+	if !ok || len(vals) == 0 {
+		renderResults(w, t, ActionResult{Label: keepLabel, Kind: "danger", Summary: "The form did not say whether to keep the session. Nothing was changed."})
+		return
+	}
+	keep := slices.Contains(vals, "1")
+	args := ops.SessionKeepSetArgs{WriteArgs: ops.WriteArgs{RequestID: ops.NewUUIDv7()}, Target: t.opTarget(), Keep: keep}
+	ar, res, ok := callWrite(r, t, ops.OpSessionKeepSet, args, keepLabel, nil)
+	box := KeepBox{Class: keepBoxClass(t.worker.ID, t.session), Session: r.PostFormValue("view") == "session",
+		Name: t.session, Worker: t.worker.Name, Keep: keep, OOB: true}
+	if ok && res.Outcome == ops.OutcomeDelivered {
+		ar.Summary = "No longer kept. The Worker forgot this session and does not recreate it when it starts again."
+		if keep {
+			ar.Summary = "Kept. " + keepHelp
+		}
+	} else if now, known := sessionKept(r, t); known {
+		// Refused or not done: the box shows what the Worker has, not the
+		// click the browser already made.
+		box.Keep = now
+	} else {
+		box.Keep = !keep // nothing changed: the state before the click
+	}
+	renderResultsWith(w, t, &box, ar)
+}
+
+// KeepBox is the checkbox of a keep form (template "keep_box"). Class names
+// the session ([keepBoxClass]); Session is the box of the session page, else
+// a list's box; OOB makes it the out-of-band answer that sets every box of
+// the session.
+type KeepBox struct {
+	Class        string
+	Session      bool
+	Name, Worker string
+	Keep, OOB    bool
+}
+
+// keepBoxClass is the class of every keep checkbox of one session: a digest,
+// so that any session name gives a plain CSS class.
+func keepBoxClass(workerID, session string) string {
+	h := sha256.Sum256([]byte(workerID + "\x00" + session))
+	return "keep-" + hex.EncodeToString(h[:8])
+}
+
+// KeepBox is the keep checkbox of the session page.
+func (p SessionPage) KeepBox() KeepBox {
+	return KeepBox{Class: keepBoxClass(p.WorkerID, p.Session), Session: true, Name: p.Session, Worker: p.Worker, Keep: p.Keep}
+}
+
+// sessionKept reads the keep flag of the target session from the Worker;
+// known is false when it cannot be read.
+func sessionKept(r *http.Request, t target) (keep, known bool) {
+	_, keep, known = listedSession(r, t)
+	return keep, known
+}
+
+// keepHelp says what keeping a session does (the tooltip of the checkbox).
+const keepHelp = "Minion recreates this session with its folders and resumes its Claude/Codex conversation when the Worker starts again."
+
+// renderResults renders the results of a form, each named by its session and
+// time; it sends no events of its own (see [answerResultSignals]).
+func renderResults(w http.ResponseWriter, t target, results ...ActionResult) {
+	renderResultsWith(w, t, nil, results...)
+}
+
+// renderResultsWith is [renderResults] with the keep checkbox box (nil: none)
+// after the results, as an out-of-band swap.
+func renderResultsWith(w http.ResponseWriter, t target, box *KeepBox, results ...ActionResult) {
+	now := time.Now().UTC().Format("15:04:05") + " UTC"
+	for i := range results {
+		if results[i].Target == "" {
+			results[i].Target = t.label()
+		}
+		if results[i].At == "" {
+			results[i].At = now
+		}
+	}
+	var buf bytes.Buffer
+	err := sessionTemplates().ExecuteTemplate(&buf, "result", ResultView{Results: results})
+	if err == nil && box != nil {
+		err = sessionTemplates().ExecuteTemplate(&buf, "keep_box", box)
+	}
+	if err != nil {
+		http.Error(w, "the answer could not be rendered", http.StatusInternalServerError)
+		return
+	}
+	writeFragment(w, buf.Bytes())
+}
+
 func handleAnswer(w http.ResponseWriter, r *http.Request, t target) {
 	// A quick-answer button posts "choice"; the answer box posts "choice_text".
 	choice := strings.TrimSpace(r.PostFormValue("choice"))
@@ -1069,6 +1182,7 @@ func init() {
 		{"POST " + pathSessionPattern + "/text", handleSendText},
 		{"POST " + pathSessionPattern + "/keys", handleSendKey},
 		{"POST " + pathSessionPattern + "/task", handleSetTask},
+		{"POST " + pathSessionPattern + "/keep", handleSessionKeep},
 		{"POST " + pathSessionPattern + "/answer", handleAnswer},
 		{"POST " + pathNewSessionPattern, handleNewSession},
 	} {

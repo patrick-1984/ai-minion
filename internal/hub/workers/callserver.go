@@ -659,13 +659,15 @@ func errorFrameOf(err error, log *slog.Logger) proto.ErrorFrame {
 }
 
 // directGrantOps are the operations a direct session grant reaches on call
-// streams (D3), whatever its level: the level decides, through the actions it
-// gives, which of them a holder is served. For every other op the call stream
+// streams (D3, and session_keep_set since v0.24.0), whatever its level: the
+// level decides, through the actions it gives, which of them a holder is
+// served (session_keep_set needs operate: Control). For every other op the call stream
 // serves (pipe_send, pipe_read, pipe_wait and any op added later) the direct
 // grants are not read at all: the caller is who it was without them.
 var directGrantOps = map[string]bool{
 	ops.OpWorkersList: true, ops.OpSessionsList: true, ops.OpSessionSnapshot: true, ops.OpSessionCapture: true,
 	ops.OpSendText: true, ops.OpSendKeys: true, ops.OpSetTask: true, ops.OpAnswer: true,
+	ops.OpSessionKeepSet: true,
 }
 
 // authenticate decides who a call stream speaks for on the operation op. A
@@ -827,6 +829,9 @@ func directGrantsOf(rows []store.SessionGrantRow) []authz.DirectGrant {
 			ID: g.ID, TargetWorkerID: g.TargetWorkerID, TargetSession: g.TargetSession, Level: g.Level,
 			Authority: g.Authority, GrantedBy: g.GrantedBy, SourceOwnerID: g.SourceOwnerID, TargetOwnerID: g.TargetOwnerID,
 			Suspended: g.SuspendedAt != nil, CommandShell: g.CommandShell,
+			// The file flags count only for a principal with verified file
+			// authority (authz.Principal.WithVerifiedFiles).
+			FilesPull: g.FilesPull, FilesPush: g.FilesPush,
 		}
 		if g.ExpiresAt != nil {
 			// A stored expiry always ends the grant, the zero time included.
@@ -1026,6 +1031,8 @@ func targetOfArgs(args any) (ops.Target, bool) {
 	case *ops.SetTaskArgs:
 		return a.Target, true
 	case *ops.AnswerArgs:
+		return a.Target, true
+	case *ops.SessionKeepSetArgs:
 		return a.Target, true
 	}
 	return ops.Target{}, false

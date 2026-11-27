@@ -117,7 +117,7 @@ func TestNavigationGroupsFollowTheRoleAndKeepEveryDestination(t *testing.T) {
 	user := get(t, s, "/account", "X-Test-Session", userHeader).Body.String()
 	admin := get(t, s, "/account", "X-Test-Session", adminHeader).Body.String()
 
-	wantUser := []string{"/", "/workers", "/sessions", "/usage", "/harnesses", "/workers/add", "/invitations", "/api-keys", "/access"}
+	wantUser := []string{"/", "/workers", "/sessions", "/usage", "/harnesses", "/files/history", "/workers/add", "/invitations", "/api-keys", "/access"}
 	if got := navPaths(user); strings.Join(got, ",") != strings.Join(wantUser, ",") {
 		t.Errorf("user navigation = %v, want %v", got, wantUser)
 	}
@@ -385,7 +385,7 @@ func TestSessionWorkspaceIdentifiesTargetOwnerAccessAndConnection(t *testing.T) 
 		`<script src="/static/terminal-input.js" defer></script>`, `<script src="/static/session-ui.js" defer></script>`)
 	// The breadcrumb ancestors are real pages.
 	mustHave(t, body, `<li><a href="/">Control center</a></li>`, `<li><a href="/workers">Workers</a></li>`,
-		`<li><a href="/workers/`+sessWorkerID+`">pi-1</a></li>`, `<li><a href="/s/pi-1/minion-1" aria-current="page">minion-1</a></li>`)
+		`<li><a href="/workers/`+sessWorkerID+`"><span class="crumb-label" title="pi-1">pi-1</span></a></li>`, `<li><a href="/s/pi-1/minion-1" aria-current="page"><span class="crumb-label" title="minion-1">minion-1</span></a></li>`)
 }
 
 func TestSessionInputDockIsSafeByDefault(t *testing.T) {

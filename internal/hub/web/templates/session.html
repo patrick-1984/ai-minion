@@ -62,6 +62,11 @@
       <li>Worker <strong>{{.Data.Worker}}</strong> <span class="badge" data-online="{{if .Data.Online}}true{{else}}false{{end}}">{{if .Data.Online}}online{{else}}offline{{end}}</span></li>
       {{if .Data.Owner}}<li>Owner <strong>{{.Data.Owner}}</strong></li>{{end}}
       <li>Access <strong>{{if .Data.Operate}}You can send input{{else}}View only{{end}}</strong></li>
+      {{if and .Data.Operate .Data.KeepURL}}<li data-keep><form method="post" action="{{.Data.KeepURL}}" hx-post="{{.Data.KeepURL}}" hx-trigger="change" hx-target="#session-result" hx-swap="innerHTML" class="keep-form">
+        <input type="hidden" name="view" value="session">
+        <input type="hidden" name="keep" value="0">
+        <label class="keep-toggle" title="Minion recreates this session with its folders and resumes its Claude/Codex conversation when the Worker starts again">{{template "keep_box" .Data.KeepBox}} Keep after restart</label>
+      </form></li>{{end}}
       {{if .Data.Operate}}<li data-unasked hidden><label title="Send text, keys and the task at once, also to a shell, an open dialog or a busy agent (kept in this browser)"><input type="checkbox" id="unasked-session"> Send without asking</label> <button type="button" class="info-btn" popovertarget="help-send-unasked" aria-label="About sending without asking">{{template "icon" "i-info"}}</button> <span class="muted" id="unasked-note"></span>
         <div class="info-pop" id="help-send-unasked" popover><p>Text, keys and task messages skip the confirmation for a shell, an open dialog or a busy agent. The Hub still checks dialog answers. Without it, text to a busy agent is never refused: it is typed and not submitted, so it cannot answer a permission prompt by accident. With it, text to a busy agent is submitted at once.</p></div></li>{{end}}
     </ul>

@@ -1,0 +1,14 @@
+{{/* The App updates panel of the Worker detail page (v0.24.0): how the Hub updates an Android Worker (the Minion app).
+An administrator changes it; the owner's Updates setting in the app still wins. */}}
+{{define "worker_app_update_panel"}}{{range .Results}}<div class="result result-{{.Kind}}" role="status"><p class="result-title"><strong>{{.Label}}:</strong> {{.Summary}}</p>{{range .Warnings}}<p class="help">{{.}}</p>{{end}}</div>
+{{end}}<p class="help">An app update installs a new version of the Minion app and restarts it: every session on this worker restarts, kept sessions come back. The Updates setting in the app on the device still wins (Off there refuses every update).</p>
+{{if .Admin}}<form method="post" action="{{.URL}}" hx-post="{{.URL}}" hx-target="#app-update-panel" hx-swap="innerHTML" hx-disabled-elt="find button" aria-label="App updates of {{.Worker}}" data-key="app-update-{{.WorkerID}}">
+  <fieldset><legend>Updates from the Hub</legend>
+    <label><input type="radio" name="policy" value="auto"{{if eq .Policy "auto"}} checked{{end}}> Automatic: the Hub sends each new release; the app installs it when no client is attached and no agent is busy</label>
+    <label><input type="radio" name="policy" value="manual"{{if eq .Policy "manual"}} checked{{end}}> Manual: only when an administrator presses Update</label>
+    <label><input type="radio" name="policy" value="off"{{if eq .Policy "off"}} checked{{end}}> Off: the Hub never updates this worker</label>
+  </fieldset>
+  <button type="submit" class="btn" data-control="app-update-save">Save</button>
+</form>
+{{else}}<p class="help" data-app-update="{{.Policy}}">Updates from the Hub: <strong>{{if eq .Policy "auto"}}automatic{{else if eq .Policy "off"}}off{{else}}manual{{end}}</strong>. Only an administrator can change this.</p>
+{{end}}{{end}}

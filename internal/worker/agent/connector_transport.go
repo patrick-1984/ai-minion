@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/patrick-1984/ai-minion/internal/identity"
@@ -138,7 +139,11 @@ func (d hubDialer) Connect(ctx context.Context, p ConnectParams) (*Attempt, erro
 		_ = res.Channel.Close()
 		return att, nil
 	}
-	sess, err := transport.NewSession(res.Channel, transport.RoleWorker, p.Session)
+	// Data legs (files.v1) only when both ends announced the feature on
+	// this connection: this Worker in its hello, the Hub in its welcome.
+	opts := p.Session
+	opts.Files = reply.Welcome.FilesV1 && slices.Contains(p.Features, proto.FeatureFilesV1)
+	sess, err := transport.NewSession(res.Channel, transport.RoleWorker, opts)
 	if err != nil {
 		return nil, err
 	}

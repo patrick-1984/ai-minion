@@ -63,6 +63,8 @@ type WorkerView struct {
 	ShowOwner bool
 	// OnWorker tells the session table that every row is of this Worker.
 	OnWorker bool
+	// ShowKeep adds the Keep column to the session table (see [DashboardView]).
+	ShowKeep bool
 	// Operate is whether this person may operate the Worker (the New session button).
 	Operate bool
 	// Gone is set when the Worker is not in the snapshot (it left the list while the page
@@ -103,6 +105,13 @@ type WorkerPage struct {
 	// HiddenURL is the Hidden sessions panel of the Worker (v0.23.0); empty
 	// when this person may not operate the Worker.
 	HiddenURL string
+	// AppUpdateURL is the App updates panel (v0.24.0): set for an
+	// administrator on the page of an Android Worker.
+	AppUpdateURL string
+	// DeviceURL is the Device control panel (on-device adb); the panel
+	// renders nothing for a Worker that is not Android. Empty when this person
+	// may not operate the Worker.
+	DeviceURL string
 	// Name is the heading (the Worker's name; the id when it has none).
 	Name    string
 	Context string
@@ -167,7 +176,11 @@ func newWorkerView(d Dashboard, all bool, id string, operate bool) WorkerView {
 		if x.WorkerID == id {
 			x.HideWorker = true
 			out.Sessions = append(out.Sessions, x)
+			out.ShowKeep = out.ShowKeep || x.CanKeep || x.Keep
 		}
+	}
+	for i := range out.Sessions {
+		out.Sessions[i].ShowKeep = out.ShowKeep
 	}
 	out.Operate = operate && out.Worker.Online && !out.Worker.Pending
 	if !operate {
@@ -242,6 +255,10 @@ func workerData(get func() LiveSource) func(*http.Request) (any, error) {
 			p.RenameURL = WorkerRenamePath(id)
 			p.MaxName = ops.MaxWorkerNameLen
 			p.HiddenURL = WorkerHiddenPath(id)
+			p.DeviceURL = WorkerDevicePath(id)
+		}
+		if v.Worker.Android && isAdminRequest(r) {
+			p.AppUpdateURL = WorkerAppUpdatePath(id)
 		}
 		if all {
 			p.Scope = scopeAll

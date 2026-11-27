@@ -40,9 +40,15 @@ func setupSelfUpdate(log *slog.Logger, s Settings, ex *Executor, host term.Sessi
 	} else {
 		exe = ""
 	}
-	block := updateBlock(exe, resolve(config.KeyRemoteUpdate, "on"), os.Getenv, fileExists)
+	remote := resolve(config.KeyRemoteUpdate, "on")
+	block := updateBlock(exe, remote, os.Getenv, fileExists)
 	if b := ManagedUpdateBlock(s.Managed); b != "" {
 		block = b
+	}
+	if s.Managed.Android {
+		// The binary is never replaced, but the app installs a new APK that
+		// the Worker verified and staged (selfupdate_apk.go).
+		block = androidUpdateBlock(remote, s.StateDir)
 	}
 	log.Debug("self-update", "exe", exe, "block", block, "under_service_manager", underServiceManager(),
 		"os", runtime.GOOS, "running", version.Version)
@@ -59,7 +65,7 @@ func setupSelfUpdate(log *slog.Logger, s Settings, ex *Executor, host term.Sessi
 	}
 	apiURL := resolve(config.KeyUpdateAPIURL, version.DefaultAPIURL)
 	cacheDir := resolve(config.KeyUpdateCacheDir, filepath.Join(os.TempDir(), "minion-update"))
-	u.installer = func() (releaseInstaller, error) {
+	newUpdater := func() (*version.Updater, error) {
 		src, err := version.NewGitHubSource(apiURL, "minion/"+version.Version)
 		if err != nil {
 			return nil, err
@@ -70,6 +76,24 @@ func setupSelfUpdate(log *slog.Logger, s Settings, ex *Executor, host term.Sessi
 			Cache:    version.Cache{Dir: cacheDir},
 			Out:      io.Discard,
 		}, nil
+	}
+	u.installer = func() (releaseInstaller, error) { return newUpdater() }
+	if s.Managed.Android && s.StateDir != "" {
+		u.apk = &apkUpdater{
+			dir: filepath.Join(s.StateDir, apkUpdateDir),
+			stage: func(ctx context.Context, o version.APKOptions) (version.StagedAPK, error) {
+				up, err := newUpdater()
+				if err != nil {
+					return version.StagedAPK{}, err
+				}
+				return up.StageAPK(ctx, o)
+			},
+			idle: ex.updateIdle,
+		}
+		if err := os.MkdirAll(u.apk.dir, 0o700); err != nil {
+			log.Warn("cannot create the app update directory", "error", err.Error())
+		}
+		u.apk.startUp(u)
 	}
 	if restartEndsSessions(runtime.GOOS, hostKind) && host != nil {
 		// ConPTY sessions live inside the Worker process: a restart ends them.
@@ -84,12 +108,14 @@ func setupSelfUpdate(log *slog.Logger, s Settings, ex *Executor, host term.Sessi
 	}
 	u.register(ex)
 
+	// The app's readiness can change while the Worker runs (the owner allows
+	// "Install unknown apps"), so every hello asks again.
 	facts := func() transport.WorkerFacts {
-		return transport.WorkerFacts{Build: version.Version, OS: runtime.GOOS, Arch: runtime.GOARCH, UpdateBlock: block}
+		return transport.WorkerFacts{Build: version.Version, OS: runtime.GOOS, Arch: runtime.GOARCH, UpdateBlock: u.blockReason()}
 	}
 	features := func() []string {
 		f := ex.Features()
-		if block == "" {
+		if u.blockReason() == "" {
 			f = append(f, proto.FeatureSelfUpdate)
 		}
 		return f
