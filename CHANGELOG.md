@@ -11,6 +11,7 @@
 - **Hub: the audit row of a REST write into a command shell did not name the grant.** Like the call stream, the REST path now adds `command_shell=<grant>` to the audit detail (and names the grant when no other is named).
 - **Worker: a busy answer that came before the write of the turn returned was lost.** The sender recorded the send after the write, so a fast Hub's busy answer was overwritten: the turn was held until the ack timeout (10 s) instead of the `retry_after_ms` the Hub named. The send is now recorded before the write (the flake of `TestBusyWaitIsBounded`).
 - **Worker: a local master process could be taken for dead when a signal interrupted the liveness check.** The pidfd poll returned EINTR (the Go runtime preempts with SIGURG) and that counted as an exited process; the poll is now asked again (the flake of `TestMasterBrokerUsesTheSocketProcess`).
+- The test Hub of the connector tests now ends a connection that is stopped right after its welcome, before it has its session (the flake of `TestReconnectsWhenTheHubRestarts`).
 
 ## v0.24.2
 

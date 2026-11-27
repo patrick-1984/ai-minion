@@ -50,13 +50,23 @@ type stubHub struct {
 	known      map[string]bool // Worker public keys (string form) that are enrolled
 	tombstones map[string]bool
 	sessions   []*transport.Session
-	hellos     []transport.WorkerHello
+	// conns are the hijacked connections of the running Hub, tracked from
+	// the accept on: the Worker reports Connected as soon as it reads the
+	// welcome, before the handler has added its session to sessions, so a
+	// stop in between must still end that connection (httptest forgets a
+	// hijacked connection and CloseClientConnections does not reach it).
+	conns   []net.Conn
+	stopped bool // a connection accepted after stop is closed at once
+	hellos  []transport.WorkerHello
 	// revokeKey, when set, signs revokes instead of the operational key.
 	revokeKey *identity.Key
 
 	connects atomic.Int32
 	// onSession runs for every enrolled Worker session, in the handler.
 	onSession func(*transport.Session)
+	// afterWelcome, when set, runs in the handler between the welcome and the
+	// session, the window in which the Worker is already connected.
+	afterWelcome func()
 }
 
 func newStubHub(t *testing.T) *stubHub {
@@ -98,6 +108,9 @@ func (h *stubHub) start(addr string) {
 	if err != nil {
 		h.t.Fatal(err)
 	}
+	h.mu.Lock()
+	h.stopped = false
+	h.mu.Unlock()
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET "+transport.ConnectPath, h.serve)
 	srv := httptest.NewUnstartedServer(mux)
@@ -119,11 +132,14 @@ func (h *stubHub) url() string {
 // stop ends every Worker session and closes the listener (a Hub restart).
 func (h *stubHub) stop() {
 	h.mu.Lock()
-	srv, sessions := h.srv, h.sessions
-	h.srv, h.sessions = nil, nil
+	srv, sessions, conns := h.srv, h.sessions, h.conns
+	h.srv, h.sessions, h.conns, h.stopped = nil, nil, nil, true
 	h.mu.Unlock()
 	for _, s := range sessions {
 		_ = s.Close()
+	}
+	for _, c := range conns {
+		_ = c.Close()
 	}
 	if srv != nil {
 		srv.CloseClientConnections()
@@ -149,12 +165,28 @@ func (h *stubHub) reissue(serial uint64) {
 // dropSessions ends every Worker session (the Workers reconnect).
 func (h *stubHub) dropSessions() {
 	h.mu.Lock()
-	sessions := h.sessions
-	h.sessions = nil
+	sessions, conns := h.sessions, h.conns
+	h.sessions, h.conns = nil, nil
 	h.mu.Unlock()
 	for _, s := range sessions {
 		_ = s.Close()
 	}
+	for _, c := range conns { // a session that is not in sessions yet
+		_ = c.Close()
+	}
+}
+
+// track records a hijacked connection so that stop and dropSessions end it;
+// after stop it closes the connection at once and reports false.
+func (h *stubHub) track(c net.Conn) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.stopped {
+		_ = c.Close()
+		return false
+	}
+	h.conns = append(h.conns, c)
+	return true
 }
 
 func (h *stubHub) helloCount() int {
@@ -190,7 +222,7 @@ func (h *stubHub) lastHello() (transport.WorkerHello, bool) {
 func (h *stubHub) serve(w http.ResponseWriter, r *http.Request) {
 	h.connects.Add(1)
 	conn, err := transport.Accept(w, r)
-	if err != nil {
+	if err != nil || !h.track(conn) {
 		return
 	}
 	hc := h.config()
@@ -225,6 +257,12 @@ func (h *stubHub) serve(w http.ResponseWriter, r *http.Request) {
 			"proto_min": "1.0", "proto_max": "1.0",
 		}); err != nil {
 			return
+		}
+		h.mu.Lock()
+		hook := h.afterWelcome
+		h.mu.Unlock()
+		if hook != nil {
+			hook()
 		}
 		sess, err := transport.NewSession(res.Channel, transport.RoleHub, transport.SessionOptions{})
 		if err != nil {
@@ -372,6 +410,32 @@ func TestReconnectsWhenTheHubRestarts(t *testing.T) {
 	if _, ok, _ := w.enr.Load(context.Background()); !ok {
 		t.Fatal("the enrollment must survive the outage")
 	}
+}
+
+// A Hub that stops right after its welcome, before the handler has its
+// session, still ends the link: the Worker is connected from the welcome on.
+// The stub missed that connection, which made TestReconnectsWhenTheHubRestarts
+// wait for ConnBackoff in vain under CPU load.
+func TestAHubStoppedRightAfterTheWelcomeEndsTheLink(t *testing.T) {
+	h := newStubHub(t)
+	welcomed, release := make(chan struct{}), make(chan struct{})
+	unblock := sync.OnceFunc(func() { close(release) })
+	t.Cleanup(unblock) // no handler stays blocked after a failure
+	var once sync.Once
+	h.mu.Lock()
+	h.afterWelcome = func() { once.Do(func() { close(welcomed); <-release }) }
+	h.mu.Unlock()
+	w := newHubWorker(t, h.url(), identity.Pin{Pub: h.key.Public()})
+	h.enrol(w.key.Public())
+	select {
+	case <-welcomed:
+	case <-time.After(30 * time.Second):
+		t.Fatal("the Hub sent no welcome")
+	}
+	w.waitState(t, ConnConnected)
+	h.stop()
+	unblock()
+	w.waitState(t, ConnBackoff)
 }
 
 func TestNotEnrolledAtTheHubKeepsStateUntilTheHubKnowsTheWorker(t *testing.T) {
