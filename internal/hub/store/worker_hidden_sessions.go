@@ -51,11 +51,24 @@ func (s *Store) ListWorkerHiddenSessions(ctx context.Context) (map[string]bool, 
 // removes it when allow is nil (the account default applies again). by is the
 // actor. It returns [ErrWorkerNotFound] for an unknown or removed Worker.
 func (s *Store) SetWorkerHiddenSessions(ctx context.Context, workerID string, allow *bool, by string) error {
+	return s.SetWorkerHiddenSessionsIfOwner(ctx, workerID, allow, by, "")
+}
+
+// SetWorkerHiddenSessionsIfOwner is [Store.SetWorkerHiddenSessions] made
+// conditional on the owner of the Worker, in one transaction: with
+// expectedOwnerID set, a Worker that is owned by someone else when the
+// choice is written (reassigned after the caller was found to be its owner)
+// returns [ErrWorkerOwnerChanged] and nothing is stored. "" checks no owner
+// (a caller allowed by manage, which does not depend on the owner).
+func (s *Store) SetWorkerHiddenSessionsIfOwner(ctx context.Context, workerID string, allow *bool, by, expectedOwnerID string) error {
 	return s.Tx(ctx, func(tx *sql.Tx) error {
-		var one int
-		err := tx.QueryRowContext(ctx, `SELECT 1 FROM workers WHERE id = ?`, workerID).Scan(&one)
+		var owner string
+		err := tx.QueryRowContext(ctx, `SELECT owner_id FROM workers WHERE id = ?`, workerID).Scan(&owner)
 		if err := rowErr("read worker", err); err != nil {
 			return err
+		}
+		if expectedOwnerID != "" && owner != expectedOwnerID {
+			return ErrWorkerOwnerChanged
 		}
 		if allow == nil {
 			if _, err := tx.ExecContext(ctx, `DELETE FROM worker_hidden_sessions WHERE worker_id = ?`, workerID); err != nil {
