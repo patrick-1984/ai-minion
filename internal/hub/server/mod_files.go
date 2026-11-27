@@ -105,6 +105,20 @@ func initFiles(_ context.Context, env *Env) error {
 			}
 			return time.Duration(days) * 24 * time.Hour
 		},
+		KeyLive: func(ctx context.Context, keyID string) error {
+			k, err := st.APIKeyByID(ctx, keyID)
+			if errors.Is(err, store.ErrNotFound) {
+				return proto.NewError(proto.CodeForbidden, "not allowed")
+			}
+			if err != nil {
+				return err
+			}
+			now := time.Now().UnixMilli()
+			if k.RevokedAt != 0 || (k.ExpiresAt != 0 && k.ExpiresAt <= now) {
+				return proto.NewError(proto.CodeForbidden, "not allowed")
+			}
+			return nil
+		},
 		IsAdmin: func(ctx context.Context, p authz.Principal) (bool, error) {
 			id := p.UserID
 			if p.Kind == authz.KindActAs {
@@ -145,12 +159,35 @@ func initFiles(_ context.Context, env *Env) error {
 	}
 	if err := api.HandleTyped(handlers, ops.OpFileReceipt, func(ctx context.Context, c *api.Call, args ops.FileReceiptArgs) (ops.FileReceiptResult, error) {
 		return fs.ReceiptFor(ctx, c.Principal, args)
-	}); err != nil {
+	}, api.WithResource(func(_ authz.Principal, args any) (authz.Resource, error) {
+		// A receipt is about the target session of its transfer: the
+		// caller that could admit the pull (an API key scoped to that
+		// Worker) can send it. The receipt itself is bound to the
+		// receiving identity and its leg token (Service.Receipt).
+		a, ok := args.(*ops.FileReceiptArgs)
+		if !ok || a.Validate() != nil {
+			return nil, api.NewError(proto.CodeInvalidArgument, "invalid file_receipt arguments")
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		row, err := st.FileTransfer(ctx, a.TransferID)
+		if err != nil {
+			return nil, api.NewError(proto.CodeNotFound, "not found")
+		}
+		return authz.SessionResource{WorkerID: row.TargetWorkerID, Name: row.TargetSession}, nil
+	})); err != nil {
 		return fmt.Errorf("files: %w", err)
 	}
 	if err := api.HandleTyped(handlers, ops.OpFileTransfersList, func(ctx context.Context, c *api.Call, args ops.FileTransfersListArgs) (ops.FileTransfersListResult, error) {
 		return fs.History(ctx, c.Principal, args)
-	}); err != nil {
+	}, api.WithResource(func(p authz.Principal, _ any) (authz.Resource, error) {
+		// The history is the caller's own (the store scopes it to the
+		// viewer); worker_id is a filter, not the resource.
+		if p.UserID == "" {
+			return nil, api.NewError(proto.CodeForbidden, "not allowed")
+		}
+		return authz.UserResource{ID: p.UserID}, nil
+	})); err != nil {
 		return fmt.Errorf("files: %w", err)
 	}
 	if mux, err := Require[*http.ServeMux](env); err == nil {

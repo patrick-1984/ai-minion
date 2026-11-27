@@ -112,6 +112,11 @@ func (s *Service) fileAuthority(ctx context.Context, p authz.Principal, verified
 // the ones of its admission path; a path that can revoke them ends the call
 // itself, see workers.MasterControl).
 func (s *Service) redecide(ctx context.Context, t *transfer) error {
+	if t.principal.Kind == authz.KindAPIKey && t.principal.KeyID != "" && s.cfg.KeyLive != nil {
+		if err := s.cfg.KeyLive(ctx, t.principal.KeyID); err != nil {
+			return err
+		}
+	}
 	p, err := s.fileAuthority(ctx, t.principal, t.verified)
 	if err != nil {
 		return err

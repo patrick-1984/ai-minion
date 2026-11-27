@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **File transfer** (files.v1): pull and push of files and folders between the folder of a session on a Worker and a caller (another Worker's session, the CLI's current folder, the browser), relayed by the Hub, which keeps no content. `minion files ls|pull|push`, the MCP tools `file_list`, `file_pull` and `file_push` (local daemon), the Files panel and the File transfers history in the web UI. Confinement to the pane's folder (no `..`, absolute paths, symbolic links or other mounts), push-protected and pull-sensitive names, stage-verify-publish with SHA-256 per file and a manifest digest, no-replace publish unless `--overwrite`, resume of stable single files with `Range`/`If-Range`, limits (4 GiB, 100,000 entries, 2 transfers per Worker). Authorization of both ends at admission, every 15 s and at a commit gate before the receiver may publish; API keys need the named actions `file_read`/`file_write`, grants and acceptances the flags `files_pull`/`files_push` on a Verified source. The Worker's local switch `file_transfer` (`on`, `send_only`, `receive_only`, `off`) cannot be lifted by the Hub; the Hub policy `file_transfer_policy` applies on top. Linux, macOS and Android Workers; Windows Workers answer `files_root_unknown`. Needs Hub and Worker update (migration 0042); an older Worker gets `unsupported_op`. Guide: docs/guides/file-transfer.md.
+- The welcome of a v0.24.0 Hub carries `files_v1` when the Worker announced files.v1; only then do both ends enable data legs (stream kind `fx`) on that connection. An older Hub omits it and an older Worker never sees an `fx` stream.
+
 ## v0.23.0
 
 ### Added

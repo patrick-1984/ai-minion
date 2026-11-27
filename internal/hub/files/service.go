@@ -67,6 +67,11 @@ type Config struct {
 	// IsAdmin tells whether the principal is an administrator now (for the
 	// admins_only policy and the history). Nil: nobody is.
 	IsAdmin func(ctx context.Context, p authz.Principal) (bool, error)
+	// KeyLive tells whether the API key a principal was built from still
+	// authenticates (not revoked, not expired): asked at every re-decision
+	// and at the commit gate, so a key revoked while bytes move publishes
+	// nothing. Nil: keys are not checked again.
+	KeyLive func(ctx context.Context, keyID string) error
 	// SessionShared tells whether a Worker's session is shared with the Hub
 	// now (the caller's own session must be, FR-10). Nil: every session is.
 	SessionShared func(ctx context.Context, workerID, session string) (bool, error)

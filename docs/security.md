@@ -229,6 +229,17 @@ The recipes that keep the proxy out of these steps are in [pairing](guides/pairi
 
 **Updates from the Hub (0.9.0).** An administrator can update Workers to the Hub's release (`worker_update`) and, with the opt-in Docker overlay, the Hub itself (`hub_update`). In both cases the binary or image comes only from a release signed by this project's release workflow (the Hub pulls the image by the digest in the signed release manifest); a downgrade is refused, the Worker checks the protocol range of the Hub that asked, and a Worker refuses with `remote_update off`. A compromised Hub can therefore move Workers only to another signed release, not run code of its own on them. The Docker socket that the Hub's self-update needs is root-equivalent on that host: mount it only where you trust the Hub as much as root. The daily release check contacts only `api.github.com` (`update_check off` contacts nothing).
 
+## File transfer (0.24.0)
+
+File transfer copies files between the folder of a session and a caller; the Hub relays the bytes and keeps no content ([file transfer](guides/file-transfer.md)).
+
+- **Both ends decide.** The Hub decides the caller's file action (`file_read` for a pull, `file_write` for a push) and the Hub policy at admission, every 15 seconds while bytes move and at a commit gate before it forwards the sender's final trailers: without them the receiver cannot verify and publishes nothing. A revoked API key, grant or acceptance, or a policy switched off, stops a running transfer.
+- **Only named authority.** An API key holds a file action only when it names it (a wildcard or "everything" scope does not); grants and acceptances need the `files_pull`/`files_push` flags, and only a Verified source carries them. A Worker identity has none.
+- **The Worker enforces locally whatever the Hub says:** its switch `file_transfer` (the Hub cannot lift it), sharing, the folder of the pane as the only root (a pinned directory handle; no `..`, absolute path, symbolic link or other mount is followed), the system, home and sensitive folders, push-protected names (`.git/hooks`, shell rc files, agent and CI configuration), entry types, limits and the single-use leg token bound to its connection. A compromised Hub cannot read or write outside shared session folders, cannot push into `.git/hooks` and cannot turn a switched-off Worker back on.
+- **Nothing runs.** Transfer code never executes content, never sets an exec bit, never writes outside the folder and creates no autostart entry.
+- **Verification before publication:** per-file SHA-256 and size against the manifest, the manifest digest, the end of the archive and the trailers; then an atomic publish that never replaces an existing name unless asked (`--overwrite`, regular files only).
+- **What it does not protect against:** an agent in the pane choosing its folder with `cd` before a transfer; a person or agent running a pushed file later; transfers that a caller with the authority asks for. The history (who, which sessions, which grant, counts, manifest digest) is visible to the target's owner; logs, metrics and audit details never contain names, paths, tokens or content.
+
 ## When something is not known
 
 - Reads that fail are retried or reported as errors. A write that may have been delivered, but whose answer was lost, is reported as **unknown** and is never replayed for you; you repeat it with the same request id on purpose.

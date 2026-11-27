@@ -15,7 +15,6 @@ func identityOf(os.FileInfo) (filexfer.Identity, bool) { return filexfer.Identit
 // fxStat is the stub of the Unix entry facts: no file transfer end exists on
 // this platform in v1 (files_root_unknown), so nothing calls it.
 type fxStat struct {
-	mode  uint32
 	size  int64
 	mtime time.Time
 	nlink uint64
