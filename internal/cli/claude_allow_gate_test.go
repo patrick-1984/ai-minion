@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/patrick-1984/ai-minion/internal/claudeallow"
+	"github.com/patrick-1984/ai-minion/internal/client"
 	"github.com/patrick-1984/ai-minion/internal/mcp"
 	"github.com/patrick-1984/ai-minion/internal/ops"
 	"github.com/patrick-1984/ai-minion/internal/worker/agent"
@@ -40,9 +41,10 @@ func sendTextCall(session string) string {
 	return `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"send_text","arguments":{"target":{"session_name":"` + session + `"},"text":"x"}}}`
 }
 
-// In Solo the local control socket runs a target without a worker_id on the
-// local Worker, so a rule for the --hub-worker must not reach it; once the
-// last rule is gone, write tools that exist only for rules refuse every write.
+// In Solo without --hub-worker the local control socket runs a target without
+// a worker_id on the local Worker, so the gate judges it against the local id;
+// once the last rule is gone, write tools that exist only for rules refuse
+// every write.
 func TestMCPGateJudgesSoloTargetsOnTheLocalWorkerAndFailsClosedAfterRevoke(t *testing.T) {
 	list := filepath.Join(t.TempDir(), claudeallow.FileName)
 	writeGateList(t, list, gateHubWorker)
@@ -50,12 +52,12 @@ func TestMCPGateJudgesSoloTargetsOnTheLocalWorkerAndFailsClosedAfterRevoke(t *te
 		agent.OpLocalStatus: `{"state_dir":"/s","state":"connected","worker_id":"` + gateLocalWorker + `","hub_preview_only":false,"pairing_known":false}`,
 		ops.OpSendText:      `{"outcome":"delivered","reason":"","forceable":false,"forced":false,"warnings":[],"pane":null}`,
 	}}
-	deps, _ := testMCPDeps(map[string]string{"MINION_HUB_WORKER": gateHubWorker}, b, mcp.TrustAll)
+	deps, _ := testMCPDeps(map[string]string{}, b, mcp.TrustAll)
 	deps.allowlist = list
 
 	got, _ := rpc(t, deps, nil, sendTextCall("my-local"))
 	if !strings.Contains(string(got[2]), "not in a standing Minion allow rule") {
-		t.Fatalf("a local session under a rule of the Hub Worker: %s", got[2])
+		t.Fatalf("a local session under a rule of another Worker: %s", got[2])
 	}
 	if slices.Contains(b.ops(), ops.OpSendText) {
 		t.Fatal("the refused write reached the backend")
@@ -66,7 +68,52 @@ func TestMCPGateJudgesSoloTargetsOnTheLocalWorkerAndFailsClosedAfterRevoke(t *te
 	if strings.Contains(string(got[2]), `"isError":true`) || !slices.Contains(b.ops(), ops.OpSendText) {
 		t.Fatalf("a local session under a rule of the local Worker: %s", got[2])
 	}
+}
 
+// In Solo with --hub-worker naming another Worker, the local backend forwards
+// a target without a worker_id to that Worker, so the gate must judge it
+// against that Worker, never against the local one.
+func TestMCPGateJudgesSoloTargetsOnTheHubWorkerItIsForwardedTo(t *testing.T) {
+	list := filepath.Join(t.TempDir(), claudeallow.FileName)
+	writeGateList(t, list, gateLocalWorker)
+	b := &stubBackend{out: map[string]string{
+		agent.OpLocalStatus: `{"state_dir":"","state":"connected","worker_id":"` + gateLocalWorker + `","hub_preview_only":false,"pairing_known":false}`,
+		ops.OpSendText:      `{"outcome":"delivered","reason":"","forceable":false,"forced":false,"warnings":[],"pane":null}`,
+	}}
+	deps, _ := testMCPDeps(map[string]string{}, nil, mcp.TrustAll)
+	deps.backend = nil
+	deps.local = func() client.Backend { return b }
+	deps.allowlist = list
+	hub := []string{"--hub-worker", gateHubWorker}
+
+	got, _ := rpc(t, deps, hub, sendTextCall("main"))
+	if !strings.Contains(string(got[2]), "not in a standing Minion allow rule") {
+		t.Fatalf("a target forwarded to %s under a rule of the local Worker: %s", gateHubWorker, got[2])
+	}
+	if slices.Contains(b.ops(), ops.OpSendText) {
+		t.Fatal("the refused write reached the backend")
+	}
+
+	writeGateList(t, list, gateHubWorker)
+	got, _ = rpc(t, deps, hub, sendTextCall("main"))
+	if strings.Contains(string(got[2]), `"isError":true`) || !slices.Contains(b.ops(), ops.OpSendText) {
+		t.Fatalf("a target forwarded to %s under its rule: %s", gateHubWorker, got[2])
+	}
+	if a := b.argsOf(ops.OpSendText); !strings.Contains(a, `"worker_id":"`+gateHubWorker+`"`) {
+		t.Fatalf("the write was not sent to %s: %s", gateHubWorker, a)
+	}
+}
+
+func TestMCPGateUsesTheHubWorkerWithoutAHub(t *testing.T) {
+	deps, _ := testMCPDeps(map[string]string{"MINION_HUB_WORKER": gateHubWorker}, &stubBackend{}, mcp.TrustAll)
+	deps.allowlist = filepath.Join(t.TempDir(), claudeallow.FileName)
+	g, err := mcpGate(newMCPCmd(deps), deps, &stubBackend{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if g.DefaultWorker != gateHubWorker || g.LocalWorker != nil {
+		t.Fatalf("Solo gate with --hub-worker = %+v", g)
+	}
 }
 
 func TestMCPWritesOnlyForRulesFailClosedAfterTheLastRevoke(t *testing.T) {
@@ -167,5 +214,45 @@ func TestClaudeAllowLocksTheSharedAllowlist(t *testing.T) {
 	list, err := claudeallow.Load(e.list)
 	if err != nil || list == nil || len(list.Rules) != 1 {
 		t.Fatalf("allowlist = %+v, %v", list, err)
+	}
+}
+
+// While the local Worker is offline its status names no Worker id, so the id
+// stored in its enrollment tells that --hub-worker names this very Worker: an
+// op it does not forward still runs here instead of being refused.
+func TestHubWorkerIsLocalFallsBackToTheStoredWorkerIDWhileOffline(t *testing.T) {
+	b := &stubBackend{out: map[string]string{
+		agent.OpLocalStatus: `{"state_dir":"/state","state":"backoff","hub_preview_only":false,"pairing_known":false}`,
+	}}
+	var asked string
+	h := hubWorkerBackend{Backend: b, worker: gateLocalWorker, storedID: func(_ context.Context, dir string) string {
+		asked = dir
+		return gateLocalWorker
+	}}
+	if !h.isLocal() || asked != "/state" {
+		t.Fatalf("offline Worker with the stored id %s is not local (asked %q)", gateLocalWorker, asked)
+	}
+	h.worker = gateHubWorker
+	if h.isLocal() {
+		t.Fatal("another Worker is local by the stored id")
+	}
+	h.storedID = func(context.Context, string) string { return "" }
+	h.worker = gateLocalWorker
+	if h.isLocal() {
+		t.Fatal("an unknown id is local")
+	}
+	// A live id wins over the stored one.
+	b.mu.Lock()
+	b.out[agent.OpLocalStatus] = `{"state_dir":"/state","state":"connected","worker_id":"` + gateHubWorker + `"}`
+	b.mu.Unlock()
+	h.storedID = func(context.Context, string) string { return gateLocalWorker }
+	if h.isLocal() {
+		t.Fatal("the stored id replaced the live one")
+	}
+}
+
+func TestStoredWorkerIDOfAStateWithoutADatabaseIsEmpty(t *testing.T) {
+	if id := storedWorkerID(context.Background(), t.TempDir()); id != "" {
+		t.Fatalf("id = %q", id)
 	}
 }

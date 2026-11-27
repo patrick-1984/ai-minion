@@ -36,7 +36,7 @@ type Gate struct {
 	DefaultWorker string
 	// LocalWorker, when set, returns the id of the local Worker, and a target
 	// without a worker_id is one of its sessions (the local control socket
-	// runs it there, whatever --hub-worker says). It replaces DefaultWorker;
+	// without a --hub-worker runs it there). It replaces DefaultWorker;
 	// an error or an empty id refuses the call (fail closed).
 	LocalWorker func() (string, error)
 	// Required is set when the write tools exist only because of the

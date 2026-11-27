@@ -198,8 +198,10 @@ func (d connectorDeps) start(ctx context.Context, env *Env) (StopFunc, error) {
 		Policy:          policy,
 		Dialer:          d.dialer,
 		Clock:           d.clock,
-		Session:         transport.SessionOptions{Keepalive: transport.KeepaliveConfig{Clock: d.clock}, FrameTap: env.Settings().TrafficTap},
-		Logger:          log,
+		Session: transport.SessionOptions{Keepalive: transport.KeepaliveConfig{
+			Clock: d.clock, Interval: transport.WorkerKeepaliveInterval, DeadAfter: transport.WorkerDeadAfter,
+		}, FrameTap: env.Settings().TrafficTap},
+		Logger: log,
 	})
 	if err != nil {
 		return nil, err

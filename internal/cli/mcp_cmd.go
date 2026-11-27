@@ -190,10 +190,12 @@ func mcpWrites(allow bool, gate claudeallow.Gate) (bool, claudeallow.Gate) {
 
 // mcpGate returns the gate of the standing allow rules: the allowlist of
 // "minion claude allow", read on every call. A target that names no Worker is
-// judged as backend runs it: with a Hub, on the --hub-worker of the server
-// (the Hub backend names it in the request); on the local control socket, on
-// the local Worker, whatever --hub-worker says, so the gate asks that Worker
-// for its id.
+// judged as the backend runs it: with a Hub, on the --hub-worker of the server
+// (the Hub backend names it in the request). On the local control socket with
+// a --hub-worker, on that Worker too: the backend names it in the target of an
+// op the local Worker forwards, and runs any other op only when it is the local
+// Worker itself (localHubWorker), so the op always ends up on it. Without a
+// --hub-worker, on the local Worker, so the gate asks that Worker for its id.
 func mcpGate(cmd *cobra.Command, deps mcpDeps, backend client.Backend) (claudeallow.Gate, error) {
 	path := deps.allowlist
 	if path == "" {
@@ -207,7 +209,7 @@ func mcpGate(cmd *cobra.Command, deps mcpDeps, backend client.Backend) (claudeal
 	if err != nil {
 		return claudeallow.Gate{}, fmt.Errorf("configure the Hub backend: %w", err)
 	}
-	if cfg.Configured() {
+	if cfg.Configured() || cfg.Worker != "" {
 		return claudeallow.Gate{Path: path, DefaultWorker: cfg.Worker}, nil
 	}
 	return claudeallow.Gate{Path: path, LocalWorker: localWorkerID(backend)}, nil

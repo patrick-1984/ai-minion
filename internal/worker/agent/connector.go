@@ -245,6 +245,14 @@ type Status struct {
 	LastErrorAt time.Time
 	// ConnectedSince is set while connected.
 	ConnectedSince time.Time
+	// LastHeard is when bytes last arrived from the Hub on the current
+	// connection, the last moment the link was known to work; HeardAgo is the
+	// silence since then, measured on the monotonic clock when the snapshot
+	// was taken. Both are zero unless connected over a session that reports
+	// them. A connected state whose HeardAgo exceeds [LinkFreshWithin] is not
+	// verified: the connection may be half-open and is being checked.
+	LastHeard time.Time
+	HeardAgo  time.Duration
 	// Attempts counts connection attempts since start.
 	Attempts uint64
 	// Welcome is the welcome of the current connection (zero unless connected).
@@ -411,9 +419,11 @@ type Connector struct {
 	status   Status
 	handlers []namedHandler
 	cur      *running
-	lastLog  string // last failure that was logged at Warn, to keep a long outage quiet
-	idleLog  string // last idle reason that was logged
-	seenGen  uint64 // enrollment generation whose policy was last applied
+	// nudge asks for an immediate reconnect attempt ([Connector.Reconnect]).
+	nudge   chan string
+	lastLog string // last failure that was logged at Warn, to keep a long outage quiet
+	idleLog string // last idle reason that was logged
+	seenGen uint64 // enrollment generation whose policy was last applied
 	// alarmShown makes box M5 appear once per streak of identity refusals.
 	alarmShown bool
 	// lastTLSPath is the TLS path state of the previous connection of this
@@ -431,7 +441,21 @@ type running struct {
 	link   *Link
 	cancel context.CancelCauseFunc
 	wg     sync.WaitGroup
+	// live is the session's liveness view; nil for a session that has none.
+	live liveSession
 }
+
+// liveSession is the liveness part of *transport.Session: when the peer was
+// last heard and an active check of the link.
+type liveSession interface {
+	LastRead() time.Time
+	Probe(ctx context.Context, timeout time.Duration) error
+}
+
+// LinkFreshWithin is how recently the Hub must have been heard for a
+// connected state to count as verified. A healthy link hears the answer to
+// the Worker's own ping every [transport.WorkerKeepaliveInterval].
+const LinkFreshWithin = 45 * time.Second
 
 // facts returns the display facts of the hello, or none.
 func (c *Connector) facts() transport.WorkerFacts {
@@ -476,7 +500,7 @@ func NewConnector(cfg ConnectorConfig) (*Connector, error) {
 	if cfg.EpochPoll <= 0 {
 		cfg.EpochPoll = DefaultEpochPoll
 	}
-	c := &Connector{cfg: cfg, log: cfg.Logger, clk: cfg.Clock, bo: cfg.Backoff}
+	c := &Connector{cfg: cfg, log: cfg.Logger, clk: cfg.Clock, bo: cfg.Backoff, nudge: make(chan string, 1)}
 	if c.log == nil {
 		c.log = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
@@ -494,7 +518,46 @@ func NewConnector(cfg ConnectorConfig) (*Connector, error) {
 func (c *Connector) Status() Status {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.status
+	st := c.status
+	if st.State == ConnConnected && c.cur != nil && c.cur.live != nil {
+		st.LastHeard = c.cur.live.LastRead()
+		st.HeardAgo = max(c.clk.Now().Sub(st.LastHeard), 0)
+	}
+	return st
+}
+
+// Reconnect results.
+const (
+	// ReconnectWoken: the connector was waiting before its next attempt
+	// (or about to make one); it dials now, with a fresh backoff.
+	ReconnectWoken = "dialing"
+	// ReconnectProbing: a connection is up; it is verified with a ping now
+	// and dropped and redialled at once when the Hub does not answer.
+	ReconnectProbing = "probing"
+	// ReconnectIdle: nothing to connect to (paused, no Hub, not enrolled).
+	ReconnectIdle = "idle"
+)
+
+// Reconnect asks for an immediate reconnect attempt, for example because the
+// device's network just came back. In backoff the wait ends now and the
+// backoff starts over (at most once a minute: a nudge within a minute of the
+// last reset dials at once but keeps the backoff growing); while connected the link is probed and redialled at
+// once when it is dead (a connection that answers is kept); while connecting
+// the attempt in flight goes on (it is bounded by the dial and handshake
+// timeouts). It never blocks and never pauses or resumes anything.
+func (c *Connector) Reconnect(reason string) string {
+	st := c.Status()
+	select {
+	case c.nudge <- reason:
+	default: // one pending nudge is enough
+	}
+	switch st.State {
+	case ConnConnected:
+		return ReconnectProbing
+	case ConnIdle:
+		return ReconnectIdle
+	}
+	return ReconnectWoken
 }
 
 // OnLink registers a handler that serves every welcomed connection, now and
@@ -575,9 +638,14 @@ func (c *Connector) setOwnerID(id string) {
 	}
 }
 
+// nudgeResetEvery is the shortest time between two backoff resets by a nudge
+// ([Connector.Reconnect]).
+const nudgeResetEvery = time.Minute
+
 // Run connects and reconnects until ctx ends, then closes the connection and
 // returns. It never gives up.
 func (c *Connector) Run(ctx context.Context) {
+	var lastReset time.Time // when a nudge last reset the backoff
 	for ctx.Err() == nil {
 		if wait := c.cycle(ctx); wait {
 			c.setState(ConnBackoff)
@@ -586,6 +654,16 @@ func (c *Connector) Run(ctx context.Context) {
 			_, pauseCh := c.cfg.Pause.Paused()
 			select {
 			case <-c.clk.After(d):
+			case why := <-c.nudge:
+				c.log.Info("hub connector: reconnecting now", "reason", why)
+				// The dial is at once on every nudge, but the backoff starts
+				// over at most once per nudgeResetEvery: a device that sends a
+				// nudge on every network change must not turn a Hub that
+				// refuses or is down into a steady stream of fast attempts.
+				if now := c.clk.Now(); lastReset.IsZero() || now.Sub(lastReset) >= nudgeResetEvery {
+					lastReset = now
+					c.bo.Reset()
+				}
 			case <-pauseCh:
 				// A pause (or resume) during the backoff takes effect at once.
 			case <-ctx.Done():
@@ -1120,6 +1198,7 @@ func (c *Connector) serve(ctx context.Context, gen uint64, att *Attempt) (backof
 		Welcome: w, Version: att.Version, Session: sess, ctx: linkCtx,
 		pin: att.Pin, transcript: att.TranscriptHash, gen: gen, opPub: att.OpPub,
 	}, cancel: cancel}
+	r.live, _ = att.Session.(liveSession)
 	if guard != nil {
 		go guard.watch(linkCtx, c.clk)
 		if guard.check() {
@@ -1188,9 +1267,35 @@ func (c *Connector) serve(ctx context.Context, gen uint64, att *Attempt) (backof
 		"protocol", att.Version.String(), "hub_proto_min", w.Min.String(), "hub_proto_max", w.Max.String())
 	connectedAt := c.clk.Now()
 
+	// A nudge that came before this connection is stale.
 	select {
-	case <-att.Session.Done():
-	case <-ctx.Done():
+	case <-c.nudge:
+	default:
+	}
+	var probing atomic.Bool
+wait:
+	for {
+		select {
+		case <-att.Session.Done():
+			break wait
+		case <-ctx.Done():
+			break wait
+		case why := <-c.nudge:
+			if r.live == nil || !probing.CompareAndSwap(false, true) {
+				continue
+			}
+			go func() {
+				defer probing.Store(false)
+				if err := r.live.Probe(ctx, 0); err != nil && ctx.Err() == nil {
+					c.log.Warn("the hub link did not answer a check; reconnecting now", "reason", why)
+					// No backoff wait for this redial: the link was dead, not refused.
+					select {
+					case c.nudge <- why:
+					default:
+					}
+				}
+			}()
+		}
 	}
 	c.log.Debug("hub connection ended", "reason", causeText(att.Session.Err()),
 		"stopping", ctx.Err() != nil, "connected_for", c.clk.Now().Sub(connectedAt).String())

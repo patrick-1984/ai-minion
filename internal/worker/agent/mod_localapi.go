@@ -125,7 +125,7 @@ func (d localAPIDeps) start(_ context.Context, env *Env) (StopFunc, error) {
 	srv, err := localapi.New(localapi.Config{
 		Executor: localExecutor{
 			ex: ex, log: log, live: live, stateDir: env.Settings().StateDir, pipe: pipeSvc, calls: calls, stop: env.RequestStop,
-			instance: instance, enrollments: enrollments, pause: pause, receipts: receipts,
+			instance: instance, enrollments: enrollments, pause: pause, receipts: receipts, conn: conn,
 			master: func() masterFiles {
 				if m := masterFeature(env); m != nil {
 					return m.files
@@ -168,6 +168,8 @@ type localExecutor struct {
 	stop func()
 	// pause is the pause of the Hub traffic (OpLocalPause); nil refuses it.
 	pause *PauseService
+	// conn is the Hub connector (OpLocalReconnect); nil refuses it.
+	conn *Connector
 	// receipts is the outbox of the receipts of this Worker's pulls
 	// (files_receipts.go); nil sends each receipt once.
 	receipts *ReceiptOutbox
@@ -215,6 +217,10 @@ func (l localExecutor) Execute(ctx context.Context, rq localapi.Request, progres
 	}
 	if rq.Op == OpLocalPause {
 		raw, err := l.setPause(ctx, rq.Args)
+		return raw, l.protoError(rq.Op, err)
+	}
+	if rq.Op == OpLocalReconnect {
+		raw, err := l.reconnect(rq.Args)
 		return raw, l.protoError(rq.Op, err)
 	}
 	if rq.Op == OpLocalStatus && l.live != nil {
@@ -341,6 +347,32 @@ func EmitProgress(ctx context.Context, v any) error {
 	}
 	fn(b)
 	return nil
+}
+
+// OpLocalReconnect is the op of the local control socket that asks the
+// connector for an immediate reconnect attempt ([Connector.Reconnect]), for
+// example when the device's network came back (the Android app calls it from
+// its network callback). Args: {"reason": "..."} (optional, logged).
+// Reply: {"result": "dialing"|"probing"|"idle"}.
+const OpLocalReconnect = "worker_reconnect"
+
+func (l localExecutor) reconnect(args json.RawMessage) (json.RawMessage, error) {
+	if l.conn == nil {
+		return nil, apiErr(proto.CodeUnsupportedOp, "", "this Worker has no Hub connector")
+	}
+	var a struct {
+		Reason string `json:"reason"`
+	}
+	if len(args) != 0 && string(args) != "null" {
+		if err := json.Unmarshal(args, &a); err != nil {
+			return nil, apiErr(proto.CodeInvalidArgument, "", `the reconnect op takes {"reason": "..."}`)
+		}
+	}
+	reason := proto.SafeText(a.Reason, 64)
+	if reason == "" {
+		reason = "local request"
+	}
+	return json.Marshal(map[string]string{"result": l.conn.Reconnect(reason)})
 }
 
 // setPause serves OpLocalPause: {"paused": true|false}. The reply comes after

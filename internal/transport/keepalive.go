@@ -13,6 +13,23 @@ const (
 	KeepaliveInterval = 30 * time.Second
 	// DeadAfter is the silence after which a connection is declared dead.
 	DeadAfter = 2 * time.Minute
+
+	// WorkerKeepaliveInterval and WorkerDeadAfter are the Worker side's
+	// tighter values: a Worker (an Android TV in standby, a laptop that
+	// sleeps) is the end that loses its network, and it alone can reconnect,
+	// so it must notice a half-open connection within about a minute. The Hub
+	// keeps the AD-3 values.
+	WorkerKeepaliveInterval = 15 * time.Second
+	WorkerDeadAfter         = 60 * time.Second
+
+	// ProbeTimeout bounds [Session.Probe] and the check after a resume.
+	ProbeTimeout = 15 * time.Second
+
+	// resumeGap is how much more the wall clock must have advanced than the
+	// monotonic clock between two ticks for the monitor to conclude that the
+	// device was suspended (the monotonic clock stops during a suspend on
+	// Linux and Android, so the silence of a long standby is invisible to it).
+	resumeGap = 20 * time.Second
 )
 
 // ErrKeepaliveTimeout is the cause of a session that was closed because the
@@ -28,6 +45,12 @@ type KeepaliveConfig struct {
 	DeadAfter time.Duration
 	// Clock is the time source; nil means SystemClock.
 	Clock Clock
+	// WallNow reads the wall clock without its monotonic reading, to notice a
+	// suspend: when the wall clock moved on by more than the monotonic one
+	// between two ticks, the link is verified at once with a ping that must be
+	// answered within ProbeTimeout. Nil means time.Now().Round(0) with the
+	// SystemClock and no resume check with any other clock.
+	WallNow func() time.Time
 
 	// pingDone lets same-package tests wait until the monitor can ping again.
 	pingDone chan<- struct{}
@@ -50,9 +73,18 @@ func RunKeepalive(ctx context.Context, cfg KeepaliveConfig, lastTraffic func() t
 	if clk == nil {
 		clk = SystemClock
 	}
+	wall := cfg.WallNow
+	if wall == nil && clk == SystemClock {
+		wall = func() time.Time { return time.Now().Round(0) }
+	}
 	tk := clk.NewTicker(interval)
 	defer tk.Stop()
 	start := clk.Now() // the link counts as fresh from here, even if lastTraffic is older
+	prevMono := start
+	var prevWall time.Time
+	if wall != nil {
+		prevWall = wall()
+	}
 	var inflight atomic.Bool
 	for {
 		select {
@@ -60,12 +92,21 @@ func RunKeepalive(ctx context.Context, cfg KeepaliveConfig, lastTraffic func() t
 			return ctx.Err()
 		case <-tk.C():
 		}
+		now := clk.Now()
 		last := lastTraffic()
 		if last.Before(start) {
 			last = start
 		}
-		if clk.Now().Sub(last) >= dead {
+		if now.Sub(last) >= dead {
 			return ErrKeepaliveTimeout
+		}
+		if wall != nil {
+			w := wall()
+			resumed := w.Sub(prevWall)-now.Sub(prevMono) > resumeGap
+			prevWall, prevMono = w, now
+			if resumed && !verify(ctx, clk, last, lastTraffic, ping) {
+				return ErrKeepaliveTimeout
+			}
 		}
 		if inflight.CompareAndSwap(false, true) {
 			go func() {
@@ -80,6 +121,29 @@ func RunKeepalive(ctx context.Context, cfg KeepaliveConfig, lastTraffic func() t
 				}()
 				_ = ping() // a failed ping shows up as silence
 			}()
+		}
+	}
+}
+
+// verify pings once after a resume and reports whether the peer answered (or
+// sent anything else) within ProbeTimeout. A context that ends counts as
+// alive: the caller returns on its own.
+func verify(ctx context.Context, clk Clock, last time.Time, lastTraffic func() time.Time, ping func() error) bool {
+	res := make(chan error, 1)
+	go func() { res <- ping() }()
+	timeout := clk.After(ProbeTimeout)
+	for {
+		select {
+		case err := <-res:
+			if err == nil || lastTraffic().After(last) {
+				return true
+			}
+			// A failed ping: wait for the rest of the window for any traffic.
+			res = nil
+		case <-timeout:
+			return lastTraffic().After(last)
+		case <-ctx.Done():
+			return true
 		}
 	}
 }

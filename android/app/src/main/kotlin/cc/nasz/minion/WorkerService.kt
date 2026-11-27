@@ -10,6 +10,9 @@ import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
 import android.content.pm.ServiceInfo
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
 import android.os.Binder
 import android.os.Build
 import android.os.Handler
@@ -52,6 +55,13 @@ internal data class WorkerView(
 
 internal fun workerPreferences(context: Context): SharedPreferences =
     context.getSharedPreferences("supervisor", Context.MODE_PRIVATE)
+
+/**
+ * The Hub URL the app last saw in the Worker's report: the app's own record
+ * that a Hub is set up, so that a status read that fails or comes too early
+ * (right after a boot) is never shown as "No Hub configured". Removed by Forget.
+ */
+internal const val SAVED_HUB = "hub_url"
 
 /** Enabled (start after restarts): true unless the person chose otherwise. */
 internal fun autostartEnabled(preferences: SharedPreferences): Boolean =
@@ -101,6 +111,13 @@ class WorkerService : Service() {
     private var healthySince = 0L
     private var expectingTmux = false
     private var tmuxStartedAt = 0L
+
+    // The network callback (binder threads) records whether the device has a
+    // network; reconnect requests go through the queue.
+    @Volatile private var networkUp: Boolean? = null
+    private val nudge = ReconnectNudge()
+    private val transitions = NetworkTransitions()
+    private var networkCallback: ConnectivityManager.NetworkCallback? = null
 
     // The Android main thread owns the private Binder observer.
     private val binder = LocalBinder()
@@ -169,7 +186,7 @@ class WorkerService : Service() {
                     stoppedByUser = preferences.getBoolean(Autostart.STOPPED_BY_USER, false),
                 )
                 if (!start) return@execute
-                val configured = runCatching { !native.report()?.optString("hub_url").isNullOrBlank() }.getOrDefault(false)
+                val configured = configuredHub(runCatching { native.report() }.getOrNull()).isNotBlank()
                 // A Stop or Start pressed meanwhile wins.
                 if (configured) main.post { if (id == requestId) launch(null, null, "all") }
             }
@@ -221,7 +238,7 @@ class WorkerService : Service() {
                     native.workerCommand("config", "unset", "hub_fingerprint") &&
                     native.workerCommand("resume") }.getOrDefault(false)
                 // The override belongs to the forgotten Hub's hostname.
-                if (ok) preferences.edit().remove(HubDialOverride.PREFERENCE).commit()
+                if (ok) preferences.edit().remove(HubDialOverride.PREFERENCE).remove(SAVED_HUB).commit()
                 notice = if (ok) "" else "Could not forget the Hub. Try again."
                 report = null
                 usage = null
@@ -242,6 +259,52 @@ class WorkerService : Service() {
             NotificationChannel(CHANNEL, "Minion Worker", NotificationManager.IMPORTANCE_LOW)
         )
         queue.scheduleWithFixedDelay({ tick() }, 0, 1, TimeUnit.SECONDS)
+        watchNetwork()
+    }
+
+    // When a network becomes usable (available, or validated for the first
+    // time) the Worker is told to reconnect at once: it may still hold a
+    // half-open connection from before a standby, or wait out a long backoff,
+    // while the Hub sees it offline.
+    private fun watchNetwork() {
+        val cm = getSystemService(ConnectivityManager::class.java) ?: return
+        val callback = object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) {
+                networkUp = true
+                requestReconnect("network-available")
+            }
+
+            // Called on every capability change (signal strength, too): only
+            // the first validation of a network asks for a reconnect.
+            override fun onCapabilitiesChanged(network: Network, caps: NetworkCapabilities) {
+                val isValidated = caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+                if (isValidated) networkUp = true
+                if (transitions.capabilities(network.networkHandle, isValidated)) {
+                    requestReconnect("network-validated")
+                }
+            }
+
+            override fun onLost(network: Network) {
+                transitions.lost(network.networkHandle)
+                networkUp = cm.activeNetwork != null
+                queue.execute { publish() }
+            }
+        }
+        try {
+            cm.registerDefaultNetworkCallback(callback)
+            networkCallback = callback
+        } catch (_: RuntimeException) {
+            // Without the callback the Worker still reconnects by its own keepalive and backoff.
+        }
+    }
+
+    private fun requestReconnect(reason: String) {
+        if (!nudge.take(SystemClock.elapsedRealtime())) return
+        queue.execute {
+            if (!wanted || busy || stopping.get() || worker?.isAlive != true) return@execute
+            runCatching { native.workerCommand("reconnect", "--reason", reason) }
+            nextReport = 0
+        }
     }
 
     override fun onBind(intent: Intent?): IBinder = binder
@@ -251,7 +314,7 @@ class WorkerService : Service() {
             stopWorker()
             return START_NOT_STICKY
         }
-        showForeground("Starting")
+        showForeground(WorkerStatusLine.STARTING)
         if (intent?.action == AUTOSTART) {
             val id = requestId
             queue.execute { autostart(id, AUTOSTART_TRIES) }
@@ -281,7 +344,8 @@ class WorkerService : Service() {
             queue.schedule({ autostart(id, triesLeft - 1) }, AUTOSTART_RETRY_SECONDS, TimeUnit.SECONDS)
             return
         }
-        if (latest?.optString("hub_url").isNullOrBlank()) {
+        rememberHub(latest)
+        if (configuredHub(latest).isBlank()) {
             main.post { if (id == requestId && foreground) leaveForeground() }
         } else {
             report = latest
@@ -332,7 +396,8 @@ class WorkerService : Service() {
 
     private fun restore() {
         report = native.report()
-        if (report?.optString("hub_url").isNullOrBlank()) {
+        rememberHub(report)
+        if (configuredHub(report).isBlank()) {
             decline("Set up a Hub connection before starting the Worker.")
             return
         }
@@ -416,6 +481,7 @@ class WorkerService : Service() {
             if (wanted && !stopping.get()) supervise(now)
             if (now >= nextReport) {
                 report = native.report()
+                rememberHub(report)
                 fileTransfer = native.fileTransferMode()
                 nextReport = now + 4_000
                 updater.poll(report, wanted && !busy && !stopping.get() && worker?.isAlive == true)
@@ -497,18 +563,21 @@ class WorkerService : Service() {
         val expires = pairing?.optString("expires_at").orEmpty()
         val livePairing = pairing?.takeIf { runCatching { Instant.now().isBefore(Instant.parse(expires)) }.getOrDefault(false) }
         val paused = r?.optBoolean("paused") == true
-        val status = when {
-            busy -> "Setting up"
-            !wanted -> "Stopped"
-            paused -> "Paused"
-            r?.optString("alarm") == "hub_identity_changed" -> "Hub identity changed"
-            livePairing != null -> "Ready to pair"
-            usage?.let { it.required && !it.accepted } == true -> "Usage acceptance required"
-            worker?.isAlive != true -> "Starting"
-            connection?.optString("state") == "connected" ->
-                if (r.optString("approval") == "pending") "Awaiting Hub approval" else "Connected"
-            else -> "Connecting to the Hub"
-        }
+        val status = WorkerStatusLine.of(
+            WorkerStatusLine.Input(
+                busy = busy, wanted = wanted, paused = paused,
+                identityAlarm = r?.optString("alarm") == "hub_identity_changed",
+                pairing = livePairing != null,
+                usageRequired = usage?.let { it.required && !it.accepted } == true,
+                workerAlive = worker?.isAlive == true,
+                reportAvailable = r != null && connection != null,
+                state = connection?.optString("state").orEmpty(),
+                approvalPending = r?.optString("approval") == "pending",
+                verified = connection?.takeIf { it.has("verified") }?.optBoolean("verified"),
+                heardAgeSeconds = connection?.takeIf { it.has("last_heard_age_s") }?.optLong("last_heard_age_s"),
+                networkUp = networkUp,
+            )
+        )
         val workerWords = livePairing?.optString("worker_words").orEmpty().ifBlank {
             r?.optString("worker_fingerprint_words").orEmpty()
         }
@@ -523,7 +592,7 @@ class WorkerService : Service() {
             DeviceControl.get(this).observeShare(if (worker?.isAlive == true) share?.optString("mode") else null)
         }
         val v = WorkerView(
-            wanted, busy, status, notice, r?.optString("hub_url").orEmpty(), workerWords, hubWords,
+            wanted, busy, status, notice, configuredHub(r), workerWords, hubWords,
             r?.optBoolean("paired") == true, r?.optInt("sessions", -1)?.takeIf { it >= 0 }?.toString().orEmpty(),
             share?.optString("mode") != "none", autostartEnabled(preferences),
             livePairing?.optString("code").orEmpty(), if (livePairing != null) expires else "",
@@ -540,6 +609,18 @@ class WorkerService : Service() {
                     getSystemService(NotificationManager::class.java).notify(NOTIFICATION, notification(v.status))
                 }
             }
+        }
+    }
+
+    // The Hub the Worker reports, else the one the app saved earlier (a report
+    // that failed or came before the Worker was up says nothing about it).
+    private fun configuredHub(r: JSONObject?): String =
+        WorkerStatusLine.hub(r?.optString("hub_url"), preferences.getString(SAVED_HUB, null))
+
+    private fun rememberHub(r: JSONObject?) {
+        val hub = r?.optString("hub_url").orEmpty()
+        if (hub.isNotBlank() && preferences.getString(SAVED_HUB, null) != hub) {
+            preferences.edit().putString(SAVED_HUB, hub).apply()
         }
     }
 
@@ -587,6 +668,10 @@ class WorkerService : Service() {
     }
 
     override fun onDestroy() {
+        networkCallback?.let { cb ->
+            runCatching { getSystemService(ConnectivityManager::class.java)?.unregisterNetworkCallback(cb) }
+        }
+        networkCallback = null
         listener = null
         updater.onChange = null
         stopping.set(true)
