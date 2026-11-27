@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **Android device control (on-device adb), present but off.** A Worker in the Android app can run `minion adb status`, `shell` (remote exit code, timeout 120 s by default, at most 3600 s), `screencap` and `input` (validated `keyevent`, `text`, `tap`, `swipe`) on its own device with Android's shell rights (uid 2000), over Wireless debugging on `127.0.0.1` only: no PC, no root, no adb server, no `tcpip:`, no TCP listener. The adb client runs in the app (own Kotlin client on platform TLS 1.3, adb key in Android Keystore, SPAKE2 pairing through an Apache-2.0 JNI shim over BoringSSL 0.20261020.0, pairing code typed with the D-pad in an overlay keypad and never passed to the Worker); every new connection must prove it is the device's adbd (a uid 2000 callback) before anything is sent. Only on a dedicated, unshared Worker; enabled only on the device, disabled from the app, the Hub Worker page (**Device control** panel with **Disable**, op `adb_disable`) or any share change. Every operation is audited (`state/adb/audit.log`, Worker log, Hub panel) without commands or output. Needs Wi-Fi: Android turns Wireless debugging off without it. **Off in every build until the device gate passes:** without `-PminionDeviceControl=true` the app has no Device control entry, no extra permission and no native library, and the `adb_*` ops are Unreleased in the catalog and answer "not available in this build". Guide: docs/guides/android-device-control.md.
+- Android app: panes get `MINION_BINARY` (the path of the packaged `minion`, refreshed on every start) and an `ENV` rc file that defines the `minion` alias and then runs the owner's `~/.mkshrc`. This applies to every build.
+- Android build: `MINION_DEVICE_CONTROL=true` makes `scripts/android/build-apk.sh` and `sign-apk.sh` build and verify a device control gate RC; `verify-apk.sh` now also checks that a normal APK has no device control parts (`--device-control` for the gate RC).
+
 ## v0.23.0
 
 ### Added
