@@ -75,11 +75,15 @@ type DeviceControlStatus struct {
 	Available bool `json:"available"`
 	// Enabled is the owner's on-device choice.
 	Enabled bool `json:"enabled"`
-	// State is OFF, UNPAIRED, PAIRED, READY, WAITING_WIFI or
+	// State is OFF, UNPAIRED, PAIRED, AWAITING_AUTHORIZATION (legacy adb: the
+	// device shows "Allow debugging?"), READY, WAITING_WIFI or
 	// ENDPOINT_UNVERIFIED.
 	State string `json:"state"`
-	// Port is the adbd TLS port on 127.0.0.1.
+	// Port is the adbd port on 127.0.0.1 (5555 for legacy adb).
 	Port int `json:"port,omitempty"`
+	// Transport is "legacy-loopback" (adb on 127.0.0.1:5555, tried first) or
+	// "tls-loopback" (Wireless debugging) while connected.
+	Transport string `json:"transport,omitempty"`
 	// KeyStorage is "android-keystore (<level>)" or "app-file".
 	KeyStorage    string `json:"key_storage,omitempty"`
 	ActiveStreams int    `json:"active_streams"`

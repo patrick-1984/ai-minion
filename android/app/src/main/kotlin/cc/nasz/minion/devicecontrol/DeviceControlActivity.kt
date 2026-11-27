@@ -1,4 +1,5 @@
-// Device control screen (D-pad): enable with the plain statement, pair through the overlay keypad, manual
+// Device control screen (D-pad): enable with the plain statement, the transport in use (legacy adb on 127.0.0.1:5555
+// or Wireless debugging TLS) and the first-connection hint for the TV dialog, pair through the overlay keypad, manual
 // connection port, status, disable, Forget guidance. Declared only in -PminionDeviceControl=true builds and not
 // exported; MainActivity shows its button only when DeviceControl.available.
 // SPDX-License-Identifier: Apache-2.0
@@ -69,8 +70,8 @@ class DeviceControlActivity : Activity() {
         detail = label("", 16f, ink); page.addView(detail)
         notice = label("", 16f, Color.parseColor("#F3C969")); page.addView(notice)
         enable = button("Enable device control") { confirmEnable() }
-        pair = button("Pair (type the code from Settings)") { startPairing() }
-        port = button("Connection port") { askPort() }
+        pair = button("Pair Wireless debugging (type the code from Settings)") { startPairing() }
+        port = button("Wireless debugging connection port") { askPort() }
         disable = button("Disable device control") { control.disable("app"); notice.text = control.forgetGuidance() }
         forget = button("How to remove the authorization from Android") {
             AlertDialog.Builder(this).setTitle("Forget in Android").setMessage(control.forgetGuidance())
@@ -78,7 +79,9 @@ class DeviceControlActivity : Activity() {
         }
         for (b in listOf(enable, pair, port, disable, forget)) page.addView(b, row(10))
         page.addView(label(
-            "Needs Wi-Fi: Android turns Wireless debugging off without it. Only for a dedicated Worker that is not shared.",
+            "Uses adb on 127.0.0.1:5555 when this TV has it (no Wi-Fi needed; the first connection asks \"Allow debugging?\" " +
+                "on the TV once, tick \"Always allow\"). Otherwise Wireless debugging, which needs Wi-Fi and a pairing. " +
+                "Only for a dedicated Worker that is not shared.",
             15f, ink), row(16))
         return ScrollView(this).apply { addView(page) }
     }
@@ -89,10 +92,17 @@ class DeviceControlActivity : Activity() {
         val s = control.status()
         detail.text = buildString {
             append("State ").append(s.optString("state"))
+            when (s.optString("transport")) {
+                DeviceControl.TRANSPORT_LEGACY -> append("\nTransport legacy adb (127.0.0.1:5555)")
+                DeviceControl.TRANSPORT_TLS -> append("\nTransport Wireless debugging (TLS, 127.0.0.1:").append(s.optInt("port")).append(")")
+            }
             control.manualPort?.let { append("\nConnection port (manual) ").append(it) }
             s.optString("key_storage").takeIf { it.isNotEmpty() }?.let { append("\nKey ").append(it) }
             s.optString("key_warning").takeIf { it.isNotEmpty() }?.let { append("\n").append(it) }
             s.optString("last_error_message").takeIf { it.isNotEmpty() }?.let { append("\nLast error: ").append(it) }
+        }
+        if (s.optString("state") == DcState.AWAITING_AUTHORIZATION.name) {
+            notice.text = "First connection: look at the TV. ${LegacyConnector.CONFIRM}"
         }
         val on = control.enabled
         enable.visibility = if (on) View.GONE else View.VISIBLE
@@ -107,7 +117,7 @@ class DeviceControlActivity : Activity() {
             .setTitle("Enable device control?")
             .setMessage(
                 "Sessions of this Worker get shell-level control of this TV (install apps, change settings, read the " +
-                    "screen, send key presses) while Wireless debugging is on.\n\nOnly for a dedicated Worker that is not shared. " +
+                    "screen, send key presses) while adb is on (adb on 127.0.0.1:5555 or Wireless debugging).\n\nOnly for a dedicated Worker that is not shared. " +
                     "You can disable it here or on the Hub at any time."
             )
             .setNegativeButton("Cancel", null)

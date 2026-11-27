@@ -1,4 +1,4 @@
-// Device control: the adb client (pairing and TLS connect), loopback only.
+// Device control: the adb client (legacy connect, pairing and TLS connect), loopback only.
 // SPDX-License-Identifier: Apache-2.0
 //
 // Platform TLS only: SSLContext "TLSv1.3" from the default provider (platform Conscrypt), the TLS exporter from the
@@ -123,6 +123,13 @@ class AdbBridge(private val key: AdbKey, private val provenance: ProvenanceRegis
             throw BridgeException("endpoint_unverified", "The endpoint on port $port failed the adb handshake.")
         }
     }
+
+    /**
+     * The legacy transport (AdbLegacy.kt) on 127.0.0.1:5555, tried before TLS. Same key, same loopback-only dial and
+     * the same provenance check as the TLS path.
+     */
+    fun legacy(): LegacyConnector =
+        LegacyConnector({ dial(LegacyConnector.PORT, 5_000) }, key.privateKey, key.publicKey, AdbKeys.NAME, ::verify)
 
     /** Design 4.4: the peer must make the provider call as uid 2000 with our nonce within 5 s and exit 0. */
     private fun verify(conn: AdbConnection) {

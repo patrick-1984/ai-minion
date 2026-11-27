@@ -139,7 +139,7 @@ func writeAdbStatus(w io.Writer, d ops.DeviceControlStatus) {
 		{"Available", yes(d.Available)},
 		{"Enabled", yes(d.Enabled)},
 		{"State", orDashText(d.State)},
-		{"Transport", "tls-loopback"},
+		{"Transport", adbTransportText(d.Transport)},
 		{"Port", port},
 		{"Key storage", orDashText(d.KeyStorage)},
 		{"Active streams", fmt.Sprint(d.ActiveStreams)},
@@ -156,6 +156,16 @@ func writeAdbStatus(w io.Writer, d ops.DeviceControlStatus) {
 	for _, r := range rows {
 		_, _ = fmt.Fprintf(w, "%-15s %s\n", r[0]+":", r[1])
 	}
+}
+
+func adbTransportText(t string) string {
+	switch t {
+	case "legacy-loopback":
+		return "legacy adb (127.0.0.1:5555)"
+	case "tls-loopback":
+		return "Wireless debugging (TLS on 127.0.0.1)"
+	}
+	return "-"
 }
 
 func orDashText(s string) string {

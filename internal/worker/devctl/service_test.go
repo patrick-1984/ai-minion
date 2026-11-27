@@ -127,6 +127,7 @@ func TestPolicyRefusals(t *testing.T) {
 		{"no wifi", "android", &devctl.Status{FeatureEnabled: true, Enabled: true, State: "WAITING_WIFI"}, "none", devctl.ErrNeedsWiFi, "error:needs_wifi"},
 		{"provenance", "android", &devctl.Status{FeatureEnabled: true, Enabled: true, State: "ENDPOINT_UNVERIFIED"}, "none", devctl.ErrEndpointUnverified, "denied:provenance"},
 		{"unpaired", "android", &devctl.Status{FeatureEnabled: true, Enabled: true, State: "UNPAIRED"}, "none", devctl.ErrNotPaired, "error:not_paired"},
+		{"tv dialog open", "android", &devctl.Status{FeatureEnabled: true, Enabled: true, State: "AWAITING_AUTHORIZATION", Transport: "legacy-loopback"}, "none", devctl.ErrNeedsAuth, "error:needs_authorization"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -148,6 +149,28 @@ func TestPolicyRefusals(t *testing.T) {
 				t.Fatalf("audit %+v", rec)
 			}
 		})
+	}
+}
+
+// The legacy transport (adb on 127.0.0.1:5555) is reported and audited as
+// such; the first connection tells the owner to confirm the dialog.
+func TestLegacyTransportReportedAndAudited(t *testing.T) {
+	f := newFixture(t, "android")
+	f.fake.SetStatus(devctl.Status{FeatureEnabled: true, Enabled: true, State: devctl.StateAwaitingAuth, Transport: devctl.TransportLegacyLoopback})
+	r := f.svc.Report(context.Background())
+	if r.State != devctl.StateAwaitingAuth || r.Transport != devctl.TransportLegacyLoopback || !strings.Contains(r.Reason, "Allow debugging?") {
+		t.Fatalf("report %+v", r)
+	}
+	f.fake.SetStatus(devctl.Status{FeatureEnabled: true, Enabled: true, State: devctl.StateReady, Port: 5555, Transport: devctl.TransportLegacyLoopback})
+	if _, err := f.svc.Run(caller(1), devctl.OpShell, "id", 0, nil); err != nil {
+		t.Fatal(err)
+	}
+	if r := f.svc.Report(context.Background()); r.Transport != devctl.TransportLegacyLoopback || r.Port != 5555 || r.Reason != "" {
+		t.Fatalf("report %+v", r)
+	}
+	rec := f.svc.Recent()
+	if len(rec) != 1 || rec[0].Op != "shell" || rec[0].Transport != devctl.TransportLegacyLoopback {
+		t.Fatalf("audit %+v", rec)
 	}
 }
 

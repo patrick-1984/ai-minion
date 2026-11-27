@@ -129,7 +129,7 @@ func adbError(err error) error {
 }
 
 func toOpsStatus(r devctl.Report) ops.DeviceControlStatus {
-	return ops.DeviceControlStatus{Available: r.Available, Enabled: r.Enabled, State: r.State, Port: r.Port,
+	return ops.DeviceControlStatus{Available: r.Available, Enabled: r.Enabled, State: r.State, Port: r.Port, Transport: r.Transport,
 		KeyStorage: r.KeyStorage, ActiveStreams: r.ActiveStreams, LastOK: r.LastOK, LastError: r.LastError,
 		Shared: r.Shared, Reason: r.Reason}
 }

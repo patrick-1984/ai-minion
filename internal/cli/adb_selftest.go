@@ -129,7 +129,7 @@ func runGate(ctx context.Context, deps adbDeps) []gateLine {
 				fmt.Sprintf("fingerprint=%s sdk=%s abi=%s debuggable=%s", safeValue(v[0]), safeValue(v[1]), safeValue(v[2]), safeValue(v[3])))
 		}
 		out, code, _, err = gateShell(ctx, deps, 30, "id -u")
-		add("G3", pass(err == nil && code == 0 && strings.TrimSpace(out) == "2000"), fmt.Sprintf("id -u printed %q, exit %d %s", safeValue(out), code, errText(err)))
+		add("G3", pass(err == nil && code == 0 && strings.TrimSpace(out) == "2000"), fmt.Sprintf("id -u printed %q, exit %d %s; transport %s", safeValue(out), code, errText(err), adbTransportText(st.DeviceControl.Transport)))
 
 		_, code, _, err = gateShell(ctx, deps, 30, "sh", "-c", "exit 7")
 		add("G3b", pass(err == nil && code == 7), fmt.Sprintf("exit code %d (want 7) %s", code, errText(err)))
@@ -153,7 +153,8 @@ func runGate(ctx context.Context, deps adbDeps) []gateLine {
 
 	for _, m := range [][2]string{
 		{"G1", "before enabling: PC Test-NetConnection <tv-ip> -Port 5555 and -Port 5037; pane: toybox nc -z 127.0.0.1 5037; echo $?"},
-		{"G2", "enable on an unshared Worker, pair with the D-pad keypad; Settings lists minion@cc.nasz.minion; the pairing screen stayed open"},
+		{"G2a", "legacy adb on 127.0.0.1:5555 (getprop service.adb.tcp.port = 5555): enable, confirm \"Allow debugging?\" on the TV with Always allow; status shows legacy adb; after an app restart no dialog"},
+		{"G2", "only without a 5555 listener: enable on an unshared Worker, pair with the D-pad keypad; Settings lists minion@cc.nasz.minion; the pairing screen stayed open"},
 		{"G3d", "update to a second gate RC in place, run this selftest again: G3 passes without pairing again"},
 		{"G4", "wrong code, expired code, OS Forget (status says pair again), Wireless debugging off/on (port change), second device on the LAN"},
 		{"G5", "pane: toybox nc -l -p 40123 & ; enter 40123 as connection port: ENDPOINT_UNVERIFIED, audit denied:provenance"},

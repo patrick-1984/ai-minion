@@ -8,7 +8,7 @@ entries and a Disable button. The Hub can disable device control, never enable i
     <dt>Available</dt><dd>{{if .Status.Available}}yes{{else}}no{{end}}</dd>
     <dt>Enabled</dt><dd data-device-enabled="{{.Status.Enabled}}">{{if .Status.Enabled}}yes (enabled on the device){{else}}no{{end}}</dd>
     <dt>State</dt><dd>{{.Status.State}}{{if .Status.Reason}} - {{.Status.Reason}}{{end}}</dd>
-    <dt>Transport</dt><dd>TLS on loopback{{if .Status.Port}}, port {{.Status.Port}}{{end}}</dd>
+    <dt>Transport</dt><dd>{{if eq .Status.Transport "legacy-loopback"}}legacy adb on loopback{{else if eq .Status.Transport "tls-loopback"}}TLS on loopback{{else}}-{{end}}{{if .Status.Port}}, port {{.Status.Port}}{{end}}</dd>
     <dt>Key storage</dt><dd>{{if .Status.KeyStorage}}{{.Status.KeyStorage}}{{else}}-{{end}}</dd>
     <dt>Active streams</dt><dd>{{.Status.ActiveStreams}}</dd>
     <dt>Last ok</dt><dd>{{if .Status.LastOK}}{{.Status.LastOK}}{{else}}-{{end}}</dd>

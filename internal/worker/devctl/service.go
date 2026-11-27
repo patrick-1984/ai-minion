@@ -53,6 +53,8 @@ type Service struct {
 	nextID  int
 	lastOK  time.Time
 	lastErr string
+	// transport is the app's transport as last reported (for the audit).
+	transport string
 }
 
 // New returns a service for c.
@@ -84,8 +86,10 @@ type Report struct {
 	// Enabled is the owner's on-device choice as the app reports it.
 	Enabled bool `json:"enabled"`
 	// State is the bridge state, or OFF when the bridge is not reachable.
-	State         string `json:"state"`
-	Port          int    `json:"port,omitempty"`
+	State string `json:"state"`
+	Port  int    `json:"port,omitempty"`
+	// Transport is legacy-loopback or tls-loopback while connected.
+	Transport     string `json:"transport,omitempty"`
 	KeyStorage    string `json:"key_storage,omitempty"`
 	ActiveStreams int    `json:"active_streams"`
 	LastOK        string `json:"last_ok,omitempty"`
@@ -125,7 +129,8 @@ func (s *Service) Report(ctx context.Context) Report {
 	}
 	r.Available = st.FeatureEnabled
 	r.Enabled = st.FeatureEnabled && st.Enabled
-	r.State, r.Port, r.KeyStorage = st.State, st.Port, st.KeyStorage
+	r.State, r.Port, r.Transport, r.KeyStorage = st.State, st.Port, st.Transport, st.KeyStorage
+	s.noteTransport(st.Transport)
 	if r.State == "" {
 		r.State = StateOff
 	}
@@ -174,6 +179,8 @@ func stateCode(state string) string {
 		return ErrNotPaired
 	case StateWaitingWiFi:
 		return ErrNeedsWiFi
+	case StateAwaitingAuth:
+		return ErrNeedsAuth
 	case StateEndpointUnverified:
 		return ErrEndpointUnverified
 	}
@@ -205,6 +212,7 @@ func (s *Service) check(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	s.noteTransport(st.Transport)
 	if !st.FeatureEnabled {
 		return &Error{Code: ErrNotAvailable}
 	}
@@ -401,8 +409,24 @@ func (s *Service) fail(ctx context.Context, op string, err error, start time.Tim
 	s.audit(ctx, op, res, start)
 }
 
+// noteTransport keeps the last transport the app reported, for the audit.
+func (s *Service) noteTransport(t string) {
+	if t == "" {
+		return
+	}
+	s.mu.Lock()
+	s.transport = t
+	s.mu.Unlock()
+}
+
 func (s *Service) audit(ctx context.Context, op, result string, start time.Time) {
-	e := Entry{Op: op, Result: result, Transport: TransportTLSLoopback,
+	s.mu.Lock()
+	transport := s.transport
+	s.mu.Unlock()
+	if transport == "" {
+		transport = TransportTLSLoopback
+	}
+	e := Entry{Op: op, Result: result, Transport: transport,
 		Time: start.UTC().Format(time.RFC3339Nano), DurationMS: s.c.Now().Sub(start).Milliseconds(),
 		Actor: ActorLocal, Session: SessionUnknown}
 	if c, ok := CallerFrom(ctx); ok {

@@ -179,6 +179,18 @@ func TestAdbStatusText(t *testing.T) {
 	}
 }
 
+func TestAdbStatusShowsTheTransport(t *testing.T) {
+	f := readyWorker()
+	f.status.Transport, f.status.Port = "legacy-loopback", 5555
+	if code, out, _ := runAdb(t, f, t.TempDir(), "status"); code != 0 || !strings.Contains(out, "Transport:      legacy adb (127.0.0.1:5555)") {
+		t.Fatalf("%d\n%s", code, out)
+	}
+	f.status.Transport = "tls-loopback"
+	if code, out, _ := runAdb(t, f, t.TempDir(), "status"); code != 0 || !strings.Contains(out, "Transport:      Wireless debugging (TLS on 127.0.0.1)") {
+		t.Fatalf("%d\n%s", code, out)
+	}
+}
+
 func TestAdbSelftestGateReport(t *testing.T) {
 	f := readyWorker()
 	home := t.TempDir()

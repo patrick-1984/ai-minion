@@ -17,7 +17,7 @@ func TestWorkerDevicePanel(t *testing.T) {
 	w.OS = "android"
 	bob := wBobInfo
 	bob.OS, bob.Online = "android", true
-	on := ops.DeviceControlStatus{Available: true, Enabled: true, State: "READY", Port: 37000, KeyStorage: "app-file", ActiveStreams: 1}
+	on := ops.DeviceControlStatus{Available: true, Enabled: true, State: "READY", Port: 37000, Transport: "tls-loopback", KeyStorage: "app-file", ActiveStreams: 1}
 	f := newFakeOps().
 		reply(ops.OpWorkersList, ops.WorkersListResult{Workers: []ops.WorkerInfo{w, bob}}).
 		reply(ops.OpAdbStatus, ops.AdbStatusResult{DeviceControl: on, Audit: []ops.AdbAuditEntry{
@@ -29,7 +29,7 @@ func TestWorkerDevicePanel(t *testing.T) {
 	s, _ := listServer(t, d, d)
 
 	body := get(t, s, "/w/w1/device-control", "X-Test-Session", "alice:user").Body.String()
-	mustHave(t, body, `id="device-section"`, "READY", "port 37000", `data-control="device-disable"`, `hx-post="/w/w1/device-control"`,
+	mustHave(t, body, `id="device-section"`, "READY", "TLS on loopback, port 37000", `data-control="device-disable"`, `hx-post="/w/w1/device-control"`,
 		"Every terminal of this Worker could read it.", "exit:7", "needs a dedicated, unshared worker")
 	if strings.Index(body, "screencap") > strings.Index(body, "exit:7") {
 		t.Fatal("the audit is not newest first")

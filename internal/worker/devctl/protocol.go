@@ -78,7 +78,8 @@ const (
 const (
 	ErrNotAvailable       = "not_available"        // build without the feature flag, or API too old
 	ErrDisabled           = "disabled"             // the owner has not enabled it, or it was disabled
-	ErrNotPaired          = "not_paired"           // no pairing, or Android ended the authorization
+	ErrNotPaired          = "not_paired"           // no legacy adb and no pairing, or Android ended the authorization
+	ErrNeedsAuth          = "needs_authorization"  // legacy adb: "Allow debugging?" waits on the device
 	ErrNeedsWiFi          = "needs_wifi"           // Wireless debugging is off (no Wi-Fi)
 	ErrAmbiguous          = "ambiguous"            // several local adb endpoints, none chosen by the owner
 	ErrEndpointUnverified = "endpoint_unverified"  // the provenance check failed (DESIGN 4.4)
@@ -119,12 +120,17 @@ type Status struct {
 	FeatureEnabled bool `json:"feature_enabled"`
 	// Enabled is the owner's on-device choice.
 	Enabled bool `json:"enabled"`
-	// State is UNAVAILABLE, OFF, UNPAIRED, PAIRED (paired, not connected
-	// now), READY (connected and verified), WAITING_WIFI or
-	// ENDPOINT_UNVERIFIED (DESIGN 4.3, 4.4).
+	// State is UNAVAILABLE, OFF, UNPAIRED, PAIRED (connects on demand: paired
+	// or legacy adb seen, not connected now), AWAITING_AUTHORIZATION (legacy
+	// adb: the device shows "Allow debugging?"), READY (connected and
+	// verified), WAITING_WIFI or ENDPOINT_UNVERIFIED (DESIGN 4.3, 4.4).
 	State string `json:"state"`
-	// Port is the adbd TLS connection port on 127.0.0.1, 0 when none.
+	// Port is the adbd port on 127.0.0.1 (5555 for legacy adb, the Wireless
+	// debugging port for TLS), 0 when not connected.
 	Port int `json:"port,omitempty"`
+	// Transport is TransportLegacyLoopback or TransportTLSLoopback while
+	// connected (legacy also while the device asks), "" otherwise.
+	Transport string `json:"transport,omitempty"`
 	// KeyStorage is "android-keystore (TEE|STRONGBOX|SOFTWARE)" or "app-file".
 	KeyStorage    string `json:"key_storage,omitempty"`
 	ActiveStreams int    `json:"active_streams"`
@@ -140,6 +146,7 @@ const (
 	StateOff                = "OFF"
 	StateUnpaired           = "UNPAIRED"
 	StatePaired             = "PAIRED"
+	StateAwaitingAuth       = "AWAITING_AUTHORIZATION"
 	StateReady              = "READY"
 	StateWaitingWiFi        = "WAITING_WIFI"
 	StateEndpointUnverified = "ENDPOINT_UNVERIFIED"
@@ -182,7 +189,9 @@ func Reason(code string) string {
 	case ErrDisabled:
 		return "device control is disabled; enable it in the Minion app on the device"
 	case ErrNotPaired:
-		return "not paired: authorization ended in Android; pair again in the Minion app"
+		return "not paired: no adb on 127.0.0.1:5555 and Wireless debugging is not paired (or Android ended the authorization); pair in the Minion app"
+	case ErrNeedsAuth:
+		return "first connection: confirm \"Allow debugging?\" on the device and tick \"Always allow\", then retry"
 	case ErrNeedsWiFi:
 		return "needs Wi-Fi: Wireless debugging is off (Android turns it off without Wi-Fi)"
 	case ErrAmbiguous:

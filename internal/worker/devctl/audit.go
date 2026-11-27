@@ -22,8 +22,13 @@ const (
 	AuditProvenance = "provenance"
 )
 
-// TransportTLSLoopback is the only transport of v1.
-const TransportTLSLoopback = "tls-loopback"
+// Transports of the app's adb connection: legacy adb on 127.0.0.1:5555 (tried
+// first, no pairing, the device asks "Allow debugging?" once) and Wireless
+// debugging TLS on 127.0.0.1. Both pass the same provenance check.
+const (
+	TransportTLSLoopback    = "tls-loopback"
+	TransportLegacyLoopback = "legacy-loopback"
+)
 
 // Actors and sessions that are not a verified Hub user or a mapped session.
 const (

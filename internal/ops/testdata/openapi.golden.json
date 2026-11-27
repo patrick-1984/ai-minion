@@ -1568,6 +1568,9 @@
           },
           "state": {
             "type": "string"
+          },
+          "transport": {
+            "type": "string"
           }
         },
         "required": [
