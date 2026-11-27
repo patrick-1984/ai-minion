@@ -196,6 +196,8 @@ class AdbLegacyTest {
         val f = FakeLegacyAdbd(registry).also { fake = it }
         val a = connector(f).attempt()
         assertTrue(a is LegacyAttempt.AwaitingUser)
+        // The client returns once it has sent the key; the fake records it on its own thread.
+        assertTrue(f.dialogShown.await(5, TimeUnit.SECONDS))
         assertEquals(listOf("CNXN", "SIGNATURE", "RSAPUBLICKEY"), f.events.toList())
         // AUTH_RSAPUBLICKEY = base64(android RSA pubkey struct) + " name" + NUL (client/auth.cpp).
         val offered = String(f.offeredKeys.single(), Charsets.UTF_8)

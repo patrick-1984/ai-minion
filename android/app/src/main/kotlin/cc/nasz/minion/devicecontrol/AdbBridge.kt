@@ -8,6 +8,7 @@
 package cc.nasz.minion.devicecontrol
 
 import android.annotation.SuppressLint
+import android.annotation.TargetApi
 import android.net.ssl.SSLSockets
 import android.os.Build
 import java.io.IOException
@@ -29,6 +30,8 @@ import javax.net.ssl.X509TrustManager
 /** A failure with a stable reason code (bridge protocol `error.code`). Never carries a secret. */
 class BridgeException(val code: String, message: String) : IOException(message)
 
+// API 31 is enforced at construction (init below), and only DeviceControl.available (API 31+) builds one.
+@TargetApi(Build.VERSION_CODES.S)
 class AdbBridge(private val key: AdbKey, private val provenance: ProvenanceRegistry = ProvenanceRegistry.shared) {
     private val loopback: InetAddress = InetAddress.getByAddress("localhost", byteArrayOf(127, 0, 0, 1))
 
