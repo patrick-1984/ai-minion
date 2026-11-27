@@ -48,10 +48,12 @@ type ControlRow struct {
 	Others []ops.ControlWorker
 	// Known are session names seen on the Worker that are not masters yet.
 	Known []string
-	Saved string // "Saved" line with the undo of the last change, when set
-	Undo  *UndoView
-	Note  string // a click that changed nothing, and why
-	Error string
+	// Android is true for the Minion Android app: Install apps is offered.
+	Android bool
+	Saved   string // "Saved" line with the undo of the last change, when set
+	Undo    *UndoView
+	Note    string // a click that changed nothing, and why
+	Error   string
 }
 
 // The three forms of a stored acceptance.
@@ -66,23 +68,28 @@ const (
 type AcceptView struct {
 	Kind     string
 	Sessions []string
-	// AppsInstall is the app install flag of the row (v0.25.0).
-	AppsInstall bool
+	// FilesPull, FilesPush and AppsInstall are the three boxes of the row.
+	FilesPull, FilesPush, AppsInstall bool
 }
 
 func acceptView(a ops.ControlAccept) AcceptView {
+	v := AcceptView{Kind: acceptKindLimited, FilesPull: a.FilesPull, FilesPush: a.FilesPush, AppsInstall: a.AppsInstall}
 	switch {
 	case a.Sessions == nil:
-		return AcceptView{Kind: acceptKindAll, AppsInstall: a.AppsInstall}
+		v.Kind = acceptKindAll
 	case len(*a.Sessions) == 0:
-		return AcceptView{Kind: acceptKindNone, AppsInstall: a.AppsInstall}
+		v.Kind = acceptKindNone
+	default:
+		v.Sessions = slices.Clone(*a.Sessions)
 	}
-	return AcceptView{Kind: acceptKindLimited, Sessions: slices.Clone(*a.Sessions), AppsInstall: a.AppsInstall}
+	return v
 }
 
 // AcceptBadge marks an acceptance that is not the whole Worker.
 type AcceptBadge struct {
 	Source, Tone, Text, Label string
+	// Flags are the boxes of a limited exception (Exceptions only).
+	Flags *AcceptFlags
 }
 
 func sessionCount(n int) string {
@@ -102,15 +109,43 @@ func (r ControlRow) Seen(sourceID string) string {
 	return ops.ControlAcceptAbsent
 }
 
-// AppsInstall reports whether the acceptance of the source Worker lets its
-// master sessions install apps on this (Android) Worker (apps_install).
-func (r ControlRow) AppsInstall(sourceID string) bool { return r.States[sourceID].AppsInstall }
+// AcceptFlags are the three boxes of one actual acceptance (whole Worker or
+// limited), with the same labels as on a grant. Each box is its own form
+// that sends the acceptance as the page shows it: its state and, for a
+// limited one, its exact session list.
+type AcceptFlags struct {
+	WorkerID, SourceWorkerID string
+	Kind                     string
+	Sessions                 []string
+	Boxes                    []AcceptBox
+}
 
-// AppsInstallSettable reports whether the page sets apps_install of the
-// source Worker's acceptance: only on a whole-Worker acceptance, whose write
-// carries no session list (a limited one takes it with control_set_accept).
-func (r ControlRow) AppsInstallSettable(sourceID string) bool {
-	return r.States[sourceID].Kind == acceptKindAll
+// AcceptBox is one box of an acceptance.
+type AcceptBox struct {
+	Flag, Label, Aria string
+	On                bool
+}
+
+// Flags are the boxes of the acceptance of the source Worker; nil when there
+// is none that allows something. Install apps is offered for an Android
+// Worker, or when it is on.
+func (r ControlRow) Flags(sourceID, sourceName string) *AcceptFlags {
+	st := r.States[sourceID]
+	if st.Kind != acceptKindAll && st.Kind != acceptKindLimited {
+		return nil
+	}
+	v := &AcceptFlags{WorkerID: r.WorkerID, SourceWorkerID: sourceID, Kind: st.Kind, Sessions: st.Sessions}
+	v.Boxes = []AcceptBox{
+		{Flag: "files_pull", Label: "Receive files from target", On: st.FilesPull,
+			Aria: "Master sessions of " + sourceName + " may receive files from " + r.Name},
+		{Flag: "files_push", Label: "Send files to target", On: st.FilesPush,
+			Aria: "Master sessions of " + sourceName + " may send files to " + r.Name},
+	}
+	if r.Android || st.AppsInstall {
+		v.Boxes = append(v.Boxes, AcceptBox{Flag: "apps_install", Label: "Install apps on " + r.Name, On: st.AppsInstall,
+			Aria: "Master sessions of " + sourceName + " may install apps on " + r.Name})
+	}
+	return v
 }
 
 // OnOff is a switch as its forms send it back (if_value).
@@ -157,6 +192,7 @@ func (r ControlRow) Exceptions() []AcceptBadge {
 	var out []AcceptBadge
 	for _, o := range r.Others {
 		if b := r.Badge(o.WorkerID, o.Name); b != nil {
+			b.Flags = r.Flags(o.WorkerID, o.Name)
 			out = append(out, *b)
 		}
 	}
@@ -225,10 +261,10 @@ var controlTemplates = sync.OnceValue(func() *template.Template {
 	return template.Must(template.ParseFS(templateFiles, "templates/minion_control.html"))
 })
 
-func controlRows(res ops.ControlListResult, sessions map[string][]string) []ControlRow {
+func controlRows(res ops.ControlListResult, sessions map[string][]string, android map[string]bool) []ControlRow {
 	rows := make([]ControlRow, 0, len(res.Workers))
 	for _, w := range res.Workers {
-		r := ControlRow{ControlWorker: w, Accepted: map[string]bool{}, States: map[string]AcceptView{}}
+		r := ControlRow{ControlWorker: w, Accepted: map[string]bool{}, States: map[string]AcceptView{}, Android: android[w.WorkerID]}
 		for _, a := range w.Accepts {
 			v := acceptView(a)
 			r.States[a.SourceWorkerID] = v
@@ -261,6 +297,25 @@ func controlRows(res ops.ControlListResult, sessions map[string][]string) []Cont
 	return rows
 }
 
+// androidWorkers are the Workers the Hub knows as the Minion Android app.
+func androidWorkers(r *http.Request) map[string]bool {
+	out := map[string]bool{}
+	src := currentLiveSource()
+	if src == nil {
+		return out
+	}
+	d, err := src.Snapshot(r, true)
+	if err != nil {
+		return out
+	}
+	for _, w := range d.Workers {
+		if w.Android {
+			out[w.ID] = true
+		}
+	}
+	return out
+}
+
 // knownSessions are the session names the Hub sees on each Worker (shared
 // sessions of online Workers).
 func knownSessions(r *http.Request) map[string][]string {
@@ -289,7 +344,7 @@ func controlData(r *http.Request, c OpCaller) (any, error) {
 	}
 	now := time.Now().UnixMilli()
 	p := ControlPage{Sessions: knownSessions(r), AsOf: checkedTime(&now, "")}
-	p.Rows = controlRows(res, p.Sessions)
+	p.Rows = controlRows(res, p.Sessions, androidWorkers(r))
 	for _, row := range p.Rows {
 		p.Targets = append(p.Targets, row)
 		if row.MasterCount() > 0 {
@@ -456,33 +511,54 @@ func handleControlChange(w http.ResponseWriter, r *http.Request, c OpCaller) {
 			break // nothing to save: the row is answered as the Hub has it
 		}
 		op, args = ops.OpControlSetAccept, a
-	case "apps-install":
-		// v0.25.0: the apps_install flag of an acceptance of the whole
-		// Worker. The write keeps the acceptance as it is (accept, no list,
-		// if_state all) and sets only the flag; the Hub audits it with
-		// control_set_accept.
+	case "accept-flag":
+		// v0.26.0: one of the three boxes of an actual acceptance, whole
+		// Worker or limited. The write keeps the acceptance as the page
+		// showed it: its state, and for a limited one its exact session list
+		// (a list changed meanwhile is not written back).
 		row = f.Get("worker_id")
 		src := f.Get("source_worker_id")
+		flag := f.Get("flag")
+		words := map[string]string{"files_pull": "receive files from", "files_push": "send files to", "apps_install": "install apps on"}[flag]
+		if words == "" {
+			http.NotFound(w, r)
+			return
+		}
 		before, known := storedAccept(r, c, row, src)
 		seen := f.Get("if_state")
-		if seen == "" {
-			seen = acceptKindAll
-		}
+		kind := before.View.Kind
 		switch {
 		case !known:
 			rowErr = "Nothing was changed: the Hub could not say what this Worker accepts now. Try again."
-		case before.View.Kind != acceptKindAll || seen != acceptKindAll:
-			note = "Installing apps is set here only on an acceptance of the whole Worker. Set apps_install of a limited acceptance with the operation control_set_accept."
+		case (kind != acceptKindAll && kind != acceptKindLimited) || seen != kind ||
+			(kind == acceptKindLimited && !slices.Equal(sortedNames(f["sessions"]), sortedNames(before.View.Sessions))):
+			note = "Nothing was changed: this acceptance was changed meanwhile. This is the current state."
 		default:
-			op, args = ops.OpControlSetAccept, ops.ControlSetAcceptArgs{WriteArgs: wa, WorkerID: row, SourceWorkerID: src,
-				Accept: true, IfState: acceptKindAll, AppsInstall: &on}
-			if on {
-				saved = "Master sessions of " + before.Source + " may install apps on " + before.Target +
-					" from its Minion files folder. A first install still needs a confirmation on the device; updates of apps Minion installed do not."
-			} else {
-				saved = "Master sessions of " + before.Source + " may no longer install apps on " + before.Target + "."
+			a := ops.ControlSetAcceptArgs{WriteArgs: wa, WorkerID: row, SourceWorkerID: src, Accept: true, IfState: kind}
+			if kind == acceptKindLimited {
+				list := slices.Clone(before.View.Sessions)
+				a.Sessions = &list
 			}
-			undo = &UndoView{Action: action, Fields: map[string]string{"worker_id": row, "source_worker_id": src, "value": flip, "if_state": acceptKindAll}}
+			switch flag {
+			case "files_pull":
+				a.FilesPull = &on
+			case "files_push":
+				a.FilesPush = &on
+			default:
+				a.AppsInstall = &on
+			}
+			op, args = ops.OpControlSetAccept, a
+			if on {
+				saved = "Master sessions of " + before.Source + " may " + words + " " + before.Target + "."
+			} else {
+				saved = "Master sessions of " + before.Source + " may no longer " + words + " " + before.Target + "."
+			}
+			if flag == "apps_install" && on {
+				saved += " A first install still needs a confirmation on the device."
+			}
+			if kind == acceptKindAll {
+				undo = &UndoView{Action: action, Fields: map[string]string{"worker_id": row, "source_worker_id": src, "flag": flag, "value": flip, "if_state": kind}}
+			}
 		}
 	default:
 		http.NotFound(w, r)
@@ -502,7 +578,7 @@ func handleControlChange(w http.ResponseWriter, r *http.Request, c OpCaller) {
 	// The matrix and other rows read the same rows: ask the page to refresh
 	// them from the Hub (minion-control.js).
 	w.Header().Set("HX-Trigger", "control-changed")
-	rows := controlRows(list, knownSessions(r))
+	rows := controlRows(list, knownSessions(r), androidWorkers(r))
 	for _, cr := range rows {
 		if cr.WorkerID != row {
 			continue
@@ -582,4 +658,11 @@ func init() {
 	RegisterPage(Page{Pattern: pathMinionControl, Title: "Minion control", Template: "minion_control.html", Data: adminPageData(controlData)})
 	RegisterNav(NavItem{Label: "Minion control", Path: pathMinionControl, Order: onboardingNavOrder + 20, Roles: []authz.Role{authz.RoleAdmin}, Group: NavGroupAccess, Icon: "i-sessions"})
 	RegisterRoute(Route{Pattern: "POST " + pathMinionControl + "/{action}", Handler: adminRoute(handleControlChange)})
+}
+
+// sortedNames is a sorted copy of session names, for comparing two lists.
+func sortedNames(names []string) []string {
+	out := slices.Clone(names)
+	slices.Sort(out)
+	return out
 }

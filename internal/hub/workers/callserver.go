@@ -147,9 +147,11 @@ var _ SessionGenerations = (*EventHub)(nil)
 // that went away and came back under the name, or one the Hub does not list
 // (unknown first-seen time), is another terminal, for as long as the grant
 // exists: the fence does not lift with time or a reconnect. A wildcard target
-// (every shared session) names none. source is false for a Verified source,
-// which the incarnation identifies, not the name. A nil seen fences nothing.
-func sameSessions(seen SessionGenerations, g store.SessionGrantRow, source bool) bool {
+// (every shared session) names none, and neither does a Worker-wide or
+// everyone source (it includes sessions shared later) or a legacy source
+// pinned to one incarnation (the incarnation identifies it, not the name). A
+// nil seen fences nothing.
+func sameSessions(seen SessionGenerations, g store.SessionGrantRow) bool {
 	if seen == nil {
 		return true
 	}
@@ -157,22 +159,30 @@ func sameSessions(seen SessionGenerations, g store.SessionGrantRow, source bool)
 		at, ok := seen.FirstSeen(workerID, session)
 		return ok && at <= g.CreatedAt
 	}
-	if source && !same(g.SourceWorkerID, g.SourceSession) {
+	if g.NamedSource() && g.SourceIncarnation == "" && !same(g.SourceWorkerID, g.SourceSession) {
 		return false
 	}
 	return g.TargetSession == "" || same(g.TargetWorkerID, g.TargetSession)
 }
 
 // sameSessionGrants keeps the rows that pass [sameSessions].
-func sameSessionGrants(seen SessionGenerations, rows []store.SessionGrantRow, source bool) []store.SessionGrantRow {
+func sameSessionGrants(seen SessionGenerations, rows []store.SessionGrantRow) []store.SessionGrantRow {
 	var kept []store.SessionGrantRow
 	for _, g := range rows {
-		if sameSessions(seen, g, source) {
+		if sameSessions(seen, g) {
 			kept = append(kept, g)
 		}
 	}
 	return kept
 }
+
+// SessionShares tells whether a session of a Worker is shared with the Hub
+// now (listed and not hidden); *EventHub implements it.
+type SessionShares interface {
+	SharedSession(workerID, session string) bool
+}
+
+var _ SessionShares = (*EventHub)(nil)
 
 // TargetResolver resolves the human form of a target; *Router implements it.
 type TargetResolver interface {
@@ -668,6 +678,9 @@ var directGrantOps = map[string]bool{
 	ops.OpWorkersList: true, ops.OpSessionsList: true, ops.OpSessionSnapshot: true, ops.OpSessionCapture: true,
 	ops.OpSendText: true, ops.OpSendKeys: true, ops.OpSetTask: true, ops.OpAnswer: true,
 	ops.OpSessionKeepSet: true,
+	// v0.26.0: the file and app flags of a grant reach an ordinary session.
+	ops.OpFileList: true, ops.OpFilePull: true, ops.OpFilePush: true,
+	ops.OpAppInstall: true, ops.OpAppInstallStatus: true,
 }
 
 // authenticate decides who a call stream speaks for on the operation op. A
@@ -765,9 +778,12 @@ func (s *CallServer) lookupGrant(ctx context.Context, workerID, source string) (
 	}), nil
 }
 
-// lookupDirect returns the direct session grants of the session source on the
-// Worker (by name), nil when it has none. A grant whose named sessions are not
-// the terminals it was made for (sameSessions) is left out.
+// lookupDirect returns the direct session grants whose source selector covers
+// the session source on the Worker (by name, by its Worker or everyone), nil
+// when it has none. A grant whose named sessions are not the terminals it was
+// made for (sameSessions) is left out, and so is a Worker-wide or everyone
+// grant while the calling session is not shared: an absent, unknown or
+// unshared session never matches them.
 func (s *CallServer) lookupDirect(ctx context.Context, workerID, source string) ([]store.SessionGrantRow, error) {
 	if source == "" || s.cfg.Grants == nil {
 		return nil, nil
@@ -776,7 +792,32 @@ func (s *CallServer) lookupDirect(ctx context.Context, workerID, source string) 
 	if err != nil || s.cfg.Sessions == nil {
 		return rows, err
 	}
-	return sameSessionGrants(s.cfg.Sessions, rows, true), nil
+	rows = sameSessionGrants(s.cfg.Sessions, rows)
+	shares, _ := s.cfg.Sessions.(SessionShares)
+	shared := func() bool {
+		if shares != nil {
+			return shares.SharedSession(workerID, source)
+		}
+		_, ok := s.cfg.Sessions.FirstSeen(workerID, source)
+		return ok
+	}
+	kept := rows[:0]
+	known := -1
+	for _, g := range rows {
+		if !g.NamedSource() {
+			if known < 0 {
+				known = 0
+				if shared() {
+					known = 1
+				}
+			}
+			if known == 0 {
+				continue
+			}
+		}
+		kept = append(kept, g)
+	}
+	return kept, nil
 }
 
 // grantKey is the value the re-check of a running call compares: the stored
@@ -829,11 +870,8 @@ func directGrantsOf(rows []store.SessionGrantRow) []authz.DirectGrant {
 			ID: g.ID, TargetWorkerID: g.TargetWorkerID, TargetSession: g.TargetSession, Level: g.Level,
 			Authority: g.Authority, GrantedBy: g.GrantedBy, SourceOwnerID: g.SourceOwnerID, TargetOwnerID: g.TargetOwnerID,
 			Suspended: g.SuspendedAt != nil, CommandShell: g.CommandShell,
-			// The file flags count only for a principal with verified file
-			// authority (authz.Principal.WithVerifiedFiles).
-			FilesPull: g.FilesPull, FilesPush: g.FilesPush,
-			// So does the app install flag (v0.25.0).
-			AppsInstall: g.AppsInstall,
+			FilesPull: g.FilesPull, FilesPush: g.FilesPush, AppsInstall: g.AppsInstall,
+			AnySource: g.Scope() == store.GrantSourceEveryone,
 		}
 		if g.ExpiresAt != nil {
 			// A stored expiry always ends the grant, the zero time included.
@@ -1035,6 +1073,12 @@ func targetOfArgs(args any) (ops.Target, bool) {
 	case *ops.AnswerArgs:
 		return a.Target, true
 	case *ops.SessionKeepSetArgs:
+		return a.Target, true
+	case *ops.FileListArgs:
+		return a.Target, true
+	case *ops.FilePullArgs:
+		return a.Target, true
+	case *ops.FilePushArgs:
 		return a.Target, true
 	}
 	return ops.Target{}, false

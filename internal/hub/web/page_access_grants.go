@@ -1,16 +1,18 @@
 package web
 
-// Access > Access (session grants): which session may reach which session of
-// another Worker, and at which level. The list comes from grant_list; every
-// row action is one small form whose answer is the row as the Hub has it now
-// (never optimistic), with a status line inside the row. Adding a grant is a
-// staged form in a dialog. The operations decide what a user sees and may
-// change; this page only hides what cannot work.
+// Access > Grants (session grants): which sessions may reach which sessions
+// of another Worker, at which level, and with which of the three boxes
+// (receive files, send files, install apps). The list comes from grant_list;
+// every row action is one small form whose answer is the row as the Hub has
+// it now (never optimistic), with a status line inside the row. Adding grants
+// is one form in a dialog, saved with one button: From (one session, every
+// shared session on a Worker, or everyone), To (several sessions, or every
+// shared session on one Worker), the access and its boxes. The operations
+// decide what a user sees and may change; this page only hides what cannot
+// work.
 // Design: docs/minion-session-grants/DESIGN.md 11.3 and 11.5.
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"html/template"
@@ -47,8 +49,8 @@ type GrantsPage struct {
 	// Worker limits the list to the grants that touch one Worker (?worker=);
 	// WorkerName names it for the "Showing grants of" line.
 	Worker, WorkerName string
-	// SourceWorker and SourceSession preselect the source of the Add form
-	// (?source=<worker id>|<session>); the form then opens by itself.
+	// SourceWorker and SourceSession preselect the one source session of the
+	// Add form (?source=<worker id>|<session>); the form then opens by itself.
 	SourceWorker, SourceSession string
 }
 
@@ -70,6 +72,17 @@ type GrantWorkerOption struct {
 	Sessions        []string
 	// Codes are the session codes ("5-667") of Sessions, by name.
 	Codes map[string]string
+	// Android is true for the Minion Android app: Install apps is offered
+	// for its sessions only.
+	Android bool
+}
+
+// SessionLabel is a session as the pickers show it: its code, then its name.
+func (o GrantWorkerOption) SessionLabel(name string) string {
+	if c := o.Codes[name]; c != "" {
+		return c + " · " + name
+	}
+	return name
 }
 
 // GrantRow is one grant of the table.
@@ -91,9 +104,52 @@ type GrantRow struct {
 	// Effect is what the access matrix says about the pair of this grant.
 	Effect GrantEffect
 	// Confirm is the sentence of the second step of a change that widens
-	// access; ConfirmLevel is the level it would set.
+	// access; ConfirmLevel is the level it would set and ConfirmFlags the
+	// boxes sent with it.
 	Confirm      string
 	ConfirmLevel string
+	ConfirmFlags *grantFlags
+	// TargetAndroid is true when the target Worker is the Minion Android
+	// app: Edit offers Install apps.
+	TargetAndroid bool
+}
+
+// OffersApps is true when Edit shows the Install apps box: on an Android
+// target, or when the grant has it on.
+func (g GrantRow) OffersApps() bool { return g.TargetAndroid || g.AppsInstall }
+
+// Permissions are the enabled boxes of the grant in words.
+func (g GrantRow) Permissions() []string {
+	var out []string
+	if g.FilesPull {
+		out = append(out, "Receive files")
+	}
+	if g.FilesPush {
+		out = append(out, "Send files")
+	}
+	if g.AppsInstall {
+		out = append(out, "Install apps on "+g.TargetWorker())
+	}
+	return out
+}
+
+// SourceScopeKey is the source scope, "session" for a grant of an older Hub.
+func (g GrantRow) SourceScopeKey() string {
+	if g.SourceScope == "" {
+		return ops.GrantSourceSession
+	}
+	return g.SourceScope
+}
+
+// SourceText is the source of the grant in words.
+func (g GrantRow) SourceText() string {
+	switch g.SourceScopeKey() {
+	case ops.GrantSourceEveryone:
+		return "Everyone"
+	case ops.GrantSourceWorker:
+		return "every shared session on " + g.SourceWorker()
+	}
+	return g.SourceSession
 }
 
 // GrantEffect is the result of a grant as the access matrix has it: the
@@ -150,9 +206,10 @@ func (g GrantRow) CanRevoke() bool {
 }
 
 // CanBeShell is true for a grant whose target may be marked as a command
-// shell of its source (A116): Control on one named session.
+// shell of its source (A116): Control from one named session on one named
+// session.
 func (g GrantRow) CanBeShell() bool {
-	return g.Level == ops.GrantLevelControl && g.TargetSession != "" && !g.TargetMasked
+	return g.Level == ops.GrantLevelControl && g.TargetSession != "" && !g.TargetMasked && g.SourceScopeKey() == ops.GrantSourceSession
 }
 
 // ShellText explains a command shell mark on the row.
@@ -167,7 +224,7 @@ func (g GrantRow) Masked() bool { return g.SourceMasked || g.TargetMasked }
 // TargetText is the target of the grant in words.
 func (g GrantRow) TargetText() string {
 	if g.TargetSession == "" {
-		return "all shared sessions of " + g.TargetWorker()
+		return "every shared session on " + g.TargetWorker()
 	}
 	return g.TargetSession
 }
@@ -265,7 +322,7 @@ func (g GrantRow) FilterText() string {
 	if by == "" {
 		by = g.GrantedBy
 	}
-	return strings.Join([]string{g.SourceSession, g.SourceWorker(), g.SourceOwner, g.TargetSession, g.TargetWorker(), g.TargetOwner, g.Level, by}, " ")
+	return strings.Join([]string{g.SourceText(), g.SourceWorker(), g.SourceOwner, g.TargetSession, g.TargetWorker(), g.TargetOwner, g.Level, by}, " ")
 }
 
 // HistoryURL is the audit log of this grant (administrators only).
@@ -376,9 +433,13 @@ func grantRows(r *http.Request, c OpCaller, u pageUser, workerID string) ([]Gran
 		}
 	}
 	names := grantUserNames(r, c, u, res.Grants)
+	_, workers := grantWorkers(r, u)
 	rows := make([]GrantRow, 0, len(res.Grants))
 	for _, g := range res.Grants {
 		row := GrantRow{Grant: g, Admin: admin, Viewer: u.Username, ViewerID: u.ID, DecidedBy: names[g.GrantedBy]}
+		if o, ok := findGrantWorker(workers, g.TargetWorkerID); ok {
+			row.TargetAndroid = o.Android
+		}
 		row.Effect = grantEffect(row, matrix)
 		rows = append(rows, row)
 	}
@@ -411,7 +472,7 @@ func grantWorkers(r *http.Request, u pageUser) (sources, targets []GrantWorkerOp
 	for _, w := range d.Workers {
 		names := sessions[w.ID]
 		slices.SortFunc(names, ops.NaturalCompare)
-		o := GrantWorkerOption{ID: w.ID, Name: w.Name, Owner: w.Owner, Sessions: names, Codes: codes[w.ID]}
+		o := GrantWorkerOption{ID: w.ID, Name: w.Name, Owner: w.Owner, Sessions: names, Codes: codes[w.ID], Android: w.Android}
 		targets = append(targets, o)
 		if u.Admin || w.Owner == u.Username {
 			sources = append(sources, o)
@@ -502,6 +563,8 @@ func grantWidens(level, targetSession, sourceOwner, targetOwner string) bool {
 }
 
 // grantSentence names source, target and level of a change in one sentence.
+// sourceSession is empty for every shared session of the source Worker, and
+// sourceWorker too for everyone.
 func grantSentence(sourceSession, sourceWorker, sourceOwner, targetSession, targetWorker, targetOwner, level, until string) string {
 	who := func(worker, owner string) string {
 		if owner == "" {
@@ -520,7 +583,14 @@ func grantSentence(sourceSession, sourceWorker, sourceOwner, targetSession, targ
 	if targetSession == "" {
 		target = "every session that " + who(targetWorker, targetOwner) + " shares, now and later"
 	}
-	return sourceSession + " on " + who(sourceWorker, sourceOwner) + " will get " + grantLevelLabel(level) + ": it can " + can + " " + target + ", " + until + "."
+	source := sourceSession + " on " + who(sourceWorker, sourceOwner)
+	switch {
+	case sourceWorker == "":
+		source = "Everyone"
+	case sourceSession == "":
+		source = "Every shared session on " + who(sourceWorker, sourceOwner)
+	}
+	return source + " will get " + grantLevelLabel(level) + ": it can " + can + " " + target + ", " + until + "."
 }
 
 // writeGrantNote answers a row action without replacing the row: the text
@@ -557,6 +627,9 @@ func handleGrantChange(w http.ResponseWriter, r *http.Request, c OpCaller, u pag
 	case "add":
 		handleGrantAdd(w, r, c, u)
 		return
+	case "summary":
+		handleGrantSummary(w, r, u)
+		return
 	case "set-level", "set-shell", "revoke", "approve", "show":
 	default:
 		http.NotFound(w, r)
@@ -588,6 +661,8 @@ func handleGrantChange(w http.ResponseWriter, r *http.Request, c OpCaller, u pag
 		saved = ""
 	case "set-level":
 		level := f.Get("level")
+		// flags=1: the form carries the three boxes of Edit.
+		flagsSent, flags := f.Get("flags") == "1", formGrantFlags(f)
 		if _, ok := ops.GrantLevelRank(level); !ok {
 			writeGrantNote(w, id, "Nothing was changed: choose a level.", false)
 			return
@@ -610,23 +685,40 @@ func handleGrantChange(w http.ResponseWriter, r *http.Request, c OpCaller, u pag
 			cur.Error = "Nothing was changed: only an administrator, or the owner of both Workers of a grant an owner decided, can change its level."
 		case cur.Revision != rev:
 			cur.Error = grantConflictText
+		case flagsSent && flags.refusal(level) != "":
+			cur.Error = "Nothing was changed: " + flags.refusal(level)
 		case f.Get("confirm") != "1" && grantRank(level) > grantRank(cur.Level) && grantWidens(level, cur.TargetSession, cur.SourceOwner, cur.TargetOwner):
 			until := "with no end"
 			if cur.ExpiresAt != nil && !cur.ExpiresAt.IsZero() {
 				until = "until " + cur.UntilText()
 			}
-			cur.Confirm = grantSentence(cur.SourceSession, cur.SourceWorker(), cur.SourceOwner, cur.TargetSession, cur.TargetWorker(), cur.TargetOwner, level, until)
+			src := cur.SourceSession
+			if cur.SourceScopeKey() != ops.GrantSourceSession {
+				src = ""
+			}
+			cur.Confirm = grantSentence(src, cur.SourceWorker(), cur.SourceOwner, cur.TargetSession, cur.TargetWorker(), cur.TargetOwner, level, until)
 			cur.ConfirmLevel = level
+			if flagsSent {
+				cur.ConfirmFlags = &flags
+			}
 		}
 		if cur.Error != "" || cur.Confirm != "" {
 			writeFragmentTemplate(w, grantTemplates(), "grant_row", cur)
 			return
 		}
 		a := ops.GrantSetArgs{
-			WriteArgs: newWriteArgs(), ID: id, IfRevision: rev, Level: level,
+			WriteArgs: newWriteArgs(), ID: id, IfRevision: rev, Level: level, SourceScope: cur.SourceScope,
 			SourceWorkerID: cur.SourceWorkerID, SourceSession: cur.SourceSession,
 			TargetWorkerID: cur.TargetWorkerID, TargetSession: cur.TargetSession,
 			ExpiresAt: cur.ExpiresAtValue(), Note: cur.Note,
+		}
+		// Edit sends the boxes it shows: a cleared box is an explicit false.
+		// Install apps counts only where Edit offered it.
+		if flagsSent {
+			a.FilesPull, a.FilesPush = &flags.Pull, &flags.Push
+			if f.Get("apps_offered") == "1" {
+				a.AppsInstall = &flags.Apps
+			}
 		}
 		var res ops.GrantSetResult
 		callErr = c.CallOp(r, ops.OpGrantSet, a, &res)
@@ -658,7 +750,7 @@ func handleGrantChange(w http.ResponseWriter, r *http.Request, c OpCaller, u pag
 			return
 		}
 		a := ops.GrantSetArgs{
-			WriteArgs: newWriteArgs(), ID: id, IfRevision: rev, Level: cur.Level,
+			WriteArgs: newWriteArgs(), ID: id, IfRevision: rev, Level: cur.Level, SourceScope: cur.SourceScope,
 			SourceWorkerID: cur.SourceWorkerID, SourceSession: cur.SourceSession,
 			TargetWorkerID: cur.TargetWorkerID, TargetSession: cur.TargetSession,
 			ExpiresAt: cur.ExpiresAtValue(), Note: cur.Note, CommandShell: &on,
@@ -717,91 +809,189 @@ func handleGrantChange(w http.ResponseWriter, r *http.Request, c OpCaller, u pag
 	writeFragmentTemplate(w, grantTemplates(), "grant_row", row)
 }
 
-// grantAddConfirm is the second step of the Add dialog.
-type grantAddConfirm struct {
-	Sentence string
-	// For binds the confirmation to the values it was shown for: a form that
-	// changed afterwards is asked again.
-	For string
+// grantAdd is an Add form as it was read: the arguments of grant_set and
+// the words of its summary. Missing is the first choice still to make (the
+// form then sends nothing); Refusal a choice that cannot be saved.
+type grantAdd struct {
+	Args             ops.GrantSetArgs
+	From             string
+	To               []string
+	Device           string
+	Flags            grantFlags
+	Until            string
+	Missing, Refusal string
 }
 
-// handleGrantAdd creates one grant from the Add dialog. The target is never
-// chosen for the user: target_scope says "one" session or "all" shared
-// sessions, and without it nothing is sent.
-func handleGrantAdd(w http.ResponseWriter, r *http.Request, c OpCaller, u pageUser) {
-	f := r.PostForm
-	a := ops.GrantSetArgs{
-		WriteArgs: newWriteArgs(), SourceWorkerID: f.Get("source_worker_id"), TargetWorkerID: f.Get("target_worker_id"),
-		Level: f.Get("level"), Note: strings.TrimSpace(f.Get("note")),
+// readGrantAdd reads the Add form: From (one session, every shared session
+// on a Worker, or everyone), To (chosen sessions, or every shared session on
+// one Worker), the level with its three boxes, Until and Note. Nothing is
+// chosen for the user.
+func readGrantAdd(f url.Values, u pageUser, sources, targets []GrantWorkerOption) grantAdd {
+	g := grantAdd{Args: ops.GrantSetArgs{WriteArgs: newWriteArgs(), Level: f.Get("level"), Note: strings.TrimSpace(f.Get("note"))}}
+	a := &g.Args
+	switch f.Get("source_scope") {
+	case ops.GrantSourceSession:
+		sw, ss := splitSession(f.Get("source_session"))
+		if sw == "" || ss == "" {
+			g.Missing = "Choose the session the grant is from."
+			return g
+		}
+		a.SourceScope, a.SourceWorkerID, a.SourceSession = ops.GrantSourceSession, sw, ss
+		g.From = ss
+	case ops.GrantSourceWorker:
+		sw := f.Get("source_worker_id")
+		if sw == "" {
+			g.Missing = "Choose the Worker the grant is from."
+			return g
+		}
+		a.SourceScope, a.SourceWorkerID = ops.GrantSourceWorker, sw
+		g.From = "Every shared session on " + grantWorkerOption(sources, sw).Name
+	case ops.GrantSourceEveryone:
+		if !u.Admin {
+			g.Refusal = "Only an administrator can grant from everyone."
+			return g
+		}
+		a.SourceScope = ops.GrantSourceEveryone
+		g.From = "Everyone"
+	default:
+		g.Missing = "Choose who the grant is from."
+		return g
 	}
-	sw, ss := splitSession(f.Get("source_session"))
-	tw, ts := splitSession(f.Get("target_session"))
-	scope := f.Get("target_scope")
-	if scope == "all" {
-		tw, ts = "", ""
+	var devices []string
+	android := true
+	addTarget := func(t ops.GrantTarget) {
+		o := grantWorkerOption(targets, t.WorkerID)
+		a.Targets = append(a.Targets, t)
+		if t.SessionName == "" {
+			g.To = append(g.To, "every shared session on "+o.Name)
+		} else {
+			g.To = append(g.To, t.SessionName+" on "+o.Name)
+		}
+		android = android && o.Android
+		if !slices.Contains(devices, o.Name) {
+			devices = append(devices, o.Name)
+		}
 	}
-	_, levelOK := ops.GrantLevelRank(a.Level)
-	switch {
-	case a.SourceWorkerID == "" || ss == "":
-		writeResultError(w, "Choose the source Worker and its session.")
-		return
-	case a.TargetWorkerID == "":
-		writeResultError(w, "Choose the target Worker.")
-		return
-	case scope != "one" && scope != "all":
-		writeResultError(w, "Choose the target: one session, or every shared session of the target Worker.")
-		return
-	case scope == "one" && ts == "":
-		writeResultError(w, "Choose the target session.")
-		return
-	case sw != "" && sw != a.SourceWorkerID:
-		writeResultError(w, "The source session is not on the chosen source Worker.")
-		return
-	case tw != "" && tw != a.TargetWorkerID:
-		writeResultError(w, "The target session is not on the chosen target Worker.")
-		return
-	case !levelOK:
-		writeResultError(w, "Choose a level.")
-		return
+	switch f.Get("target_scope") {
+	case "sessions":
+		for _, v := range f["target_sessions"] {
+			if tw, ts := splitSession(v); tw != "" && ts != "" {
+				addTarget(ops.GrantTarget{WorkerID: tw, SessionName: ts})
+			}
+		}
+		if len(a.Targets) == 0 {
+			g.Missing = "Choose at least one target session."
+			return g
+		}
+	case "worker":
+		tw := f.Get("target_worker_id")
+		if tw == "" {
+			g.Missing = "Choose the target Worker."
+			return g
+		}
+		addTarget(ops.GrantTarget{WorkerID: tw})
+	default:
+		g.Missing = "Choose the target: sessions, or every shared session on one Worker."
+		return g
 	}
-	a.SourceSession, a.TargetSession = ss, ts
-	if err := grantFileFlags(&a, f); err != "" {
-		writeResultError(w, err)
-		return
+	for _, t := range a.Targets {
+		if a.SourceWorkerID != "" && t.WorkerID == a.SourceWorkerID {
+			g.Refusal = "A grant reaches another Worker: choose targets that are not on the source Worker."
+			return g
+		}
 	}
-	until, untilText := f.Get("until"), "with no end"
-	switch until {
+	if _, ok := ops.GrantLevelRank(a.Level); !ok {
+		g.Missing = "Choose the access."
+		return g
+	}
+	g.Flags = formGrantFlags(f)
+	g.Device = joinWords(devices)
+	if r := g.Flags.refusal(a.Level); r != "" {
+		g.Refusal = r
+		return g
+	}
+	if g.Flags.Apps && !android {
+		g.Refusal = "Install apps is only for targets on an Android Worker."
+		return g
+	}
+	if g.Flags.Pull {
+		a.FilesPull = &g.Flags.Pull
+	}
+	if g.Flags.Push {
+		a.FilesPush = &g.Flags.Push
+	}
+	if g.Flags.Apps {
+		a.AppsInstall = &g.Flags.Apps
+	}
+	switch until := f.Get("until"); until {
 	case "7", "30":
 		days, _ := strconv.Atoi(until)
 		a.ExpiresAt = time.Now().UTC().Add(time.Duration(days) * 24 * time.Hour).Format("2006-01-02T15:04:05.000Z")
-		untilText = "for " + until + " days"
-	default:
-		until = ""
+		g.Until = "for " + until + " days"
 	}
-	// The second step: a grant that widens access is named in one sentence
-	// and sent only when the same values come back confirmed.
+	return g
+}
+
+// Sentence is the live summary of the form.
+func (g grantAdd) Sentence() string {
+	return grantSummarySentence(g.From, g.To, g.Args.Level, g.Flags, g.Device, g.Until)
+}
+
+// handleGrantSummary answers the live one-sentence summary of the Add form.
+// It writes nothing.
+func handleGrantSummary(w http.ResponseWriter, r *http.Request, u pageUser) {
 	sources, targets := grantWorkers(r, u)
-	src, tgt := grantWorkerOption(sources, a.SourceWorkerID), grantWorkerOption(targets, a.TargetWorkerID)
-	if grantWidens(a.Level, ts, src.Owner, tgt.Owner) || fileFlagsKey(a) != "" {
-		parts := []string{a.SourceWorkerID, ss, a.TargetWorkerID, scope, ts, a.Level, until}
-		if fk := fileFlagsKey(a); fk != "" {
-			parts = append(parts, fk)
-		}
-		sum := sha256.Sum256([]byte(strings.Join(parts, "\x00")))
-		key := hex.EncodeToString(sum[:])
-		if f.Get("confirm") != "1" || f.Get("confirm_for") != key {
-			writeFragmentTemplate(w, grantTemplates(), "grant_add_confirm", grantAddConfirm{
-				Sentence: grantSentence(ss, src.Name, src.Owner, ts, tgt.Name, tgt.Owner, a.Level, untilText) + fileFlagsSentence(a), For: key})
-			return
-		}
+	g := readGrantAdd(r.PostForm, u, sources, targets)
+	switch {
+	case g.Refusal != "":
+		writeFragmentTemplate(w, grantTemplates(), "grant_summary", grantSummaryView{Text: g.Refusal, Refused: true})
+	case g.Missing != "":
+		writeFragmentTemplate(w, grantTemplates(), "grant_summary", grantSummaryView{Text: g.Missing, Missing: true})
+	default:
+		writeFragmentTemplate(w, grantTemplates(), "grant_summary", grantSummaryView{Text: g.Sentence()})
+	}
+}
+
+// grantSummaryView is the summary line of the Add form.
+type grantSummaryView struct {
+	Text             string
+	Missing, Refused bool
+}
+
+// handleGrantAdd saves the Add form in one step: one grant per target, all
+// together or none, with the boxes that were ticked. A refusal stays in the
+// form, which keeps every choice; a save closes it and reloads the list.
+func handleGrantAdd(w http.ResponseWriter, r *http.Request, c OpCaller, u pageUser) {
+	sources, targets := grantWorkers(r, u)
+	g := readGrantAdd(r.PostForm, u, sources, targets)
+	switch {
+	case g.Missing != "":
+		writeResultError(w, g.Missing)
+		return
+	case g.Refusal != "":
+		writeResultError(w, g.Refusal)
+		return
 	}
 	var res ops.GrantSetResult
-	if err := c.CallOp(r, ops.OpGrantSet, a, &res); err != nil {
+	if err := c.CallOp(r, ops.OpGrantSet, g.Args, &res); err != nil {
 		writeResultError(w, grantFailure(err, false))
 		return
 	}
-	w.Header().Set("HX-Trigger", grantsChangedEvent)
-	writeFragment(w, []byte(`<p class="grant-status" role="status">Saved</p>`))
+	ids := res.CreatedIDs
+	if len(ids) == 0 && res.Grant.ID != "" {
+		ids = []string{res.Grant.ID}
+	}
+	text := "Saved: " + g.Sentence()
+	if len(ids) > 1 {
+		text = "Saved " + strconv.Itoa(len(ids)) + " grants: " + g.Sentence()
+	}
+	// The list reloads itself and marks the saved rows; the form closes.
+	if b, err := json.Marshal(map[string]any{grantsChangedEvent: map[string]any{"ids": ids, "text": text}}); err == nil {
+		w.Header().Set("HX-Trigger", string(b))
+	} else {
+		w.Header().Set("HX-Trigger", grantsChangedEvent)
+	}
+	writeFragmentTemplate(w, grantTemplates(), "grant_saved", text)
 }
 
 // grantWorkerOption finds a Worker of the dialog; an unknown one keeps its id

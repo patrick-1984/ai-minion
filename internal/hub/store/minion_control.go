@@ -40,7 +40,20 @@ type AcceptRow struct {
 	// AppsInstall is the app install flag of the row (v0.25.0), with the
 	// same rules as the file flags.
 	AppsInstall *bool
+	// FilesPullBound, FilesPushBound and AppsInstallBound are read only: the
+	// flag was on before v0.26.0 and keeps its old restriction (it counts
+	// only for a bound master lease) until it is switched off, or switched
+	// on again from off. A put never sets them.
+	FilesPullBound, FilesPushBound, AppsInstallBound bool
 }
+
+// acceptBoundUpdate keeps the bound-only marker of each acceptance flag on a
+// put: an absent flag and a flag that stays on keep it; a flag switched off,
+// or switched on from off, clears it.
+const acceptBoundUpdate = `
+		 files_pull_bound = CASE WHEN ?6 IS NULL OR (?6 = 1 AND control_accept.files_pull = 1) THEN control_accept.files_pull_bound ELSE 0 END,
+		 files_push_bound = CASE WHEN ?7 IS NULL OR (?7 = 1 AND control_accept.files_push = 1) THEN control_accept.files_push_bound ELSE 0 END,
+		 apps_install_bound = CASE WHEN ?8 IS NULL OR (?8 = 1 AND control_accept.apps_install = 1) THEN control_accept.apps_install_bound ELSE 0 END`
 
 // WorkerControlRow is the control setting of one Worker; a Worker without a
 // row has the defaults (user-managed on, accepts nobody).
@@ -136,8 +149,8 @@ func deleteMasterSession(ctx context.Context, tx *sql.Tx, workerID, session stri
 // ListAccepts returns every acceptance, ordered by target and source.
 func (s *Store) ListAccepts(ctx context.Context) ([]AcceptRow, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT target_worker_id, source_worker_id, sessions_json, created_by, created_at, files_pull, files_push, apps_install
-		 FROM control_accept ORDER BY target_worker_id, source_worker_id`)
+		`SELECT target_worker_id, source_worker_id, sessions_json, created_by, created_at, files_pull, files_push, apps_install,
+		 files_pull_bound, files_push_bound, apps_install_bound FROM control_accept ORDER BY target_worker_id, source_worker_id`)
 	if err != nil {
 		return nil, fmt.Errorf("store: list acceptances: %w", err)
 	}
@@ -152,7 +165,8 @@ func scanAccepts(rows *sql.Rows) ([]AcceptRow, error) {
 		var a AcceptRow
 		var sess sql.NullString
 		var pull, push, apps bool
-		if err := rows.Scan(&a.TargetWorkerID, &a.SourceWorkerID, &sess, &a.CreatedBy, &a.CreatedAt, &pull, &push, &apps); err != nil {
+		if err := rows.Scan(&a.TargetWorkerID, &a.SourceWorkerID, &sess, &a.CreatedBy, &a.CreatedAt, &pull, &push, &apps,
+			&a.FilesPullBound, &a.FilesPushBound, &a.AppsInstallBound); err != nil {
 			return nil, fmt.Errorf("store: list acceptances: %w", err)
 		}
 		a.FilesPull, a.FilesPush, a.AppsInstall = &pull, &push, &apps
@@ -194,7 +208,7 @@ func (s *Store) PutAccept(ctx context.Context, a AcceptRow) error {
 		 VALUES (?, ?, ?, ?, ?, COALESCE(?6, 0), COALESCE(?7, 0), COALESCE(?8, 0))
 		 ON CONFLICT (target_worker_id, source_worker_id) DO UPDATE SET sessions_json = excluded.sessions_json, created_by = excluded.created_by,
 		 created_at = excluded.created_at, files_pull = COALESCE(?6, control_accept.files_pull), files_push = COALESCE(?7, control_accept.files_push),
-		 apps_install = COALESCE(?8, control_accept.apps_install)`,
+		 apps_install = COALESCE(?8, control_accept.apps_install),`+acceptBoundUpdate,
 		a.TargetWorkerID, a.SourceWorkerID, sess, a.CreatedBy, a.CreatedAt, acceptFlag(a.FilesPull), acceptFlag(a.FilesPush), acceptFlag(a.AppsInstall))
 	if err != nil {
 		return fmt.Errorf("store: put acceptance: %w", err)
@@ -508,7 +522,8 @@ func (s *Store) RevokeAcceptIfState(ctx context.Context, a AcceptRow, targetOwne
 			res, err = tx.ExecContext(ctx,
 				`INSERT INTO control_accept (target_worker_id, source_worker_id, sessions_json, created_by, created_at) VALUES (?, ?, '[]', ?, ?)
 				 ON CONFLICT (target_worker_id, source_worker_id) DO UPDATE SET sessions_json = excluded.sessions_json, created_by = excluded.created_by,
-				 created_at = excluded.created_at, files_pull = 0, files_push = 0, apps_install = 0`,
+				 created_at = excluded.created_at, files_pull = 0, files_push = 0, apps_install = 0,
+				 files_pull_bound = 0, files_push_bound = 0, apps_install_bound = 0`,
 				a.TargetWorkerID, a.SourceWorkerID, a.CreatedBy, a.CreatedAt)
 		} else {
 			// An explicit block ('[]') stays: it allows nothing already, and
@@ -560,7 +575,7 @@ func (s *Store) PutAcceptIfState(ctx context.Context, a AcceptRow, targetOwner, 
 			 VALUES (?, ?, ?, ?, ?, COALESCE(?6, 0), COALESCE(?7, 0), COALESCE(?8, 0))
 			 ON CONFLICT (target_worker_id, source_worker_id) DO UPDATE SET sessions_json = excluded.sessions_json, created_by = excluded.created_by,
 			 created_at = excluded.created_at, files_pull = COALESCE(?6, control_accept.files_pull), files_push = COALESCE(?7, control_accept.files_push),
-			 apps_install = COALESCE(?8, control_accept.apps_install)`,
+			 apps_install = COALESCE(?8, control_accept.apps_install),`+acceptBoundUpdate,
 			a.TargetWorkerID, a.SourceWorkerID, sess, a.CreatedBy, a.CreatedAt, acceptFlag(a.FilesPull), acceptFlag(a.FilesPush), acceptFlag(a.AppsInstall))
 		if err != nil {
 			return fmt.Errorf("store: put acceptance: %w", err)

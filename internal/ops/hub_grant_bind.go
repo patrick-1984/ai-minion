@@ -51,7 +51,7 @@ func (a GrantBindArgs) Validate() error {
 func init() {
 	// SessionOnly like grant_set: it returns the grant, declares no guards
 	// and its handler audits it.
-	Register(Op{Name: OpGrantBind, Summary: "Bind a session grant to the verified terminal of its source session, or unbind it (owner of both Workers or administrator). Browser session with a fresh sign-in only.",
+	Register(Op{Name: OpGrantBind, Summary: "Deprecated, not needed to use a grant: bind a grant for one named source session to the verified terminal of that session, or unbind it (owner of both Workers or administrator). Browser session with a fresh sign-in only.",
 		Scope: ScopeHub, Actions: MustActionSet(ActionOperate), Mutates: true, SessionOnly: true,
 		Args: reflect.TypeFor[GrantBindArgs](), Result: reflect.TypeFor[GrantSetResult]()})
 }

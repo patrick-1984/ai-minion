@@ -21,8 +21,8 @@ func (verifiedFiles) AdmitFile(context.Context, FileCall) (FileDispatch, error) 
 	return FileDispatch{}, proto.NewError(proto.CodeUnsupportedOp, "no transfers in this test")
 }
 
-func (verifiedFiles) FileAuthority(_ context.Context, p authz.Principal, verified string) (authz.Principal, error) {
-	return p.WithVerifiedFiles(verified, nil), nil
+func (verifiedFiles) FileAuthority(_ context.Context, p authz.Principal, verified string, bound bool) (authz.Principal, error) {
+	return p.WithFileAcceptances(verified, bound, nil), nil
 }
 
 // Finding (review of v0.25.0): an app_install that stood on a verified

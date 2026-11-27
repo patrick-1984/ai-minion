@@ -55,32 +55,3 @@ func TestFilesHistoryListsWhatTheOperationReturns(t *testing.T) {
 	})
 	mustHave(t, get(t, s, "/files/history", "X-Test-Session", userHeader).Body.String(), "The history could not be read: not allowed")
 }
-
-func TestGrantAddFileFlagsAreConfirmedAndSent(t *testing.T) {
-	f := newFakeOps().reply(ops.OpGrantList, grantFixture()).reply(ops.OpGrantSet, ops.GrantSetResult{Outcome: ops.OutcomeDelivered})
-	connect(t, f)
-	d := Dashboard{Workers: []WorkerRow{wPrivate, wInfra}, Sessions: []SessionRow{sAgent, sShell}}
-	s, _ := listServer(t, d, d)
-	add := url.Values{"source_worker_id": {"w1"}, "source_session": {"w1|fix-tests"}, "target_worker_id": {"w1"},
-		"target_scope": {"one"}, "target_session": {"w1|ci"}, "level": {"view"}, "files_push": {"1"}}
-	rec := post(t, s, pathAccessGrants+"/add", adminHeader, add)
-	mustHave(t, rec.Body.String(), "Pushing files needs the level Control.")
-	add.Del("files_push")
-	add.Set("files_pull", "1")
-	rec = post(t, s, pathAccessGrants+"/add", adminHeader, add)
-	mustHave(t, rec.Body.String(), "It may also copy files out of the target session")
-	if len(f.called(ops.OpGrantSet)) != 0 {
-		t.Fatal("a grant with file flags was saved without the confirmation")
-	}
-	key := grantConfirmKeyForTest("w1", "fix-tests", "w1", "one", "ci", "view", "", "files:pull")
-	add.Set("confirm", "1")
-	add.Set("confirm_for", key)
-	post(t, s, pathAccessGrants+"/add", adminHeader, add)
-	calls := f.called(ops.OpGrantSet)
-	if len(calls) != 1 || calls[0].Args["files_pull"] != true || calls[0].Args["files_push"] != nil {
-		t.Fatalf("calls = %+v", calls)
-	}
-	// The dialog offers both flags unchecked.
-	body := get(t, s, pathAccessGrants, "X-Test-Session", adminHeader).Body.String()
-	mustHave(t, body, `<input type="checkbox" name="files_pull" id="grant-add-files-pull" value="1">`, `<input type="checkbox" name="files_push" id="grant-add-files-push" value="1">`)
-}

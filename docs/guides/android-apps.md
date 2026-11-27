@@ -43,8 +43,8 @@ minion apps status --target <android-worker>
 - The Hub authorizes and audits every install. With `MINION_HUB_URL` and
   `MINION_API_KEY_FILE` the commands call the Hub with that key. Without them,
   in a session of another Worker, the local Worker sends the request to its
-  Hub on the master lane: it is allowed for a verified session whose grant or
-  master acceptance has `apps_install` (see [Who may install](#who-may-install)).
+  Hub: it is allowed for a session whose grant or master acceptance has the
+  box **Install apps** (`apps_install`, see [Who may install](#who-may-install)).
   A session on the Android device itself is refused (see
   [Security trade-offs](#security-trade-offs)).
 - Exit status of `install`: 0 for `installed`, `needs_confirmation_on_device`
@@ -126,17 +126,20 @@ SHA-256, the APK's SHA-256 and size, and whether it is a new install.
 | Administrator | every Android Worker |
 | Owner | own Android Workers |
 | API key | only when its scope names the action `app_install`; a key with "everything", a wildcard or the file actions has none |
-| Session on another Worker | only through a **Verified** Control grant or master acceptance with the flag **apps_install** (default off), on the master lane: `minion apps install` (or the MCP tool) in the session, without a Hub API key, goes there through the local Worker. `files_push` never implies it. A session without a verified source (a claimed one) is refused with a message that says how to get one |
+| Session on another Worker | only through a Control grant or master acceptance with the box **Install apps on** the device (`apps_install`, default off): `minion apps install` (or the MCP tool) in the session, without a Hub API key, goes there through the local Worker. **Send files to target** never implies it. A session without such a grant or acceptance is refused with `forbidden` |
 | Worker identity | none |
 | A session on the Android device itself (local socket) | none: the Worker refuses `app_install` that does not come through the Hub |
 
-Set `apps_install` on a grant on **Access > Grants** (or with `grant_set`
-after `grant_bind`), and on a master acceptance on **Access > Minion control**
-(administrators: the box **may install apps** next to a Worker that the
-Android Worker accepts as a whole; a limited acceptance takes it with
-`control_set_accept`).
+Tick **Install apps on** the device when you add the grant on **Access >
+Grants > Add grant** (it is offered once the chosen targets are on an Android
+Worker, and needs Control), or later with **Edit** on the grant's row. The
+grant is saved and usable in that one step. For nominated master sessions,
+administrators tick the same box under the accepted Worker on **Access >
+Minion control**, on a whole-Worker or a limited acceptance (the session list
+stays as it is).
 
-From a session on Worker A, with a grant of A's session bound to it:
+From a session on Worker A, with a Control grant to the Android Worker that
+has **Install apps** ticked (and **Send files to target** for the push):
 
 ```sh
 minion files push --target <android-worker-id>:<session> ./example.apk

@@ -566,7 +566,7 @@ func AcceptanceID(target, source string) string { return target + "/" + source }
 // a row has none.
 func (s *Store) FileAcceptances(ctx context.Context, source string) ([]AcceptRow, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT target_worker_id, source_worker_id, sessions_json, created_by, created_at,
-		files_pull, files_push, apps_install FROM control_accept WHERE source_worker_id = ? AND (files_pull = 1 OR files_push = 1 OR apps_install = 1)
+		files_pull, files_push, apps_install, files_pull_bound, files_push_bound, apps_install_bound FROM control_accept WHERE source_worker_id = ? AND (files_pull = 1 OR files_push = 1 OR apps_install = 1)
 		ORDER BY target_worker_id`, source)
 	if err != nil {
 		return nil, fmt.Errorf("store: list file acceptances: %w", err)

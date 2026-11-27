@@ -137,7 +137,7 @@ func (m *MasterControl) authorityLocked(check context.Context, c Call, l *master
 	out.direct, out.key = direct, directDigest(direct, now)
 	for _, g := range direct {
 		if g.SuspendedAt != nil || g.ExpiresAt != nil && !now.Before(time.UnixMilli(*g.ExpiresAt)) ||
-			g.SourceOwnerID != l.info.OwnerID || g.TargetWorkerID == c.Worker.ID {
+			g.Scope() != store.GrantSourceEveryone && g.SourceOwnerID != l.info.OwnerID || g.TargetWorkerID == c.Worker.ID {
 			continue
 		}
 		if g.TargetSession == "" {
@@ -163,7 +163,7 @@ func (m *MasterControl) verifiedGrantsLocked(check context.Context, lease master
 	if err != nil {
 		return nil, masterAuthorityError(err)
 	}
-	return sameSessionGrants(m.events, rows, false), nil
+	return sameSessionGrants(m.events, rows), nil
 }
 
 func masterAuthorityError(err error) error {

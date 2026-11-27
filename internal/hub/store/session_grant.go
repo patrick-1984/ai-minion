@@ -61,6 +61,9 @@ type GrantWrite struct {
 	// commit. A nil Receipt, or a nil row, stores none; an error refuses the
 	// change.
 	Receipt func(now SessionGrantRow) (*OpRequestRow, error)
+	// ReceiptMany is the Receipt of [Store.PutSessionGrants]: the stored
+	// answer of the request from every grant it created.
+	ReceiptMany func(now []SessionGrantRow) (*OpRequestRow, error)
 }
 
 // audit writes the audit row and the request receipt of a change inside tx.
@@ -194,12 +197,56 @@ const (
 	GrantAuthorityAdmin = "admin"
 )
 
+// Grant source scopes (source_scope): which calling sessions a grant is for.
+const (
+	// GrantSourceSession is one named session of the source Worker.
+	GrantSourceSession = "session"
+	// GrantSourceWorker is every shared session of the source Worker.
+	GrantSourceWorker = "worker"
+	// GrantSourceEveryone is every shared session of every eligible Worker:
+	// no source Worker, session or source owner; admin authority only.
+	GrantSourceEveryone = "everyone"
+)
+
+// GrantSourceAudit is the audit source of a grant's source selector:
+// "<worker>:<session>", "<worker>:*" for every shared session of the source
+// Worker, "*" for everyone.
+func GrantSourceAudit(g SessionGrantRow) string {
+	switch g.Scope() {
+	case GrantSourceEveryone:
+		return "*"
+	case GrantSourceWorker:
+		return g.SourceWorkerID + ":*"
+	}
+	return g.SourceWorkerID + ":" + g.SourceSession
+}
+
+// Scope is the source scope of g; a row written without one (an older
+// caller) is a one-session grant.
+func (g SessionGrantRow) Scope() string {
+	if g.SourceScope == "" {
+		return GrantSourceSession
+	}
+	return g.SourceScope
+}
+
+// NamedSource reports whether g is for one named source session (and so
+// ends with it, and is fenced by its name), not a whole Worker or everyone.
+func (g SessionGrantRow) NamedSource() bool { return g.Scope() == GrantSourceSession }
+
 // SessionGrantRow is one row of session_grant. Times are unix milliseconds.
 type SessionGrantRow struct {
-	ID                string
-	SourceWorkerID    string
-	SourceSession     string
-	SourceIncarnation string // "" = identified by name
+	ID string
+	// SourceScope is GrantSourceSession, GrantSourceWorker or
+	// GrantSourceEveryone; "" on a write is GrantSourceSession.
+	SourceScope string
+	// SourceWorkerID is "" for everyone; SourceSession is "" unless the
+	// scope is one session.
+	SourceWorkerID string
+	SourceSession  string
+	// SourceIncarnation is "" for every grant made since v0.26.0; a value is
+	// a legacy restriction of a bound grant to one terminal incarnation.
+	SourceIncarnation string
 	TargetWorkerID    string
 	TargetSession     string // "" = every shared session of the target Worker
 	Level             int    // 1 View, 2 Message, 3 Control
@@ -217,12 +264,10 @@ type SessionGrantRow struct {
 	// CommandShell marks the target session as a command shell of the source
 	// session (A116): only on a Control grant that names one target session.
 	CommandShell bool
-	// FilesPull and FilesPush are the file transfer flags (files.v1): only on
-	// a verified grant (SourceIncarnation set), FilesPush only at Control.
-	// Unbinding the grant clears them.
+	// FilesPull and FilesPush are the file transfer flags (files.v1),
+	// FilesPush only at Control.
 	FilesPull, FilesPush bool
-	// AppsInstall is the app install flag (v0.25.0): only on a verified
-	// grant at Control. Unbinding the grant clears it.
+	// AppsInstall is the app install flag (v0.25.0), only at Control.
 	AppsInstall bool
 }
 
@@ -233,7 +278,7 @@ type SessionGrantFilter struct {
 	OwnerID  string
 }
 
-const sessionGrantCols = `id, source_worker_id, source_session, source_incarnation, target_worker_id, target_session,
+const sessionGrantCols = `id, source_scope, COALESCE(source_worker_id, ''), source_session, source_incarnation, target_worker_id, target_session,
 	level, authority, granted_by, source_owner_id, target_owner_id, note, expires_at, revision, created_at, updated_at,
 	suspended_at, suspend_cause, command_shell, files_pull, files_push, apps_install`
 
@@ -241,7 +286,7 @@ func scanSessionGrant(sc rowScanner) (SessionGrantRow, error) {
 	var g SessionGrantRow
 	var exp, sus sql.NullInt64
 	var rev, shell, pull, push, apps int64
-	err := sc.Scan(&g.ID, &g.SourceWorkerID, &g.SourceSession, &g.SourceIncarnation, &g.TargetWorkerID, &g.TargetSession,
+	err := sc.Scan(&g.ID, &g.SourceScope, &g.SourceWorkerID, &g.SourceSession, &g.SourceIncarnation, &g.TargetWorkerID, &g.TargetSession,
 		&g.Level, &g.Authority, &g.GrantedBy, &g.SourceOwnerID, &g.TargetOwnerID, &g.Note, &exp, &rev, &g.CreatedAt,
 		&g.UpdatedAt, &sus, &g.SuspendCause, &shell, &pull, &push, &apps)
 	g.CommandShell = shell != 0
@@ -277,9 +322,11 @@ func sessionGrantByID(ctx context.Context, q sessionGrantQuerier, id string) (Se
 // pinGrantOwners refuses a grant whose Workers are missing, not approved or
 // not owned as the row says, and an owner grant across two owners.
 func pinGrantOwners(ctx context.Context, tx *sql.Tx, g SessionGrantRow) error {
-	for _, side := range []struct{ worker, owner string }{
-		{g.SourceWorkerID, g.SourceOwnerID}, {g.TargetWorkerID, g.TargetOwnerID},
-	} {
+	sides := []struct{ worker, owner string }{{g.TargetWorkerID, g.TargetOwnerID}}
+	if g.Scope() != GrantSourceEveryone {
+		sides = append(sides, struct{ worker, owner string }{g.SourceWorkerID, g.SourceOwnerID})
+	}
+	for _, side := range sides {
 		var owner, approval string
 		err := tx.QueryRowContext(ctx, `SELECT owner_id, approval FROM workers WHERE id = ?`, side.worker).Scan(&owner, &approval)
 		if errors.Is(err, sql.ErrNoRows) {
@@ -324,36 +371,8 @@ func (s *Store) PutSessionGrant(ctx context.Context, row SessionGrantRow, ifRevi
 			if ifRevision != 0 {
 				return ErrNotFound
 			}
-			if row.SourceWorkerID == row.TargetWorkerID {
-				return fmt.Errorf("%w: source and target on the same Worker", ErrGrantInvalid)
-			}
-			if err := pinGrantOwners(ctx, tx, row); err != nil {
+			if err := createSessionGrantTx(ctx, tx, &row, now, w); err != nil {
 				return err
-			}
-			row.GrantedBy = w.ActorID
-			if err := grantActorMay(ctx, tx, w, row, false); err != nil {
-				return err
-			}
-			created := row.CreatedAt
-			if created == 0 {
-				created = now
-			}
-			_, err := tx.ExecContext(ctx, `INSERT INTO session_grant (id, source_worker_id, source_session, source_incarnation,
-				target_worker_id, target_session, level, authority, granted_by, source_owner_id, target_owner_id, note,
-				expires_at, revision, created_at, updated_at, command_shell, files_pull, files_push, apps_install) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,1,?,?,?,?,?,?)`,
-				row.ID, row.SourceWorkerID, row.SourceSession, row.SourceIncarnation, row.TargetWorkerID, row.TargetSession,
-				row.Level, row.Authority, row.GrantedBy, row.SourceOwnerID, row.TargetOwnerID, row.Note,
-				nullInt64(row.ExpiresAt), created, now, boolInt(row.CommandShell), boolInt(row.FilesPull), boolInt(row.FilesPush),
-				boolInt(row.AppsInstall))
-			if err != nil {
-				msg := err.Error()
-				switch {
-				case strings.Contains(msg, "UNIQUE constraint"):
-					return ErrGrantExists
-				case strings.Contains(msg, "CHECK constraint"):
-					return fmt.Errorf("%w: %v", ErrGrantInvalid, err)
-				}
-				return fmt.Errorf("store: create session grant: %w", err)
 			}
 		case err != nil:
 			return err
@@ -385,6 +404,112 @@ func (s *Store) PutSessionGrant(ctx context.Context, row SessionGrantRow, ifRevi
 	})
 	if err != nil {
 		return SessionGrantRow{}, err
+	}
+	return out, nil
+}
+
+// createSessionGrantTx checks and inserts the new grant row inside tx: the
+// shape of its source selector, both Workers' owners and approvals and the
+// authority of the acting user. row.GrantedBy becomes w.ActorID.
+func createSessionGrantTx(ctx context.Context, tx *sql.Tx, row *SessionGrantRow, now int64, w GrantWrite) error {
+	row.SourceScope = row.Scope()
+	switch row.SourceScope {
+	case GrantSourceSession:
+	case GrantSourceWorker:
+		row.SourceSession, row.SourceIncarnation = "", ""
+	case GrantSourceEveryone:
+		row.SourceWorkerID, row.SourceSession, row.SourceIncarnation, row.SourceOwnerID = "", "", "", ""
+		if row.Authority != GrantAuthorityAdmin {
+			return fmt.Errorf("%w: a grant for everyone needs admin authority", ErrGrantInvalid)
+		}
+	default:
+		return fmt.Errorf("%w: unknown source scope", ErrGrantInvalid)
+	}
+	if row.SourceWorkerID == row.TargetWorkerID {
+		return fmt.Errorf("%w: source and target on the same Worker", ErrGrantInvalid)
+	}
+	if err := pinGrantOwners(ctx, tx, *row); err != nil {
+		return err
+	}
+	row.GrantedBy = w.ActorID
+	if err := grantActorMay(ctx, tx, w, *row, false); err != nil {
+		return err
+	}
+	created := row.CreatedAt
+	if created == 0 {
+		created = now
+	}
+	var source any
+	if row.SourceWorkerID != "" {
+		source = row.SourceWorkerID
+	}
+	_, err := tx.ExecContext(ctx, `INSERT INTO session_grant (id, source_scope, source_worker_id, source_session, source_incarnation,
+		target_worker_id, target_session, level, authority, granted_by, source_owner_id, target_owner_id, note,
+		expires_at, revision, created_at, updated_at, command_shell, files_pull, files_push, apps_install) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?,?,?,?,?,?)`,
+		row.ID, row.SourceScope, source, row.SourceSession, row.SourceIncarnation, row.TargetWorkerID, row.TargetSession,
+		row.Level, row.Authority, row.GrantedBy, row.SourceOwnerID, row.TargetOwnerID, row.Note,
+		nullInt64(row.ExpiresAt), created, now, boolInt(row.CommandShell), boolInt(row.FilesPull), boolInt(row.FilesPush),
+		boolInt(row.AppsInstall))
+	if err != nil {
+		msg := err.Error()
+		switch {
+		case strings.Contains(msg, "UNIQUE constraint"):
+			return ErrGrantExists
+		case strings.Contains(msg, "CHECK constraint"):
+			return fmt.Errorf("%w: %v", ErrGrantInvalid, err)
+		}
+		return fmt.Errorf("store: create session grant: %w", err)
+	}
+	return nil
+}
+
+// PutSessionGrants creates several grants in one transaction: each is
+// checked and inserted as by [Store.PutSessionGrant] (ifRevision 0), with the
+// audit row of w for each. Either all of them commit or none does. The
+// request receipt is w.ReceiptMany of the rows as stored, written once in the
+// same transaction (w.Receipt is not used). It returns the rows as stored, in
+// the order given.
+func (s *Store) PutSessionGrants(ctx context.Context, rows []SessionGrantRow, w GrantWrite) ([]SessionGrantRow, error) {
+	if len(rows) == 0 {
+		return nil, fmt.Errorf("%w: no grant", ErrGrantInvalid)
+	}
+	now := time.Now().UnixMilli()
+	var out []SessionGrantRow
+	err := s.Tx(ctx, func(tx *sql.Tx) error {
+		out = make([]SessionGrantRow, 0, len(rows))
+		one := w
+		one.Receipt = nil
+		for _, row := range rows {
+			if row.ID == "" {
+				row.ID = NewID()
+			}
+			if err := createSessionGrantTx(ctx, tx, &row, now, w); err != nil {
+				return err
+			}
+			g, err := sessionGrantByID(ctx, tx, row.ID)
+			if err != nil {
+				return err
+			}
+			if err := one.audit(ctx, s, tx, nil, g); err != nil {
+				return err
+			}
+			out = append(out, g)
+		}
+		if w.ReceiptMany == nil {
+			return nil
+		}
+		r, err := w.ReceiptMany(out)
+		if err != nil || r == nil {
+			return err
+		}
+		if r.CreatedAt == 0 {
+			r.CreatedAt = now
+		}
+		_, err = putOpRequestTx(ctx, tx, *r)
+		return err
+	})
+	if err != nil {
+		return nil, err
 	}
 	return out, nil
 }
@@ -517,12 +642,32 @@ func (s *Store) ListSessionGrants(ctx context.Context, f SessionGrantFilter) ([]
 	return s.querySessionGrants(ctx, where, args...)
 }
 
-// SessionGrantsFor returns the grants of one source session that is
-// identified by its name (source_incarnation ”). It is one read; expired and
+// SessionGrantsFor returns the grants whose source selector names the session
+// sourceSession of sourceWorkerID by name: the one-session grants of that
+// name with no legacy incarnation pin, the grants for every shared session
+// of that Worker, and the grants for everyone whose target is on another
+// Worker. Whether the session is shared, which a Worker-wide or everyone
+// selector needs, is the caller's question. It is one read; expired and
 // suspended rows are included, the caller judges them.
 func (s *Store) SessionGrantsFor(ctx context.Context, sourceWorkerID, sourceSession string) ([]SessionGrantRow, error) {
-	return s.querySessionGrants(ctx, `WHERE source_worker_id = ? AND source_session = ? AND source_incarnation = ''`,
-		sourceWorkerID, sourceSession)
+	if sourceWorkerID == "" || sourceSession == "" {
+		return nil, nil
+	}
+	return s.querySessionGrants(ctx, `WHERE `+grantSourceMatch(""), sourceWorkerID, sourceSession)
+}
+
+// grantSourceMatch is the condition of the grants whose source selector
+// covers the session ?1:?2 (worker id, session name): by name, by its Worker,
+// or everyone on another Worker. incarnation, when not "", is the SQL
+// parameter of a bound incarnation whose legacy pinned grants count too.
+func grantSourceMatch(incarnation string) string {
+	pin := `source_incarnation = ''`
+	if incarnation != "" {
+		pin = `source_incarnation IN ('', ` + incarnation + `)`
+	}
+	return `((source_scope = 'session' AND source_worker_id = ?1 AND source_session = ?2 AND ` + pin + `)
+		OR (source_scope = 'worker' AND source_worker_id = ?1)
+		OR (source_scope = 'everyone' AND target_worker_id <> ?1))`
 }
 
 // PurgeSessionGrants deletes the grants that name a gone session of workerID
@@ -549,7 +694,7 @@ func (s *Store) PurgeSessionGrants(ctx context.Context, workerID string, goneNam
 }
 
 func purgeSessionGrants(ctx context.Context, tx *sql.Tx, workerID string, gone func(string) bool, asOf int64) (int64, error) {
-	rows, err := tx.QueryContext(ctx, `SELECT id, source_worker_id, source_session, target_worker_id, target_session
+	rows, err := tx.QueryContext(ctx, `SELECT id, COALESCE(source_worker_id, ''), source_session, target_worker_id, target_session
 		FROM session_grant WHERE (source_worker_id = ? OR target_worker_id = ?) AND created_at < ?`, workerID, workerID, asOf)
 	if err != nil {
 		return 0, fmt.Errorf("store: purge session grants: %w", err)
@@ -561,7 +706,8 @@ func purgeSessionGrants(ctx context.Context, tx *sql.Tx, workerID string, gone f
 			_ = rows.Close()
 			return 0, err
 		}
-		if (sw == workerID && gone(ss)) || (tw == workerID && ts != "" && gone(ts)) {
+		// A Worker-wide or everyone source names no session (ss is '').
+		if (sw == workerID && ss != "" && gone(ss)) || (tw == workerID && ts != "" && gone(ts)) {
 			drop = append(drop, id)
 		}
 	}

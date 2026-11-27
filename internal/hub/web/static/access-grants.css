@@ -24,7 +24,7 @@
   .grant-table td.grant-actions { white-space: nowrap; }
   .grant-actions .row-actions, .grant-actions .row-actions form { flex-wrap: nowrap; }
 }
-/* below 1100 px the eight columns do not fit: one card per grant, as on a phone */
+/* below 1100 px the columns do not fit: one card per grant, as on a phone */
 @media (max-width: 1099px) {
   .grant-table thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
   .grant-table, .grant-table tbody, .grant-table tr, .grant-table td { display: block; }
@@ -38,4 +38,17 @@
 .grant-form .choice { min-height: 24px; align-items: center; }
 .grant-form .grant-level { min-height: 24px; align-items: flex-start; }
 .grant-form .grant-level > span { padding-top: 2px; }
+/* Add form and Edit: the picker of a scope under its choice, the three boxes under the level, the summary */
+.grant-form .grant-pick { display: grid; gap: 4px; margin: 0 0 8px 32px; }
+.grant-form .grant-pick select[multiple] { min-height: 8rem; }
+.grant-form fieldset > .help[data-grant-for] { margin: 0 0 8px 32px; }
+.grant-boxes { display: grid; gap: 4px; margin-top: 8px; }
+.grant-boxes .check { display: flex; gap: 8px; align-items: center; min-height: 24px; font-weight: 400; }
+.grant-boxes .grant-needs-control { margin: 0; }
+.grant-summary { margin: 8px 0; }
+.grant-summary-refused { color: var(--danger); }
+.grant-table tr[data-saved] td { background: var(--positive-subtle); }
+.grant-edit-form { display: grid; gap: 6px; justify-items: start; padding: 6px 0; }
+.grant-details p { margin: 4px 0; }
+.grant-effect { display: block; margin-top: 4px; }
 /* end access: grants, second step and row states */

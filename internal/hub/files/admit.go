@@ -111,17 +111,17 @@ func (s *Service) AdmitFile(ctx context.Context, c workers.FileCall) (workers.Fi
 		id: ops.NewUUIDv7(), direction: req.direction, kind: req.kind, path: req.path,
 		targetWorker: c.WorkerID, targetSession: c.Session,
 		callerID:  identityOf(c.Principal),
-		principal: c.Principal, verified: c.VerifiedSession, refresh: c.Refresh,
+		principal: c.Principal, verified: c.CallerSession, bound: c.Bound, refresh: c.Refresh,
 		web:  c.Principal.Kind == authz.KindBrowserSession || c.Principal.Kind == authz.KindActAs,
 		size: req.size,
 	}
 	if c.Principal.Kind == authz.KindWorker {
-		t.callerWorker, t.callerSession = c.Principal.WorkerID, c.VerifiedSession
+		t.callerWorker, t.callerSession = c.Principal.WorkerID, c.CallerSession
 		t.callerConn = s.cfg.Conn(t.callerWorker)
 	}
 	row := s.baseRow(t, c.Principal)
 
-	p, err := s.fileAuthority(ctx, c.Principal, c.VerifiedSession)
+	p, err := s.fileAuthority(ctx, c.Principal, c.CallerSession, c.Bound)
 	if err != nil {
 		return workers.FileDispatch{}, s.deny(ctx, row, err)
 	}
@@ -173,7 +173,7 @@ func (s *Service) AdmitFile(ctx context.Context, c workers.FileCall) (workers.Fi
 		Principal: p,
 		Args:      req.withLeg(leg),
 		Reprincipal: func(ctx context.Context, fresh authz.Principal) (authz.Principal, error) {
-			return s.fileAuthority(ctx, fresh, c.VerifiedSession)
+			return s.fileAuthority(ctx, fresh, c.CallerSession, c.Bound)
 		},
 		Finish: func(ctx context.Context, res any, err error) (any, error) {
 			return s.prepared(ctx, t, release, res, err)

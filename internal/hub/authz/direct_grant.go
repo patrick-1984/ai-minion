@@ -58,14 +58,16 @@ type DirectGrant struct {
 	CommandShell bool
 	// FilesPull and FilesPush are the file transfer flags of the grant
 	// (files.v1): file_read on a target session (any level), file_write on
-	// a target session (level Control only). They count only for a
-	// principal whose calling session is verified
-	// ([Principal.WithVerifiedFiles]); a claimed source never carries them.
+	// a target session (level Control only), for the calling session.
 	FilesPull, FilesPush bool
 	// AppsInstall is the app install flag of the grant (v0.25.0): app_install
-	// on the target's Worker, level Control only, for a verified calling
-	// session only, like the file flags. files_push never implies it.
+	// on the target's Worker, level Control only. files_push never implies
+	// it.
 	AppsInstall bool
+	// AnySource marks a grant for everyone (v0.26.0): it names no source
+	// Worker or owner, so the source owner is not pinned; it stands only
+	// with admin authority.
+	AnySource bool
 }
 
 // ExpiryAt returns the ExpiresAt of a grant that ends at t.
@@ -134,7 +136,14 @@ func (p Principal) directList() []DirectGrant {
 // the resource or on the grantor: a known level, not suspended, not expired
 // and still from the current owner of the calling Worker.
 func (s subject) directUsable(g DirectGrant) bool {
-	if LevelActions(g.Level) == nil || g.Suspended || g.SourceOwnerID == "" || g.SourceOwnerID != s.ownerID {
+	if LevelActions(g.Level) == nil || g.Suspended {
+		return false
+	}
+	if g.AnySource {
+		if g.Authority != AuthorityAdmin {
+			return false
+		}
+	} else if g.SourceOwnerID == "" || g.SourceOwnerID != s.ownerID {
 		return false
 	}
 	return g.ExpiresAt == nil || s.now.Before(*g.ExpiresAt)
@@ -173,7 +182,7 @@ func (s subject) directFor(g DirectGrant, res ResolvedResource) []ops.Action {
 	if res.Kind != ResourceSession && res.Kind != ResourceWorker {
 		return nil
 	}
-	if g.TargetWorkerID == "" || g.TargetWorkerID != res.WorkerID {
+	if g.TargetWorkerID == "" || g.TargetWorkerID != res.WorkerID || g.TargetWorkerID == s.p.WorkerID {
 		return nil
 	}
 	if res.Kind == ResourceSession && g.TargetSession != "" && g.TargetSession != res.SessionName {

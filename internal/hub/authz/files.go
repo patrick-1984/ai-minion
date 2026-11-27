@@ -8,33 +8,32 @@ import (
 	"github.com/patrick-1984/ai-minion/internal/proto"
 )
 
-// File transfer authority (files.v1, BRD minion-file-transfer FR-10, FR-11,
-// 5.6).
+// File transfer and app install authority (files.v1, v0.25.0, v0.26.0).
 //
-// The two actions ops.ActionFileRead (list and pull) and ops.ActionFileWrite
-// (push) are held:
+// The actions ops.ActionFileRead (list and pull), ops.ActionFileWrite (push)
+// and ops.ActionAppInstall are held:
 //
 //   - by an administrator on every resource and by the owner on their own
 //     resources (allActions, ownerActions), subject to the user-managed switch;
 //   - by an API key only when its stored actions name them (scope and base intersected): a
 //     resource scope of "everything" implies no action, and a key stored
 //     before v0.24 names none;
-//   - never by a Worker identity through the own-Worker rule, a
-//     session-control grant (GrantActions) or a direct grant's level;
-//   - by a Worker session principal only through file flags, and only when
-//     its calling session is verified: [Principal.WithVerifiedFiles], which
-//     the Hub calls on the principal of a bound master lease (verifiedSource
-//     in internal/hub/workers/master_calls.go). A claimed source (the
-//     source_session a call stream names) never carries file authority,
-//     whatever flags its grants have.
+//   - never by a bare Worker identity (no calling session), the own-Worker
+//     rule, a session-control grant (GrantActions) or a direct grant's level;
+//   - by a calling session of a Worker principal through the flags of one
+//     row that covers this caller, this target and this action: a direct
+//     grant (files_pull at any level, files_push and apps_install at
+//     Control), or a master acceptance row of the target Worker for the
+//     calling Worker ([Principal.WithFileAcceptances]) whose session limits
+//     cover the target and whose master scope reaches it (read for pull,
+//     operate for push). The same rule decides an ordinary call stream and
+//     the master lane. A flag applies only through its own row: an
+//     acceptance through accept_all has no row and no flag, and Control is
+//     never borrowed from one row for a flag of another.
 //
-// The flags that count are, per target session: files_pull (file_read) and
-// files_push (file_write, Control only) of a direct grant that is valid for
-// that session now, and files_pull / files_push of the master acceptance row
-// of the target Worker for the calling Worker, when that row covers the
-// session (sessions_json NULL covers all) and the master scope reaches the
-// session with read (pull) or operate (push). A flag applies only through its
-// own row: an acceptance through accept_all has no row and no flag.
+// An acceptance flag that was on before v0.26.0 keeps its old restriction
+// (bound-only): it counts only for a calling session whose bound master
+// lease the Hub verified.
 
 // FileAcceptance is one master acceptance row (control_accept) as a verified
 // master call stands on it: TargetWorkerID accepts the calling Worker.
@@ -51,6 +50,16 @@ type FileAcceptance struct {
 	FilesPull, FilesPush bool
 	// AppsInstall is the app install flag of the row (v0.25.0).
 	AppsInstall bool
+	// FilesPullBound, FilesPushBound and AppsInstallBound mark a flag that
+	// counts only for a verified (bound master) calling session.
+	FilesPullBound, FilesPushBound, AppsInstallBound bool
+}
+
+// flags returns the flags of the row that count for a calling session whose
+// lease the Hub verified (bound) or not.
+func (a FileAcceptance) flags(bound bool) (pull, push, apps bool) {
+	return a.FilesPull && (bound || !a.FilesPullBound), a.FilesPush && (bound || !a.FilesPushBound),
+		a.AppsInstall && (bound || !a.AppsInstallBound)
 }
 
 // covers reports whether the row reaches the session res.
@@ -61,39 +70,53 @@ func (a FileAcceptance) covers(res ResolvedResource) bool {
 	return a.Sessions == nil || slices.Contains(a.Sessions, res.SessionName)
 }
 
-// fileAuthority is the verified calling session of a Worker principal and the
-// master acceptances its call stands on. It is held by pointer so that
-// Principal stays comparable.
+// fileAuthority is the calling session of a Worker principal and the master
+// acceptances its call stands on. It is held by pointer so that Principal
+// stays comparable.
 type fileAuthority struct {
 	session string
+	bound   bool
 	accepts []FileAcceptance
 }
 
-// WithVerifiedFiles returns p with file authority for its calling session,
-// which the Hub verified (the session of a bound master lease): the file
-// flags of p's direct grants count from now on, and so do those of accepts,
-// the master acceptance rows of the target Workers for p's Worker. Only a
-// Worker principal can carry it; for any other principal, an empty session,
-// or a session other than the one p already names ([Principal.SessionName]),
-// p is returned unchanged and holds no file action (fail closed).
-//
-// Never call it for a source that the calling Worker only named (a call
-// stream's source_session): that source is claimed, not verified.
-func (p Principal) WithVerifiedFiles(session string, accepts []FileAcceptance) Principal {
+// WithFileAcceptances returns p with accepts, the master acceptance rows of
+// the target Workers for p's Worker, for its calling session session: their
+// flags count from now on, as far as p's master scope reaches. bound is true
+// when the Hub verified the session's bound master lease (only then do the
+// bound-only flags of rows from before v0.26.0 count). Only a Worker principal
+// can carry it; for any other principal, an empty session, or a session other
+// than the one p already names ([Principal.SessionName]), p is returned
+// unchanged.
+func (p Principal) WithFileAcceptances(session string, bound bool, accepts []FileAcceptance) Principal {
 	if p.Kind != KindWorker || session == "" || p.direct != nil && p.direct.session != session {
 		return p
 	}
-	p.files = &fileAuthority{session: session, accepts: slices.Clone(accepts)}
+	p.files = &fileAuthority{session: session, bound: bound, accepts: slices.Clone(accepts)}
 	return p
 }
 
-// VerifiedFiles reports whether p carries verified file authority, and for
-// which calling session.
-func (p Principal) VerifiedFiles() (session string, ok bool) {
+// FileSession reports the calling session whose acceptances p carries.
+func (p Principal) FileSession() (session string, ok bool) {
 	if p.Kind != KindWorker || p.files == nil {
 		return "", false
 	}
 	return p.files.session, true
+}
+
+// callingSession is the calling session of a Worker principal: the one its
+// direct grants or its acceptances were read for; "" for a bare Worker
+// identity, which holds none of the file and app actions.
+func (p Principal) callingSession() string {
+	if p.Kind != KindWorker {
+		return ""
+	}
+	if p.files != nil {
+		return p.files.session
+	}
+	if p.direct != nil {
+		return p.direct.session
+	}
+	return ""
 }
 
 // fileFlagsActions returns file_read for pull and file_write for push, when
@@ -111,10 +134,10 @@ func fileFlagsActions(pull, push bool, held []ops.Action) []ops.Action {
 }
 
 // directFileFor is what the file flags of direct grant g authorize on res: only
-// for a principal with verified file authority, only on a session, and only
-// while g is valid for res (directFor). files_push needs level Control.
+// for a calling session, only on a session, and only while g is valid for res
+// (directFor). files_push needs level Control.
 func (s subject) directFileFor(g DirectGrant, res ResolvedResource) []ops.Action {
-	if s.p.Kind != KindWorker || s.p.files == nil || res.Kind != ResourceSession || !g.FilesPull && !g.FilesPush {
+	if s.p.callingSession() == "" || res.Kind != ResourceSession || !g.FilesPull && !g.FilesPush {
 		return nil
 	}
 	push := g.FilesPush && g.Level == LevelControl
@@ -122,17 +145,19 @@ func (s subject) directFileFor(g DirectGrant, res ResolvedResource) []ops.Action
 }
 
 // acceptFileFor is what the file flags of acceptance row a authorize on res:
-// only for a principal with verified file authority, only on a session of
-// another Worker that the row covers, and only as far as the master scope
-// (the owner's base permission intersected with Scope, grantActions) reaches the session.
+// only for a calling session with acceptances, only on a session of another
+// Worker that the row covers, and only as far as the master scope (the
+// owner's base permission intersected with Scope, grantActions) reaches the
+// session.
 func (s subject) acceptFileFor(a FileAcceptance, res ResolvedResource) []ops.Action {
-	if s.p.Kind != KindWorker || s.p.files == nil || !a.FilesPull && !a.FilesPush {
+	if s.p.Kind != KindWorker || s.p.files == nil {
 		return nil
 	}
-	if !a.covers(res) || res.WorkerID == s.p.WorkerID {
+	pull, push, _ := a.flags(s.p.files.bound)
+	if !pull && !push || !a.covers(res) || res.WorkerID == s.p.WorkerID {
 		return nil
 	}
-	return fileFlagsActions(a.FilesPull, a.FilesPush, s.grantActions(res))
+	return fileFlagsActions(pull, push, s.grantActions(res))
 }
 
 // appInstallActions is what the apps_install flags of the principal's
@@ -155,10 +180,10 @@ func (s subject) appInstallActions(res ResolvedResource) []ops.Action {
 }
 
 // appInstallTarget reports whether res is a Worker on which the apps_install
-// flags of the principal can count: only for a principal with verified file
-// authority, and never on its own Worker.
+// flags of the principal can count: only for a calling session, and never on
+// its own Worker.
 func (s subject) appInstallTarget(res ResolvedResource) bool {
-	return s.p.Kind == KindWorker && s.p.files != nil && res.Kind == ResourceWorker && res.WorkerID != s.p.WorkerID
+	return s.p.callingSession() != "" && res.Kind == ResourceWorker && res.WorkerID != s.p.WorkerID
 }
 
 // directAppFor reports whether the apps_install flag of direct grant g
@@ -172,7 +197,11 @@ func (s subject) directAppFor(g DirectGrant, res ResolvedResource) bool {
 // authorizes app_install on res: a row of that Worker, while the master scope
 // reaches it.
 func (s subject) acceptAppFor(a FileAcceptance, res ResolvedResource) bool {
-	return s.appInstallTarget(res) && a.AppsInstall && a.TargetWorkerID == res.WorkerID && len(s.grantActions(res)) != 0
+	if s.p.files == nil {
+		return false
+	}
+	_, _, apps := a.flags(s.p.files.bound)
+	return s.appInstallTarget(res) && apps && a.TargetWorkerID == res.WorkerID && len(s.grantActions(res)) != 0
 }
 
 // AppInstallBasis tells what authorizes app_install by p on the Worker res
@@ -213,15 +242,17 @@ func (a *Authorizer) AppInstallBasis(ctx context.Context, p Principal, res Resou
 // fileActions is the union of what the file flags of the principal's direct
 // grants and acceptance rows authorize on res.
 func (s subject) fileActions(res ResolvedResource) []ops.Action {
-	if s.p.Kind != KindWorker || s.p.files == nil || res.Kind != ResourceSession {
+	if s.p.callingSession() == "" || res.Kind != ResourceSession {
 		return nil
 	}
 	var out []ops.Action
 	for _, g := range s.p.directList() {
 		out = append(out, s.directFileFor(g, res)...)
 	}
-	for _, a := range s.p.files.accepts {
-		out = append(out, s.acceptFileFor(a, res)...)
+	if s.p.files != nil {
+		for _, a := range s.p.files.accepts {
+			out = append(out, s.acceptFileFor(a, res)...)
+		}
 	}
 	return out
 }

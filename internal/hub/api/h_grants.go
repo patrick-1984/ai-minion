@@ -32,6 +32,7 @@ type GrantWorker struct {
 // GrantStore is what the grant handlers need; *store.Store implements it.
 type GrantStore interface {
 	PutSessionGrant(ctx context.Context, row store.SessionGrantRow, ifRevision uint64, w store.GrantWrite) (store.SessionGrantRow, error)
+	PutSessionGrants(ctx context.Context, rows []store.SessionGrantRow, w store.GrantWrite) ([]store.SessionGrantRow, error)
 	RevokeSessionGrant(ctx context.Context, id string, ifRevision uint64, w store.GrantWrite) (store.SessionGrantRow, error)
 	ApproveSessionGrant(ctx context.Context, id string, ifRevision uint64, w store.GrantWrite) (store.SessionGrantRow, error)
 	SessionGrant(ctx context.Context, id string) (store.SessionGrantRow, error)
@@ -200,7 +201,7 @@ func (h grantHandlers) record(ctx context.Context, c *Call, ev audit.Event, err 
 func (h grantHandlers) info(g store.SessionGrantRow, ws map[string]GrantWorker) ops.Grant {
 	level, _ := ops.GrantLevelName(g.Level)
 	out := ops.Grant{
-		ID: g.ID, SourceWorkerID: g.SourceWorkerID, SourceSession: g.SourceSession, SourceProof: ops.GrantProofClaimed,
+		ID: g.ID, SourceScope: g.Scope(), SourceWorkerID: g.SourceWorkerID, SourceSession: g.SourceSession, SourceProof: ops.GrantProofClaimed,
 		TargetWorkerID: g.TargetWorkerID, TargetSession: g.TargetSession, Level: level, Authority: g.Authority,
 		GrantedBy: g.GrantedBy, Revision: g.Revision,
 		CreatedAt: ops.Timestamp(time.UnixMilli(g.CreatedAt)), UpdatedAt: ops.Timestamp(time.UnixMilli(g.UpdatedAt)),
@@ -274,7 +275,7 @@ func maskGrant(g *ops.Grant, viewer string, ws map[string]GrantWorker) {
 		}
 		return "a session of " + w.Owner
 	}
-	if w := ws[g.SourceWorkerID]; w.OwnerID != viewer || viewer == "" {
+	if w := ws[g.SourceWorkerID]; g.SourceSession != "" && (w.OwnerID != viewer || viewer == "") {
 		g.SourceSession, g.SourceMasked = label(w), true
 	}
 	if w := ws[g.TargetWorkerID]; g.TargetSession != "" && (w.OwnerID != viewer || viewer == "") {
@@ -297,7 +298,25 @@ func (h grantHandlers) setResource(_ authz.Principal, args any) (authz.Resource,
 	if !ok {
 		return nil, NewError(proto.CodeInternal, "")
 	}
+	if a.SourceWorkerID == "" {
+		// Everyone names no source Worker: decided on the first target
+		// (the handler requires an administrator).
+		if t := a.TargetList(); len(t) > 0 {
+			return authz.WorkerResource{ID: t[0].WorkerID}, nil
+		}
+	}
 	return authz.WorkerResource{ID: a.SourceWorkerID}, nil
+}
+
+// grantScope is the stored source scope of a grant_set's source_scope.
+func grantScope(s string) string {
+	switch s {
+	case ops.GrantSourceWorker:
+		return store.GrantSourceWorker
+	case ops.GrantSourceEveryone:
+		return store.GrantSourceEveryone
+	}
+	return store.GrantSourceSession
 }
 
 func grantStoreErr(err error) error {
@@ -393,13 +412,26 @@ func grantSetEvent(a ops.GrantSetArgs, old, now *store.SessionGrantRow) audit.Ev
 			}
 		}
 	case now != nil:
+		// The selector the grant was created with: "<worker>:*" for every
+		// shared session of a Worker, "*" for everyone.
 		ev.GrantID = now.ID
+		ev.Source, ev.Target = store.GrantSourceAudit(*now), grantAuditTarget(now.TargetWorkerID, now.TargetSession)
 		ev.Detail = "level=" + newLevel + " authority=" + now.Authority + " expires=none"
 		if now.ExpiresAt != nil {
 			ev.Detail = "level=" + newLevel + " authority=" + now.Authority + " expires=" + strconv.FormatInt(*now.ExpiresAt, 10)
 		}
+		ev.Detail += " source_scope=" + now.Scope()
 		if now.CommandShell {
 			ev.Detail += " command_shell=true"
+		}
+		if now.FilesPull {
+			ev.Detail += " files_pull=true"
+		}
+		if now.FilesPush {
+			ev.Detail += " files_push=true"
+		}
+		if now.AppsInstall {
+			ev.Detail += " apps_install=true"
 		}
 	default:
 		ev.Detail = "level=" + newLevel
@@ -417,26 +449,43 @@ func (h grantHandlers) doSet(ctx context.Context, c *Call, a ops.GrantSetArgs, o
 		return none, NewError(proto.CodeForbidden, "not allowed")
 	}
 	level, _ := ops.GrantLevelRank(a.Level)
+	scope := grantScope(a.SourceScope)
+	targets := a.TargetList()
 	ws, err := h.byID(ctx)
 	if err != nil {
 		return none, err
 	}
-	src, okS := ws[a.SourceWorkerID]
-	tgt, okT := ws[a.TargetWorkerID]
-	if !okS || !okT {
-		return none, NewError(proto.CodeNotFound, "no such Worker")
-	}
-	if !src.Approved || !tgt.Approved {
-		return none, NewError(proto.CodeConflict, "both Workers must be approved")
-	}
-	if h.targetGuard != nil {
-		if err := h.targetGuard(ctx, p, tgt.ID); err != nil {
-			return none, err
-		}
-	}
 	admin, err := h.isAdmin(ctx, p)
 	if err != nil {
 		return none, err
+	}
+	if scope == store.GrantSourceEveryone && !admin {
+		return none, NewError(proto.CodeForbidden, "only an administrator can grant from everyone")
+	}
+	var src GrantWorker
+	if scope != store.GrantSourceEveryone {
+		var ok bool
+		if src, ok = ws[a.SourceWorkerID]; !ok {
+			return none, NewError(proto.CodeNotFound, "no such Worker")
+		}
+		if !src.Approved {
+			return none, NewError(proto.CodeConflict, "both Workers must be approved")
+		}
+	}
+	// Every target is checked before anything is written.
+	for _, t := range targets {
+		tgt, ok := ws[t.WorkerID]
+		if !ok {
+			return none, NewError(proto.CodeNotFound, "no such Worker")
+		}
+		if !tgt.Approved {
+			return none, NewError(proto.CodeConflict, "both Workers must be approved")
+		}
+		if h.targetGuard != nil {
+			if err := h.targetGuard(ctx, p, tgt.ID); err != nil {
+				return none, err
+			}
+		}
 	}
 	// The store reads the caller's role and active state again in the
 	// transaction that writes, and writes the audit row and the answer of the
@@ -487,7 +536,7 @@ func (h grantHandlers) doSet(ctx context.Context, c *Call, a ops.GrantSetArgs, o
 		if !admin && (cur.Authority != store.GrantAuthorityOwner || !ownsBoth) {
 			return none, NewError(proto.CodeForbidden, "not allowed")
 		}
-		if cur.SourceWorkerID != a.SourceWorkerID || cur.SourceSession != a.SourceSession ||
+		if cur.Scope() != scope || cur.SourceWorkerID != a.SourceWorkerID || cur.SourceSession != a.SourceSession ||
 			cur.TargetWorkerID != a.TargetWorkerID || cur.TargetSession != a.TargetSession {
 			return none, NewError(proto.CodeInvalidArgument, "the source and the target of a grant cannot be changed")
 		}
@@ -503,10 +552,9 @@ func (h grantHandlers) doSet(ctx context.Context, c *Call, a ops.GrantSetArgs, o
 		if level != authz.LevelControl || cur.TargetSession == "" {
 			cur.CommandShell = false
 		}
-		// files.v1: an absent flag keeps the stored one. The flags need a
-		// verified source (a bound grant): a claimed source never carries
-		// file authority. files_push needs Control, so a lower level clears
-		// it (an explicit true below Control is refused by Validate).
+		// files.v1: an absent flag keeps the stored one, an explicit false
+		// clears it. files_push needs Control, so a lower level clears it (an
+		// explicit true below Control is refused by Validate).
 		if a.FilesPull != nil {
 			cur.FilesPull = *a.FilesPull
 		}
@@ -524,58 +572,79 @@ func (h grantHandlers) doSet(ctx context.Context, c *Call, a ops.GrantSetArgs, o
 		if level != authz.LevelControl {
 			cur.AppsInstall = false
 		}
-		if cur.SourceIncarnation == "" && cur.AppsInstall {
-			return none, &Error{Code: proto.CodeInvalidArgument, Message: "installing apps needs a verified source: bind the grant to the source session first",
-				Details: map[string]any{"field": "apps_install"}}
-		}
-		if cur.SourceIncarnation == "" && (cur.FilesPull || cur.FilesPush) {
-			return none, &Error{Code: proto.CodeInvalidArgument, Message: "file transfer needs a verified source: bind the grant to the source session first",
-				Details: map[string]any{"field": "files_pull"}}
-		}
 		g, err := h.st.PutSessionGrant(ctx, cur, a.IfRevision, write)
 		if err != nil {
 			return none, grantStoreErr(err)
 		}
 		return h.keptResult(res, g, ws, nil), nil
 	}
-	if !src.CanBeSource {
+	if scope != store.GrantSourceEveryone && !src.CanBeSource {
 		return none, NewError(proto.CodeConflict, "this Worker cannot reach others (a thin Worker)")
 	}
-	// files.v1: a new grant names its source by name (claimed), and a
-	// claimed source never carries file authority; the flags are set on the
-	// grant after it was bound to the source session.
-	if a.AppsInstall != nil && *a.AppsInstall {
-		return none, &Error{Code: proto.CodeInvalidArgument, Message: "installing apps needs a verified source: create the grant, bind it to the source session, then set apps_install",
-			Details: map[string]any{"field": "apps_install"}}
+	rows := make([]store.SessionGrantRow, 0, len(targets))
+	for _, t := range targets {
+		tgt := ws[t.WorkerID]
+		// D4: the authority behind the grant. Two Workers of one owner take
+		// an owner grant, also when an administrator decides it for that
+		// owner: it stands while the owner keeps both Workers, whatever
+		// becomes of the administrator's role, and the owner can edit it. A
+		// grant for everyone stands on an administrator.
+		authority := store.GrantAuthorityAdmin
+		switch {
+		case scope == store.GrantSourceEveryone:
+		case src.OwnerID == tgt.OwnerID && (src.OwnerID == p.UserID || admin):
+			authority = store.GrantAuthorityOwner
+		case admin:
+		case src.OwnerID != tgt.OwnerID:
+			return none, NewError(proto.CodeForbidden, "only an administrator can grant between Workers of different owners")
+		default:
+			return none, NewError(proto.CodeForbidden, "not allowed")
+		}
+		// The boxes ticked on the form are saved with the grant.
+		rows = append(rows, store.SessionGrantRow{
+			SourceScope: scope, SourceWorkerID: src.ID, SourceSession: a.SourceSession, TargetWorkerID: t.WorkerID,
+			TargetSession: t.SessionName, Level: level, Authority: authority, GrantedBy: p.UserID,
+			SourceOwnerID: src.OwnerID, TargetOwnerID: tgt.OwnerID, Note: a.Note, ExpiresAt: exp,
+			CommandShell: a.CommandShell != nil && *a.CommandShell,
+			FilesPull:    a.FilesPull != nil && *a.FilesPull, FilesPush: a.FilesPush != nil && *a.FilesPush,
+			AppsInstall: a.AppsInstall != nil && *a.AppsInstall,
+		})
 	}
-	if a.FilesPull != nil && *a.FilesPull || a.FilesPush != nil && *a.FilesPush {
-		return none, &Error{Code: proto.CodeInvalidArgument, Message: "file transfer needs a verified source: create the grant, bind it to the source session, then set the file flags",
-			Details: map[string]any{"field": "files_pull"}}
+	if a.Targets == nil {
+		// The request of before v0.26.0: one grant, the same answer.
+		g, err := h.st.PutSessionGrant(ctx, rows[0], 0, write)
+		if err != nil {
+			return none, grantStoreErr(err)
+		}
+		return h.keptResult(res, g, ws, nil), nil
 	}
-	// D4: the authority behind the grant. Two Workers of one owner take an
-	// owner grant, also when an administrator decides it for that owner: it
-	// stands while the owner keeps both Workers, whatever becomes of the
-	// administrator's role, and the owner can edit it.
-	authority := store.GrantAuthorityAdmin
-	switch {
-	case src.OwnerID == tgt.OwnerID && (src.OwnerID == p.UserID || admin):
-		authority = store.GrantAuthorityOwner
-	case admin:
-	case src.OwnerID != tgt.OwnerID:
-		return none, NewError(proto.CodeForbidden, "only an administrator can grant between Workers of different owners")
-	default:
-		return none, NewError(proto.CodeForbidden, "not allowed")
+	// Several targets: every grant, its audit row and the one answer of the
+	// request commit together, or nothing does.
+	write.Receipt = nil
+	write.ReceiptMany = func(now []store.SessionGrantRow) (*store.OpRequestRow, error) {
+		res = h.manyResult(now, ws)
+		return requestReceipt(ctx, res)
 	}
-	g, err := h.st.PutSessionGrant(ctx, store.SessionGrantRow{
-		SourceWorkerID: a.SourceWorkerID, SourceSession: a.SourceSession, TargetWorkerID: a.TargetWorkerID,
-		TargetSession: a.TargetSession, Level: level, Authority: authority, GrantedBy: p.UserID,
-		SourceOwnerID: src.OwnerID, TargetOwnerID: tgt.OwnerID, Note: a.Note, ExpiresAt: exp,
-		CommandShell: a.CommandShell != nil && *a.CommandShell,
-	}, 0, write)
+	gs, err := h.st.PutSessionGrants(ctx, rows, write)
 	if err != nil {
 		return none, grantStoreErr(err)
 	}
-	return h.keptResult(res, g, ws, nil), nil
+	if res.Grant.ID == "" {
+		res = h.manyResult(gs, ws)
+	}
+	return res, nil
+}
+
+// manyResult is the answer of a grant_set that created the grants gs.
+func (h grantHandlers) manyResult(gs []store.SessionGrantRow, ws map[string]GrantWorker) ops.GrantSetResult {
+	res := ops.GrantSetResult{Outcome: ops.OutcomeDelivered}
+	for _, g := range gs {
+		res.CreatedIDs = append(res.CreatedIDs, g.ID)
+	}
+	if len(gs) > 0 {
+		res.Grant = h.info(gs[0], ws)
+	}
+	return res
 }
 
 // revokeResource decides grant_revoke (D4: it only narrows). The decision
@@ -627,7 +696,7 @@ func (h grantHandlers) revoke(ctx context.Context, c *Call, a ops.GrantRevokeArg
 		}
 		// The row commits with the delete; the dispatcher then adds none.
 		return grantAuditRow(c, audit.Event{Action: AuditActionGrantRevoke, GrantID: g.ID,
-			Source: grantAuditSource(g.SourceWorkerID, g.SourceSession), Target: grantAuditTarget(g.TargetWorkerID, g.TargetSession),
+			Source: store.GrantSourceAudit(g), Target: grantAuditTarget(g.TargetWorkerID, g.TargetSession),
 			Detail: "level=" + grantAuditLevel(g.Level) + " authority=" + g.Authority + " rev=" + strconv.FormatUint(g.Revision, 10)})
 	}, Receipt: func(store.SessionGrantRow) (*store.OpRequestRow, error) {
 		// The answer commits with the delete: a repeat after a stop at the
@@ -660,6 +729,7 @@ func grantApproveEvent(id string, g store.SessionGrantRow) audit.Event {
 	ev := audit.Event{Action: AuditActionGrantApprove, GrantID: id,
 		Source: grantAuditSource(g.SourceWorkerID, g.SourceSession), Target: grantAuditTarget(g.TargetWorkerID, g.TargetSession)}
 	if g.ID != "" {
+		ev.Source = store.GrantSourceAudit(g)
 		ev.Detail = "level=" + grantAuditLevel(g.Level) + " authority=" + g.Authority + " rev=" + strconv.FormatUint(g.Revision, 10)
 	}
 	return ev
