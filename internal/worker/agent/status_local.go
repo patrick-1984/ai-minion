@@ -79,6 +79,8 @@ type LiveStatusReply struct {
 	// Daemon identifies the running daemon (instance, version, start time,
 	// optional PID); an older Worker omits it.
 	Daemon *DaemonInfo `json:"daemon,omitempty"`
+	// DeviceControl is on-device adb of an Android Worker; absent elsewhere.
+	DeviceControl *ops.DeviceControlStatus `json:"device_control,omitempty"`
 }
 
 // DaemonInfo is the wire contract that identifies one running Worker daemon
@@ -123,6 +125,7 @@ func NewLiveStatusReply(stateDir string, live LiveStatus) LiveStatusReply {
 		TLSLine:            c.TLSLine,
 		HubCheckAware:      true,
 		LogSinks:           live.LogSinks,
+		DeviceControl:      live.DeviceControl,
 	}
 	if d := live.Daemon; d != nil {
 		w := DaemonInfo{Instance: d.Instance, Version: d.Version, PID: d.PID}
@@ -190,6 +193,7 @@ func (r LiveStatusReply) LiveStatus() (LiveStatus, error) {
 		dl = &LiveDaemon{Instance: daemon.Instance, Version: daemon.Version, StartedAt: daemonStart, PID: daemon.PID}
 	}
 	return LiveStatus{
+		DeviceControl:      r.DeviceControl,
 		Daemon:             dl,
 		Connector:          c,
 		HubPreviewOnly:     r.HubPreviewOnly,

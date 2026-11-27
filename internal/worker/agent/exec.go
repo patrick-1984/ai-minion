@@ -15,6 +15,7 @@ import (
 	"github.com/patrick-1984/ai-minion/internal/ops"
 	"github.com/patrick-1984/ai-minion/internal/proto"
 	"github.com/patrick-1984/ai-minion/internal/worker/agentdetect"
+	"github.com/patrick-1984/ai-minion/internal/worker/devctl"
 	"github.com/patrick-1984/ai-minion/internal/worker/store"
 	"github.com/patrick-1984/ai-minion/internal/worker/term"
 )
@@ -137,6 +138,10 @@ type Executor struct {
 	// localWrites is told about every write of a local caller that this
 	// executor really ran (see [Executor.OnLocalWrite]); nil when unset.
 	localWrites atomic.Pointer[func(LocalWrite)]
+
+	// devctl is device control of the Android Worker (exec_adb.go); nil
+	// elsewhere.
+	devctl atomic.Pointer[devctl.Service]
 }
 
 // NewExecutor builds an executor with the release-1 session and write ops

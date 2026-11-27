@@ -11,8 +11,10 @@ import (
 	"time"
 
 	"github.com/patrick-1984/ai-minion/internal/config"
+	"github.com/patrick-1984/ai-minion/internal/ops"
 	"github.com/patrick-1984/ai-minion/internal/proto"
 	"github.com/patrick-1984/ai-minion/internal/version"
+	"github.com/patrick-1984/ai-minion/internal/worker/devctl"
 	"github.com/patrick-1984/ai-minion/internal/worker/localapi"
 )
 
@@ -88,6 +90,12 @@ func (d localAPIDeps) start(_ context.Context, env *Env) (StopFunc, error) {
 	daemon := &LiveDaemon{Instance: instance, Version: version.Version, StartedAt: env.rt.StartedAt(), PID: os.Getpid()}
 	live := LiveStatusSource{Daemon: daemon, Private: private, Connector: conn, Policy: ex.Policy(), RunMode: workerRunMode(), Host: hostInfo, Health: health,
 		LogSinks: env.Settings().LogSinks, Pause: pause}
+	if svc := ex.DeviceControl(); svc != nil {
+		live.DeviceControl = func(ctx context.Context) *ops.DeviceControlStatus {
+			st := toOpsStatus(svc.Report(ctx))
+			return &st
+		}
+	}
 	// The pipe module starts before this one. Without it the pipe ops are
 	// refused here and never reach the executor, whose pipe_send is the
 	// Hub-origin write (exec_pipe.go).
@@ -197,6 +205,9 @@ func (l localExecutor) Execute(ctx context.Context, rq localapi.Request, progres
 		return raw, l.protoError(rq.Op, err)
 	}
 	ctx = WithProgress(ctx, progress)
+	// Device control attributes a call to the session of the connected
+	// process, which the kernel names for the socket (exec_adb.go).
+	ctx = devctl.WithCaller(ctx, devctl.Caller{PID: rq.PeerPID})
 	// The client rule labels a call this Worker sends on to the Hub, for the
 	// Hub's audit; nothing here decides by it.
 	ctx = WithClientRule(ctx, rq.ClientRule)
