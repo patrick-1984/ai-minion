@@ -55,6 +55,25 @@ dialled as before. The status screen shows the active override; **Clear Hub
 address override** (while the Worker is stopped) and **Forget this Hub**
 remove it. Only the Android build of the Worker reads this variable.
 
+## File transfer
+
+The app creates the private folder `Minion files` in the Worker's home
+folder (`~/Minion files` in a terminal session, mode 0700, inside the app
+sandbox, no storage permission). Every file transfer of this device uses
+that folder and nothing outside it: a session working in `Minion files` or
+below it sends and receives in its own folder, and every other session,
+including one in `~` or a `su` shell elsewhere, sends and receives in
+`Minion files` itself. Files pushed to an Android session land there, and
+the Hub shows the folder as `Minion files/...`. The checkbox **Allow file
+transfer (Minion files folder)** next to **Share terminal sessions with the
+Hub** is on by default and runs `minion worker config set file_transfer on`
+or `off`. Off refuses every later request with `files_disabled` and stops a
+transfer that has not been published yet; the Hub cannot turn it back on.
+The line under the checkbox shows the folder path, and a value of
+`send_only` or `receive_only` set from a terminal session. When the Worker
+finds no safe way to confine transfers on the device, it does not offer
+file transfer and the line says **Not supported on this device**.
+
 ## Rooted devices
 
 The Worker, terminal server and initial shells run under the Minion app UID.

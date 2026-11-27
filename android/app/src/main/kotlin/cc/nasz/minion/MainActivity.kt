@@ -56,6 +56,8 @@ class MainActivity : Activity() {
     private lateinit var sessions: TextView
     private lateinit var usageStatus: TextView
     private lateinit var share: CheckBox
+    private lateinit var fileTransfer: CheckBox
+    private lateinit var filesFolder: TextView
     private lateinit var boot: CheckBox
     private lateinit var done: Button
     private lateinit var pair: Button
@@ -232,6 +234,13 @@ class MainActivity : Activity() {
             minHeight = dp(48)
             setOnCheckedChangeListener { _, value -> if (!drawing) worker?.share(value) }
         }
+        fileTransfer = CheckBox(this).apply {
+            text = "Allow file transfer (Minion files folder)"
+            textSize = if (television) 18f else 16f
+            minHeight = dp(48)
+            setOnCheckedChangeListener { _, value -> if (!drawing) worker?.fileTransfer(value) }
+        }
+        filesFolder = label("", 15f, ink)
         boot = CheckBox(this).apply {
             text = "Start Minion automatically when this device turns on"
             textSize = if (television) 18f else 16f
@@ -239,6 +248,8 @@ class MainActivity : Activity() {
             setOnCheckedChangeListener { _, value -> if (!drawing) worker?.boot(value) }
         }
         page.addView(share, row(12))
+        page.addView(fileTransfer, row(2))
+        page.addView(filesFolder, row(2))
         page.addView(boot, row(2))
         reviewUsage = button("Review usage monitoring") { model.usage?.let(::showUsage) }
         page.addView(reviewUsage, row(6))
@@ -301,16 +312,21 @@ class MainActivity : Activity() {
         pause.text = if (value.status == "Paused") "Resume" else "Pause"
         stop.visible(value.wanted || value.busy)
         share.visible(configured && !value.busy)
+        // A local setting: it can be switched off before the first pairing.
+        fileTransfer.visible(!value.busy)
+        filesFolder.show(if (value.busy) "" else filesLine(value))
         boot.visible(configured && !value.busy)
         reviewUsage.visible(value.usage?.accepted == false && !value.busy)
         forget.visible(configured && !value.wanted && !value.busy)
         clearOverride.visible(value.dialOverride.isNotBlank() && !value.wanted && !value.busy)
-        val controls = listOf(done, pair, token, start, pause, stop, share, boot, reviewUsage, forget, clearOverride)
+        val controls = listOf(done, pair, token, start, pause, stop, share, fileTransfer, boot, reviewUsage, forget, clearOverride)
         for (control in controls) control.isEnabled = worker != null
         if (television && currentFocus == null) {
             controls.firstOrNull { it.isEnabled && it.visibility == View.VISIBLE }?.requestFocus()
         }
         share.isChecked = value.share
+        // Default on: unknown ("") shows the Worker's default.
+        fileTransfer.isChecked = value.fileTransfer != NativeWorker.FILE_TRANSFER_OFF
         boot.isChecked = value.boot
         drawing = false
         if (value.wanted && !value.busy && value.paired && value.code.isBlank() && worker != null &&
@@ -318,6 +334,23 @@ class MainActivity : Activity() {
             workerPreferences(this).getBoolean(BOOT_QUESTION, false)) {
             askBootStart()
         }
+    }
+
+    // The folder line under the file transfer setting: the folder, a one-way
+    // value saved with the CLI, and why this device cannot transfer files.
+    private fun filesLine(value: WorkerView): String {
+        val lines = mutableListOf<String>()
+        if (value.filesUnavailable.isNotBlank()) {
+            lines.add("Not supported on this device (${value.filesUnavailable})")
+        }
+        when (value.fileTransfer) {
+            NativeWorker.FILE_TRANSFER_SEND_ONLY -> lines.add("Send only: files may leave this device, none arrive.")
+            NativeWorker.FILE_TRANSFER_RECEIVE_ONLY -> lines.add("Receive only: files may arrive on this device, none leave.")
+        }
+        if (value.filesFolder.isNotBlank()) {
+            lines.add("Files move only in and out of this folder (~/Minion files in a terminal session):\n${value.filesFolder}")
+        }
+        return lines.joinToString("\n")
     }
 
     private fun showJoin(byToken: Boolean) {

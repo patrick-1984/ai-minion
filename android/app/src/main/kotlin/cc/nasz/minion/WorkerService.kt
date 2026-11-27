@@ -38,6 +38,12 @@ internal data class WorkerView(
     val expires: String = "",
     val usage: UsageRegistration? = null,
     val dialOverride: String = "",
+    // The local file transfer switch (on, send_only, receive_only or off; ""
+    // before the first read), the Minion files folder, and why this device
+    // cannot transfer files ("" when it can or when the Worker does not say).
+    val fileTransfer: String = "",
+    val filesFolder: String = "",
+    val filesUnavailable: String = "",
 )
 
 internal fun workerPreferences(context: Context): SharedPreferences =
@@ -59,6 +65,7 @@ class WorkerService : Service() {
     private var notice = ""
     private var report: JSONObject? = null
     private var usage: UsageRegistration? = null
+    private var fileTransfer = ""
     private var nextUsageReport = 0L
     private var restartAt = 0L
     private var nextReport = 0L
@@ -93,6 +100,13 @@ class WorkerService : Service() {
         fun stop() = stopWorker()
         fun pause(paused: Boolean) = runCommand(if (paused) "resume" else "pause")
         fun share(share: Boolean) = runCommand("config", "share", if (share) "all" else "none")
+        // Saved in the Worker config file, which the Worker reads again at every
+        // file request and before every publish: it applies at once, also to a
+        // transfer in progress that has not published yet.
+        fun fileTransfer(allow: Boolean) = runCommand(
+            "config", "set", NativeWorker.FILE_TRANSFER_KEY,
+            if (allow) NativeWorker.FILE_TRANSFER_ON else NativeWorker.FILE_TRANSFER_OFF,
+        )
         fun boot(boot: Boolean) {
             queue.execute {
                 preferences.edit().putBoolean("boot", boot).commit()
@@ -292,6 +306,7 @@ class WorkerService : Service() {
             if (wanted && !stopping.get()) supervise(now)
             if (now >= nextReport) {
                 report = native.report()
+                fileTransfer = native.fileTransferMode()
                 nextReport = now + 4_000
                 if (report?.optBoolean("paired") != true) {
                     usage = null
@@ -398,6 +413,7 @@ class WorkerService : Service() {
             share?.optString("mode") != "none", preferences.getBoolean("boot", false),
             livePairing?.optString("code").orEmpty(), if (livePairing != null) expires else "",
             usage, preferences.getString(HubDialOverride.PREFERENCE, null).orEmpty(),
+            fileTransfer, native.minionFilesPath, filesUnavailable(r),
         )
         main.post {
             if (v != view) {
@@ -409,6 +425,15 @@ class WorkerService : Service() {
                 }
             }
         }
+    }
+
+    // A running Worker whose probe found no safe confinement on this device
+    // does not announce files.v1 and says why in its status ("files" object:
+    // available, reason). A Worker that does not report it shows nothing.
+    private fun filesUnavailable(report: JSONObject?): String {
+        val files = report?.optJSONObject("files") ?: return ""
+        if (files.optBoolean("available", true)) return ""
+        return files.optString("reason").ifBlank { "no reason given" }
     }
 
     private fun showForeground(status: String) {

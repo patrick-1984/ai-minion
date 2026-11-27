@@ -5,6 +5,7 @@ import android.net.LocalSocket
 import android.net.LocalSocketAddress
 import android.os.Process
 import android.system.Os
+import android.system.OsConstants
 import org.json.JSONObject
 import java.io.DataInputStream
 import java.io.DataOutputStream
@@ -26,6 +27,7 @@ internal class NativeWorker(private val context: Context) {
     private val root = context.noBackupFilesDir
     private val run = File(root, "r")
     private val home = File(root, "home")
+    private val minionFiles = File(home, MINION_FILES)
     private val state = File(root, "state")
     private val terminfo = File(run, "terminfo")
     private val tmuxConfig = File(run, "tmux.conf")
@@ -44,7 +46,31 @@ internal class NativeWorker(private val context: Context) {
     fun tmuxReady(): Boolean = tmuxSocket.exists() &&
         run("libtmux.so", listOf("-N", "-S", tmuxSocket.path, "show-options", "-gqv", "exit-empty"), timeout = 2).success
 
-    fun startWorker(): java.lang.Process = start("libminion.so", listOf("worker", "run"))
+    // The folder of every file transfer on this device (files.v1, BRD 5.4).
+    val minionFilesPath: String get() = minionFiles.path
+
+    fun startWorker(): java.lang.Process {
+        prepare()
+        prepareMinionFiles()
+        return start("libminion.so", listOf("worker", "run"))
+    }
+
+    // The local file transfer switch as the Worker reads it at every request
+    // (config.ResolveFileTransfer): the value saved in the config file, on when
+    // none is saved, off when the file cannot be read or holds another value.
+    // The app removes every MINION_ variable, so no environment value applies.
+    fun fileTransferMode(): String = runCatching {
+        val file = File(state, CONFIG_FILE)
+        if (!file.exists()) return@runCatching FILE_TRANSFER_ON
+        check(file.length() <= 1 shl 20)
+        val text = file.readText(UTF_8)
+        if (text.isBlank()) return@runCatching FILE_TRANSFER_ON
+        when (val value = JSONObject(text).opt(FILE_TRANSFER_KEY)) {
+            null -> FILE_TRANSFER_ON
+            is String -> value.takeIf { it in FILE_TRANSFER_MODES } ?: FILE_TRANSFER_OFF
+            else -> FILE_TRANSFER_OFF
+        }
+    }.getOrDefault(FILE_TRANSFER_OFF)
 
     fun provision(server: String?, token: String?, share: String, acceptUsage: Boolean): Boolean {
         val args = mutableListOf("worker", "up", "--configure-only", "--non-interactive-share", share)
@@ -123,6 +149,22 @@ internal class NativeWorker(private val context: Context) {
         copyAssets("terminfo", terminfo)
         copyAssets("tmux.conf", tmuxConfig)
         prepared = true
+    }
+
+    // The app-private "Minion files" folder (mode 0700, no storage permission).
+    // The Go Worker derives the same path from HOME (agent.AndroidConfine),
+    // creates it as well and confines every transfer to it, so nothing else is
+    // passed to it. A failure here never stops the Worker: it then reports file
+    // transfer as unavailable. A name that is not a directory of the app UID,
+    // such as a symlink a shell put there, is left alone for the Worker to refuse.
+    private fun prepareMinionFiles() {
+        runCatching {
+            if (!minionFiles.exists()) Os.mkdir(minionFiles.path, 448) // 0700
+            val stat = Os.lstat(minionFiles.path)
+            if (OsConstants.S_ISDIR(stat.st_mode) && stat.st_uid == Os.getuid() && (stat.st_mode and 511) != 448) {
+                Os.chmod(minionFiles.path, 448)
+            }
+        }
     }
 
     private fun copyAssets(path: String, dest: File) {
@@ -207,6 +249,17 @@ internal class NativeWorker(private val context: Context) {
     }
 
     companion object {
+        const val MINION_FILES = "Minion files"
+        const val FILE_TRANSFER_KEY = "file_transfer"
+        const val FILE_TRANSFER_ON = "on"
+        const val FILE_TRANSFER_OFF = "off"
+        const val FILE_TRANSFER_SEND_ONLY = "send_only"
+        const val FILE_TRANSFER_RECEIVE_ONLY = "receive_only"
+        private const val CONFIG_FILE = "config.json"
+        private val FILE_TRANSFER_MODES = setOf(
+            FILE_TRANSFER_ON, FILE_TRANSFER_SEND_ONLY, FILE_TRANSFER_RECEIVE_ONLY, FILE_TRANSFER_OFF,
+        )
+
         fun reap(process: java.lang.Process?) {
             if (process == null) return
             if (process.isAlive) process.destroy()
