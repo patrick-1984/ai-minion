@@ -1,8 +1,11 @@
 package cc.nasz.minion
 
 import java.io.File
+import java.io.FileInputStream
+import java.io.FileOutputStream
 import java.nio.file.Files
 import java.nio.file.LinkOption
+import java.security.MessageDigest
 
 // Pure checks of installing another app from the Minion files folder
 // (app_install, app.install.v1), free of Android types so the JVM unit tests
@@ -80,7 +83,7 @@ internal object AppInstallChecks {
         val canonical = runCatching { file.canonicalFile }.getOrNull() ?: return "the APK path cannot be resolved"
         if (!canonical.path.startsWith("$canonicalBase/")) return "the APK is outside the Minion files folder"
         if (!Files.isRegularFile(current.toPath(), LinkOption.NOFOLLOW_LINKS)) return "the APK is not a regular file"
-        if (current.length() != size) return "the APK changed after the Worker checked it"
+        if (current.length() != size) return CHANGED
         return null
     }
 
@@ -106,6 +109,58 @@ internal object AppInstallChecks {
         }
         return null
     }
+
+    /**
+     * Copies the APK [source] into [staged], the app's private copy, from one
+     * open of the file and hashing exactly the bytes it copies. Package
+     * Manager then reads and the install session then gets that copy only,
+     * so the checks, the audited facts and the install describe the same
+     * bytes, which are the bytes the Worker hashed: a file swapped in the
+     * Minion files folder meanwhile cannot be checked as one APK and installed
+     * as another. Returns why the copy cannot be used (and removes it), or
+     * null when [staged] holds exactly [size] bytes with SHA-256 [sha256].
+     * I/O errors are thrown (and the copy removed).
+     */
+    fun stage(source: File, size: Long, sha256: String, staged: File): String? {
+        val problem = try {
+            copyHashed(source, size, UpdateChecks.normalizeDigest(sha256), staged)
+        } catch (e: Exception) {
+            staged.delete()
+            throw e
+        }
+        if (problem != null) staged.delete()
+        return problem
+    }
+
+    private fun copyHashed(source: File, size: Long, sha256: String, staged: File): String? {
+        staged.delete()
+        FileInputStream(source).use { input ->
+            // The size and every byte come from this one open file.
+            val length = input.channel.size()
+            if (length != size || length <= 0 || length > MAX_APK_BYTES) return CHANGED
+            val digest = MessageDigest.getInstance("SHA-256")
+            FileOutputStream(staged).use { out ->
+                val buffer = ByteArray(64 * 1024)
+                var total = 0L
+                while (true) {
+                    val n = input.read(buffer)
+                    if (n < 0) break
+                    total += n
+                    if (total > length) return CHANGED_WHILE_READ
+                    digest.update(buffer, 0, n)
+                    out.write(buffer, 0, n)
+                }
+                if (total != length) return CHANGED_WHILE_READ
+                out.fd.sync()
+            }
+            if (UpdateChecks.hex(digest.digest()) != sha256) return DIGEST_MISMATCH
+        }
+        return null
+    }
+
+    const val CHANGED = "the APK changed after the Worker checked it"
+    const val CHANGED_WHILE_READ = "the APK changed while it was read"
+    const val DIGEST_MISMATCH = "the APK does not match the SHA-256 the Worker computed"
 
     /** The signer digests joined, as the status file reports them. */
     fun signerText(signers: List<String>): String = normalized(signers).joinToString(",")

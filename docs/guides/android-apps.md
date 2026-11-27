@@ -87,17 +87,20 @@ The Worker:
 
 The app:
 
-1. reads the archive with Android's package manager: package name, version
+1. copies the APK, from one open of the file, into its private storage and
+   requires the copy to have the SHA-256 and size of the request (a file
+   changed after the request is refused); every later step reads this copy
+   only, so the checks, the audit and the install see the same bytes;
+2. reads the copy with Android's package manager: package name, version
    code, version name, label and signing certificate;
-2. refuses the Minion app itself (Minion updates itself with its own
+3. refuses the Minion app itself (Minion updates itself with its own
    [update path](android-updates.md));
-3. for an installed app: requires the same signing certificate as the
+4. for an installed app: requires the same signing certificate as the
    installed one and a version code at least as high (no downgrade); the same
    version is reinstalled only with `--allow-new`;
-4. for an app that is not installed: requires `--allow-new`;
-5. streams the file into the install session and requires the bytes to have
-   the SHA-256 of the request (a file changed after the request is refused);
-6. reads the request once more right before the commit; a withdrawn request
+5. for an app that is not installed: requires `--allow-new`;
+6. streams the copy into the install session and removes it;
+7. reads the request once more right before the commit; a withdrawn request
    installs nothing.
 
 Android itself then refuses an APK with another signer or a lower version

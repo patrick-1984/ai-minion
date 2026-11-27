@@ -1,7 +1,9 @@
 package cc.nasz.minion
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -120,5 +122,43 @@ class AppInstallChecksTest {
 
     @Test fun signerTextIsSortedAndLowercase() {
         assertEquals("$key,$otherKey", AppInstallChecks.signerText(listOf(otherKey.uppercase(), key)))
+    }
+
+    // Review finding (v0.25.0): the app read the APK by path for its checks
+    // and opened the path again to install it, so a file swapped in between
+    // was checked as one APK and installed as another. Now one open copies
+    // the bytes the Worker hashed into a private file, and only that copy is
+    // checked and installed.
+    @Test fun stagedCopyIsTheHashedBytesAndOutlivesASwap() {
+        val dir = folder()
+        val good = File(dir, "app.apk").apply { writeBytes(ByteArray(3000) { (it % 251).toByte() }) }
+        val sha = UpdateChecks.sha256(good.readBytes())
+        val staged = File(temp.newFolder("stage"), "staged.apk")
+        assertNull(AppInstallChecks.stage(good, good.length(), sha.uppercase(), staged))
+        assertTrue(staged.readBytes().contentEquals(good.readBytes()))
+        // Another APK renamed over the source afterwards leaves the copy that
+        // is checked and installed as it was.
+        val other = File(dir, "other.apk").apply { writeBytes(ByteArray(3000) { 7 }) }
+        Files.move(other.toPath(), good.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+        assertEquals(sha, UpdateChecks.sha256(staged.readBytes()))
+    }
+
+    @Test fun stagingRefusesAnotherFileAndRemovesTheCopy() {
+        val dir = folder()
+        val swapped = File(dir, "app.apk").apply { writeBytes(ByteArray(3000) { 7 }) }
+        val staged = File(temp.newFolder("stage"), "staged.apk")
+        // The bytes are not the ones the Worker hashed.
+        assertEquals(AppInstallChecks.DIGEST_MISMATCH, AppInstallChecks.stage(swapped, 3000, digest, staged))
+        assertFalse(staged.exists())
+        // Another size than the Worker measured.
+        assertEquals(AppInstallChecks.CHANGED,
+            AppInstallChecks.stage(swapped, 2999, UpdateChecks.sha256(swapped.readBytes()), staged))
+        assertFalse(staged.exists())
+        // A stale copy of an earlier attempt never stands in for a missing file.
+        staged.writeBytes(swapped.readBytes())
+        assertThrows(java.io.IOException::class.java) {
+            AppInstallChecks.stage(File(dir, "gone.apk"), 3000, UpdateChecks.sha256(swapped.readBytes()), staged)
+        }
+        assertFalse(staged.exists())
     }
 }

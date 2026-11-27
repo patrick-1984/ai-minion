@@ -51,8 +51,10 @@ internal data class AppInstallView(
  *   Outcomes also go to `app-install-history.jsonl` (last 50).
  *
  * Every process of the app's user can rewrite those files, so the app checks
- * again itself: the path is confined to Minion files, the bytes it streams
- * into the session must hash to the requested digest, Minion itself is
+ * again itself: the path is confined to Minion files, the APK is copied once
+ * into the app's private staging folder and that copy must hash to the
+ * requested digest (Package Manager reads and the session gets only that
+ * copy, so the checks and the install see the same bytes), Minion itself is
  * refused, an installed app needs the same signers and no downgrade, and a new
  * app needs allow_new. Android allows a silent install only for apps whose
  * installer of record is Minion; anything else asks on the device.
@@ -64,6 +66,11 @@ internal class AppInstaller private constructor(context: Context) {
     private val preferences = app.getSharedPreferences("app_installer", Context.MODE_PRIVATE)
     private val updateDir = File(app.noBackupFilesDir, "state/update")
     private val filesDir = File(NativeWorker(app).minionFilesPath)
+
+    // The private copy of the APK being installed: outside the Minion files
+    // folder, which every session's file transfers write to.
+    private val stageDir = File(app.noBackupFilesDir, "app-install")
+    private val staged = File(stageDir, "staged.apk")
 
     @Volatile var view = AppInstallView()
         private set
@@ -156,7 +163,20 @@ internal class AppInstaller private constructor(context: Context) {
             finish(a, REFUSED, it)
             return
         }
-        val facts = archiveFacts(File(p.path))
+        // One copy of the APK, the bytes the Worker hashed, is what is
+        // checked, reported and installed.
+        val stageProblem = try {
+            ensureStageDir()
+            AppInstallChecks.stage(File(p.path), p.size, p.sha256, staged)
+        } catch (e: Exception) {
+            finish(a, FAILED, "could not copy the APK: ${e.message ?: e.javaClass.simpleName}")
+            return
+        }
+        stageProblem?.let {
+            finish(a, REFUSED, it)
+            return
+        }
+        val facts = archiveFacts(staged)
         val installed = facts?.packageName?.takeIf { it.isNotBlank() }?.let(::installedApp)
         a = a.copy(
             packageName = facts?.packageName.orEmpty(), versionCode = facts?.versionCode ?: 0,
@@ -187,11 +207,12 @@ internal class AppInstaller private constructor(context: Context) {
         }
         var sessionId = -1
         try {
-            FileInputStream(File(p.path)).use { input ->
-                // The size and every byte come from this one open file.
+            FileInputStream(staged).use { input ->
+                // The private copy that was checked; the size and every
+                // byte come from this one open file.
                 val length = input.channel.size()
                 if (length != p.size || length <= 0 || length > AppInstallChecks.MAX_APK_BYTES) {
-                    finish(a, REFUSED, "the APK changed after the Worker checked it")
+                    finish(a, REFUSED, AppInstallChecks.CHANGED)
                     return
                 }
                 params.setSize(length)
@@ -210,12 +231,12 @@ internal class AppInstaller private constructor(context: Context) {
                             out.write(buffer, 0, n)
                             total += n
                         }
-                        check(total == length) { "the APK changed while it was read" }
+                        check(total == length) { AppInstallChecks.CHANGED_WHILE_READ }
                         session.fsync(out)
                     }
                     if (UpdateChecks.hex(digest.digest()) != p.sha256) {
                         session.abandon()
-                        finish(a, REFUSED, "the APK does not match the SHA-256 the Worker computed")
+                        finish(a, REFUSED, AppInstallChecks.DIGEST_MISMATCH)
                         return
                     }
                     // Right before the commit: the Worker may have withdrawn it.
@@ -231,6 +252,9 @@ internal class AppInstaller private constructor(context: Context) {
         } catch (e: Exception) {
             if (sessionId >= 0) runCatching { installer.abandonSession(sessionId) }
             finish(a, FAILED, "could not hand the APK to Android: ${e.message ?: e.javaClass.simpleName}")
+        } finally {
+            // The session holds its own copy once written.
+            staged.delete()
         }
     }
 
@@ -290,6 +314,7 @@ internal class AppInstaller private constructor(context: Context) {
                 "the app restarted before the install was confirmed; run the install again"
             else "the app restarted during the install; run the install again")
         }
+        staged.delete()
         abandonOwnSessions()
         publish()
     }
@@ -306,6 +331,7 @@ internal class AppInstaller private constructor(context: Context) {
 
     private fun finish(a: Attempt, state: String, reason: String) {
         val done = a.copy(state = state, reason = reason, sessionId = -1)
+        staged.delete()
         setAttempt(done)
         confirmation = null
         committedAt = 0
@@ -374,6 +400,11 @@ internal class AppInstaller private constructor(context: Context) {
             check(updateDir.mkdirs() || updateDir.isDirectory)
             Os.chmod(updateDir.path, 448) // 0700
         }
+    }
+
+    private fun ensureStageDir() {
+        if (!stageDir.isDirectory) check(stageDir.mkdirs() || stageDir.isDirectory)
+        Os.chmod(stageDir.path, 448) // 0700
     }
 
     private fun atomicWrite(target: File, text: String) {
