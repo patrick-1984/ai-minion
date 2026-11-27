@@ -8,14 +8,17 @@ One default holds everywhere: **nothing crosses Workers until someone decides it
 
 ## The model in one page
 
-A **grant** is one decision: *source session S on Worker A may reach target T on Worker B at a level.*
+A **grant** is one decision: *these sources may reach these targets on another Worker at a level, with these boxes.*
 
 ```text
  grant:  session wb-4 on dana-work  --may reach-->  session wb-3 on dana-f5   at level Message
-         (source: always one named session)           (target: one session, or every shared session of the Worker)
+         (from: one session, every shared        (to: one or several sessions, or every shared
+          session on a Worker, or everyone)          session on one Worker)
 ```
 
-- The source is always one named session. The target is one session, or **every shared session** of the target Worker, future ones included.
+- **From** is one session, **every shared session on a Worker** (sessions it shares later included), or **Everyone**: every shared session on every eligible Worker (administrators only). **To** is one or several named sessions, or **every shared session** of one target Worker, future ones included. Grants are many-to-many: one source can reach many targets, and many sources one target (a shared resource).
+- Choosing several target sessions saves one grant per target in one step, all or none. Each is a row of its own on **Grants** and can be changed or revoked on its own.
+- Three boxes sit under the level, all off until you tick them: **Receive files from target** (list and copy files out, any level), **Send files to target** (copy files in, needs Control) and **Install apps on** the target's Android Worker (needs Control). Control ticks none of them. See [File transfer](file-transfer.md) and [Installing Android apps](android-apps.md).
 - Source and target are on different Workers. A grant inside one Worker is refused: every session of a Worker can already reach the others on that host through the local socket, so a grant there would promise a boundary that does not exist.
 - A grant only allows. There are no deny rows: to take access away, revoke the grant.
 
@@ -77,7 +80,7 @@ Every source session is shown with how the Hub knows it.
 | **Verified** | The calling terminal is proven by the kernel and holds a short lease. Today this exists only for session-bound master sessions in a prepared Claude Code terminal on Linux ([AI agents](agents.md#prepare-one-claude-code-terminal)). |
 | **Claimed** | The session is a **name reported by its Worker**, taken from the pane of the calling process. Nothing verifies it further. |
 
-Every grant made today has a Claimed source; Verified sources for grants are planned. Plan for what Claimed means:
+A grant made on **Grants** has a Claimed source (a grant pinned to one terminal before v0.26.0 stays Verified, and works only from that terminal). Plan for what Claimed means:
 
 - **Any program that runs as the Worker's OS user on that host can use the grant.** Treat a grant from a Claimed session as a grant to the whole account of the source Worker, and keep untrusted work on other Workers or accounts.
 - A session name can come back as another terminal. The Hub deletes grants when it sees the session end, be renamed or stop being shared (see [What ends a grant](#what-ends-or-suspends-a-grant)). A replacement that happens between two observations of the Hub is not noticed; an instance id per session is planned with a Worker release.
@@ -89,23 +92,23 @@ Every grant made today has a Claimed source; Verified sources for grants are pla
 | Page | Address | What it answers |
 | --- | --- | --- |
 | **Who reaches what** (the matrix) | `/access` | Which session reaches which session on another Worker **right now**, and which layer blocks a pair. Rows are source sessions, columns are target sessions, grouped by Worker. A cell shows what is in effect: `V`, `M` or `C`, `C★` for master reach, `⊘ blocked:` with the layer, `·` for none. Read-only. **Refresh** reloads it, "As of" says how old it is, **Print** gives a print layout. A cell opens **Why?** for that pair. |
-| **Grants** | `/access/grants` | Every grant you may see, with source, target, granted level, state (active, expired, suspended), who decided and until when. This is where grants are added, changed, approved and revoked. Master reach is not listed here. |
+| **Grants** | `/access/grants` | Every grant you may see: **From**, **To**, **Access** (the level and the boxes that are on), **State** (active, expired, suspended, and what is in effect now) and **Until**. **Details** on a row shows who decided, the note and (administrators) the history. This is where grants are added, changed, approved and revoked. Master reach is not listed here. |
 | **Why?** | `/access/why` | One source and one target: every check in order (caller, grant, authority, time, sharing, Workers, preview-only), each as pass, fail, not evaluated or unknown. The first failing check is what blocks the pair. |
 | **Minion control** (administrators) | `/access/control` | Master sessions, which Workers accept control from which, and the **User-managed** switch of each Worker. See [Minion control](minion-control.md). |
 
 The matrix and **Why?** are computed by the same code. They are a snapshot: nothing decides from them. Preview-only is always "unknown" there, because the target Worker decides it and does not report it to the Hub. The selects on **Why?** offer the sessions that appear in the matrix; another pair can be asked with `access_explain`.
 
-Planned, not in this release: an Access panel on the session and Worker pages, a drawer in the matrix, CSV export, a preview and a typed confirmation in the Add dialog, **Undo** after adding.
+Planned, not in this release: an Access panel on the session and Worker pages, a drawer in the matrix, CSV export, **Undo** after adding.
 
 ## Step by step
 
 ### Let one session read another
 
 1. Open **Access**, then **Grants**, then **Add grant**.
-2. **Source**: the Worker and the session that should get access. The list offers sessions that are online and shared; as an owner you choose among your own Workers.
-3. **Target**: the other Worker, and one session or "every shared session of this Worker".
-4. **Level**: **View**. **Until**: no end, 7 days or 30 days. A note is optional.
-5. **Add grant**. The grant is listed at once and works on the next call of the source session.
+2. **From**: **One session** and pick it (sessions are grouped by Worker), or **Every shared session on a Worker** and pick the Worker. As an owner you choose among your own Workers; administrators also have **Everyone**.
+3. **To**: **Choose sessions** and pick one or several (grouped by Worker), or **Every shared session on one Worker** and pick it ("includes sessions this Worker shares later").
+4. **Access**: **View** (the default), **Message** or **Control**, and under it the three boxes, all off. **Until**: no end (the default), 7 days or 30 days. A note is optional.
+5. The form says in one sentence what will be saved, for example "wb-2 can control minion-5 on home-pc and receive and send files." Press **Add grant** once. The form closes, the new rows are marked in the list and work on the next call of the source session. A choice the Hub refuses is named in the form, which keeps what you chose.
 
 The target Worker must share the target session ([pairing and sharing](pairing.md)); a grant does not change sharing.
 
@@ -126,11 +129,15 @@ minion send_text --target <worker-id>:reviewer --text 'Please review the open br
 3. Choose **Control** and under **Until** prefer 7 days or 30 days over "no end": the source is Claimed, so the grant is in fact for the whole account of the source Worker.
 4. **Add grant**.
 
+### Share one resource with everyone (administrator)
+
+**From Everyone, To the shared session, Control, Add grant.** Every shared session on every other eligible Worker can then control that session; with the three boxes off, none of them gets file or install permission. A session that is not shared never matches Everyone, and a grant never reaches the caller's own Worker.
+
 The grant has the authority `admin` and names you as the person who decided. The owner of either Worker sees it under **Grants** and can revoke it.
 
 ### Change or revoke
 
-On **Grants**, each row has **Change level** (View, Message, Control, then **Save**) and **Revoke**. A change is made for the revision you looked at: if someone else changed the grant meanwhile, the page says so and shows the current state. A revoked grant is gone; to give the access back, add it again.
+On **Grants**, each row has **Edit** (the level and the same three boxes, then **Save**) and **Revoke**. Raising the level to Control, to every shared session or between two users asks once more on the row. A change is made for the revision you looked at: if someone else changed the grant meanwhile, the page says so and shows the current state. A revoked grant is gone; to give the access back, add it again.
 
 ### Mark a command shell
 
@@ -216,7 +223,7 @@ hubop() {   # hubop <operation> '<json arguments>'
 | Operation | Who | Example |
 | --- | --- | --- |
 | `grant_list` | An owner: the grants that touch their Workers. An administrator: all. `worker_id` narrows the list. | `hubop grant_list '{}'` |
-| `grant_set` | Browser session only. Creates a grant, or with `id` and `if_revision` changes level, expiry and note. | body: `{"request_id":"<new UUIDv7>","source_worker_id":"<id>","source_session":"wb-4","target_worker_id":"<id>","target_session":"wb-3","level":"message","expires_at":"2026-12-31T00:00:00.000Z"}` |
+| `grant_set` | Browser session only. Creates grants in one step, or with `id` and `if_revision` changes level, boxes, expiry and note. `source_scope` is `session` (default), `worker` or `everyone`; `targets` lists several targets, one grant each, all or none (answer: `created_ids`). | body: `{"request_id":"<new UUIDv7>","source_scope":"session","source_worker_id":"<id>","source_session":"wb-4","targets":[{"worker_id":"<id>","session_name":"wb-3"}],"level":"control","files_pull":true,"files_push":true}` |
 | `grant_revoke` | Owner of a Worker it touches, administrator, API key with `operate` on one of the Workers. `if_revision` is optional. | `hubop grant_revoke '{"request_id":"<new UUIDv7>","id":"<grant-id>"}'` |
 | `grant_approve` | Administrator, browser session only. Lifts a suspension. | body: `{"request_id":"<new UUIDv7>","id":"<grant-id>","if_revision":4}` |
 | `access_matrix` | Every signed-in user and Hub-wide keys: what they may see. `worker_id` keeps the pairs with that Worker at either end. | `hubop access_matrix '{}'` |
