@@ -209,7 +209,7 @@ func (s *Service) check(ctx context.Context) error {
 		return &Error{Code: ErrDisabled}
 	}
 	if shared, _ := s.shared(ctx); shared {
-		s.disable(ctx, ReasonShare)
+		_ = s.disable(ctx, ReasonShare) // refused either way; a failure is logged
 		return &Error{Code: ErrShared}
 	}
 	if code := stateCode(st.State); code != "" {
