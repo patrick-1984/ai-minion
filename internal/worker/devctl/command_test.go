@@ -50,7 +50,7 @@ func TestInputCommand(t *testing.T) {
 	}
 	bad := [][]string{
 		nil, {"keyevent"}, {"keyevent", "HOME; reboot"}, {"keyevent", "keycode_home"},
-		{"text"}, {"text", ""}, {"text", "a", "b"}, {"text", "tab\there"}, {"text", "café"},
+		{"text"}, {"text", ""}, {"text", "a", "b"}, {"text", "tab\there"}, {"text", "caf\xc3\xa9"},
 		{"tap", "1"}, {"tap", "-1", "2"}, {"tap", "1", "2x"}, {"tap", "1", "99999"}, {"tap", "01", "2"},
 		{"swipe", "1", "2", "3"}, {"swipe", "1", "2", "3", "4", "20000"},
 		{"roll", "1"}, {"draganddrop", "1", "2", "3", "4"},
