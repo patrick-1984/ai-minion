@@ -90,6 +90,9 @@ type Crumb struct {
 	Code string
 	// Switch is the id of a popover that the crumb's switch button opens ("" for none).
 	Switch string
+	// Name marks a label that is a name of any length (a Worker or a session):
+	// on a narrow screen it is cut with an ellipsis and its title holds it in full.
+	Name bool
 }
 
 // Crumbed is implemented by the Data of a page that knows its own ancestors,

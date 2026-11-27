@@ -385,7 +385,7 @@ func TestSessionWorkspaceIdentifiesTargetOwnerAccessAndConnection(t *testing.T) 
 		`<script src="/static/terminal-input.js" defer></script>`, `<script src="/static/session-ui.js" defer></script>`)
 	// The breadcrumb ancestors are real pages.
 	mustHave(t, body, `<li><a href="/">Control center</a></li>`, `<li><a href="/workers">Workers</a></li>`,
-		`<li><a href="/workers/`+sessWorkerID+`">pi-1</a></li>`, `<li><a href="/s/pi-1/minion-1" aria-current="page">minion-1</a></li>`)
+		`<li><a href="/workers/`+sessWorkerID+`"><span class="crumb-label" title="pi-1">pi-1</span></a></li>`, `<li><a href="/s/pi-1/minion-1" aria-current="page"><span class="crumb-label" title="minion-1">minion-1</span></a></li>`)
 }
 
 func TestSessionInputDockIsSafeByDefault(t *testing.T) {

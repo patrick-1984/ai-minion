@@ -49,8 +49,8 @@ func TestSessionPageBreadcrumbLinksAndSwitcher(t *testing.T) {
 		// Control center / Workers / pi-1 / 5-667 minion-1: every part a link, the
 		// Worker and the session open the switcher, the code comes first.
 		`<li><a href="/">Control center</a></li>`, `<li><a href="/workers">Workers</a></li>`,
-		`<li><a href="/workers/`+sessWorkerID+`">pi-1</a>`+btn("pi-1"),
-		`<li><a href="/s/pi-1/minion-1" aria-current="page"><code class="crumb-code">5-667</code> minion-1</a>`+btn("minion-1"),
+		`<li><a href="/workers/`+sessWorkerID+`"><span class="crumb-label" title="pi-1">pi-1</span></a>`+btn("pi-1"),
+		`<li><a href="/s/pi-1/minion-1" aria-current="page"><code class="crumb-code">5-667</code> <span class="crumb-label" title="minion-1">minion-1</span></a>`+btn("minion-1"),
 		// The switcher: a native popover with the Worker's sessions and the Workers.
 		`<div class="info-pop crumb-switch" id="crumb-switch" popover data-crumb-switch>`,
 		`<p class="crumb-switch-h" id="crumb-switch-s">Sessions on pi-1</p>`,
@@ -73,7 +73,7 @@ func TestSessionPageBreadcrumbWithoutLiveListsOrEmbedded(t *testing.T) {
 	s, _ := sessionOps(t)
 	// No live source: the breadcrumb is still complete, without a switcher.
 	body := sessGet(t, s, "/s/pi-1/minion-1", sessUser).Body.String()
-	mustHave(t, body, `<li><a href="/workers/`+sessWorkerID+`">pi-1</a></li>`, `<li><a href="/s/pi-1/minion-1" aria-current="page">minion-1</a></li>`)
+	mustHave(t, body, `<li><a href="/workers/`+sessWorkerID+`"><span class="crumb-label" title="pi-1">pi-1</span></a></li>`, `<li><a href="/s/pi-1/minion-1" aria-current="page"><span class="crumb-label" title="minion-1">minion-1</span></a></li>`)
 	mustNotHave(t, body, `popovertarget="crumb-switch"`, `data-crumb-switch`, `crumb-code`)
 
 	// The compact view inside the inspector has no topbar and no switcher.
@@ -103,7 +103,7 @@ func TestSessionPageBreadcrumbOfAnAdminOnAnotherUsersWorker(t *testing.T) {
 	t.Cleanup(func() { SetLiveSource(nil) })
 	body := sessGet(t, s, "/s/pi-1/minion-1", adminHeader).Body.String()
 	// The links keep the All users scope where another owner's Worker needs it.
-	mustHave(t, body, `<li><a href="/workers?scope=all">Workers</a></li>`, `<a href="/workers/`+sessWorkerID+`?scope=all">pi-1</a>`,
+	mustHave(t, body, `<li><a href="/workers?scope=all">Workers</a></li>`, `<a href="/workers/`+sessWorkerID+`?scope=all"><span class="crumb-label" title="pi-1">pi-1</span></a>`,
 		`<a href="/workers/w-alice" data-filter="alice-box">`)
 	// The switcher offers the admin's own Workers and this one, not the whole Hub.
 	if strings.Contains(body, "dave-box") {
