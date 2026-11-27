@@ -765,6 +765,10 @@ func handleGrantAdd(w http.ResponseWriter, r *http.Request, c OpCaller, u pageUs
 		return
 	}
 	a.SourceSession, a.TargetSession = ss, ts
+	if err := grantFileFlags(&a, f); err != "" {
+		writeResultError(w, err)
+		return
+	}
 	until, untilText := f.Get("until"), "with no end"
 	switch until {
 	case "7", "30":
@@ -778,12 +782,16 @@ func handleGrantAdd(w http.ResponseWriter, r *http.Request, c OpCaller, u pageUs
 	// and sent only when the same values come back confirmed.
 	sources, targets := grantWorkers(r, u)
 	src, tgt := grantWorkerOption(sources, a.SourceWorkerID), grantWorkerOption(targets, a.TargetWorkerID)
-	if grantWidens(a.Level, ts, src.Owner, tgt.Owner) {
-		sum := sha256.Sum256([]byte(strings.Join([]string{a.SourceWorkerID, ss, a.TargetWorkerID, scope, ts, a.Level, until}, "\x00")))
+	if grantWidens(a.Level, ts, src.Owner, tgt.Owner) || fileFlagsKey(a) != "" {
+		parts := []string{a.SourceWorkerID, ss, a.TargetWorkerID, scope, ts, a.Level, until}
+		if fk := fileFlagsKey(a); fk != "" {
+			parts = append(parts, fk)
+		}
+		sum := sha256.Sum256([]byte(strings.Join(parts, "\x00")))
 		key := hex.EncodeToString(sum[:])
 		if f.Get("confirm") != "1" || f.Get("confirm_for") != key {
 			writeFragmentTemplate(w, grantTemplates(), "grant_add_confirm", grantAddConfirm{
-				Sentence: grantSentence(ss, src.Name, src.Owner, ts, tgt.Name, tgt.Owner, a.Level, untilText), For: key})
+				Sentence: grantSentence(ss, src.Name, src.Owner, ts, tgt.Name, tgt.Owner, a.Level, untilText) + fileFlagsSentence(a), For: key})
 			return
 		}
 	}

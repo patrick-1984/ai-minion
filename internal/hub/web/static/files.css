@@ -1,0 +1,11 @@
+/* Files view of the session page and the transfer history (files.v1). */
+.files-panel .inline-form, .files-history .inline-form { display: inline-block; margin: 0; }
+.files-crumbs { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; margin: 0 0 8px; }
+.files-table td { vertical-align: middle; }
+.files-name { overflow-wrap: anywhere; }
+.files-transfers { display: grid; gap: 8px; margin: 8px 0; }
+.files-transfer { border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; background: var(--surface-subtle); }
+.files-transfer p { margin: 0 0 6px; overflow-wrap: anywhere; }
+.files-transfer progress { width: 100%; }
+.files-transfer .form-actions { margin-top: 6px; }
+.files-upload { margin-top: 12px; }
