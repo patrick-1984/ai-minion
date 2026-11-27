@@ -208,10 +208,14 @@ func TestEffectiveActions(t *testing.T) {
 		res  authz.Resource
 		want []ops.Action
 	}{
-		{"owner", authz.NewSessionPrincipal("alice"), res, []ops.Action{ops.ActionFileRead, ops.ActionFileWrite, ops.ActionMessage, ops.ActionOperate, ops.ActionRead}},
-		{"admin", authz.NewSessionPrincipal("admin"), res, []ops.Action{ops.ActionFileRead, ops.ActionFileWrite, ops.ActionManage, ops.ActionMessage, ops.ActionOperate, ops.ActionRead}},
+		{"owner", authz.NewSessionPrincipal("alice"), res, []ops.Action{ops.ActionAppInstall, ops.ActionFileRead, ops.ActionFileWrite, ops.ActionMessage, ops.ActionOperate, ops.ActionRead}},
+		{"admin", authz.NewSessionPrincipal("admin"), res, []ops.Action{ops.ActionAppInstall, ops.ActionFileRead, ops.ActionFileWrite, ops.ActionManage, ops.ActionMessage, ops.ActionOperate, ops.ActionRead}},
 		{"foreign", authz.NewSessionPrincipal("bob"), res, nil},
 		{"scoped read", authz.NewAPIKeyPrincipal("alice", everything(ops.ActionRead), ""), res, []ops.Action{ops.ActionRead}},
+		{"key without app_install", authz.NewAPIKeyPrincipal("alice", everything(ops.ActionRead, ops.ActionOperate, ops.ActionFileWrite), ""),
+			authz.WorkerResource{ID: "w-alice"}, []ops.Action{ops.ActionFileWrite, ops.ActionOperate, ops.ActionRead}},
+		{"key naming app_install", authz.NewAPIKeyPrincipal("alice", everything(ops.ActionAppInstall), ""),
+			authz.WorkerResource{ID: "w-alice"}, []ops.Action{ops.ActionAppInstall}},
 		{"missing resource", authz.NewSessionPrincipal("alice"), authz.WorkerResource{ID: "w-none"}, nil},
 	}
 	for _, c := range cases {

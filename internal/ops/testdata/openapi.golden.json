@@ -1286,6 +1286,9 @@
       },
       "ControlAccept": {
         "properties": {
+          "apps_install": {
+            "type": "boolean"
+          },
           "files_pull": {
             "type": "boolean"
           },
@@ -1456,6 +1459,9 @@
       "ControlSetAcceptArgs": {
         "properties": {
           "accept": {
+            "type": "boolean"
+          },
+          "apps_install": {
             "type": "boolean"
           },
           "files_pull": {
@@ -2275,6 +2281,9 @@
       },
       "Grant": {
         "properties": {
+          "apps_install": {
+            "type": "boolean"
+          },
           "authority": {
             "type": "string"
           },
@@ -2508,6 +2517,9 @@
       },
       "GrantSetArgs": {
         "properties": {
+          "apps_install": {
+            "type": "boolean"
+          },
           "command_shell": {
             "type": "boolean"
           },

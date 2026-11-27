@@ -269,3 +269,58 @@ func TestCheckFileEnds(t *testing.T) {
 		}
 	}
 }
+
+// The apps_install flag (v0.25.0): app_install on the target's Worker, only
+// for a verified session, only at level Control, never through files_push,
+// and only through its own grant or acceptance row.
+func TestAppInstallFlag(t *testing.T) {
+	a := dgAuthz(grantStore())
+	ctx := context.Background()
+	install := set(ops.ActionAppInstall)
+	w2 := authz.WorkerResource{ID: "W2"}
+	grant := func(level int, apps, push bool) authz.DirectGrant {
+		g := ownerGrant("g", "W2", "x", level)
+		g.AppsInstall, g.FilesPush = apps, push
+		return g
+	}
+	verified := func(g authz.DirectGrant) authz.Principal {
+		return authz.NewWorkerSessionPrincipal("A1", "main", nil, []authz.DirectGrant{g}).WithVerifiedFiles("main", nil)
+	}
+	for _, c := range []struct {
+		name string
+		p    authz.Principal
+		res  authz.Resource
+		want bool
+	}{
+		{"verified control grant with the flag", verified(grant(authz.LevelControl, true, false)), w2, true},
+		{"flag off by default", verified(grant(authz.LevelControl, false, false)), w2, false},
+		{"files_push does not imply it", verified(grant(authz.LevelControl, false, true)), w2, false},
+		{"flag below control", verified(grant(authz.LevelControl-1, true, false)), w2, false},
+		{"claimed session", authz.NewWorkerSessionPrincipal("A1", "main", nil, []authz.DirectGrant{grant(authz.LevelControl, true, false)}), w2, false},
+		{"another Worker", verified(grant(authz.LevelControl, true, false)), authz.WorkerResource{ID: "W3"}, false},
+		{"owner", authz.NewSessionPrincipal("alice"), w2, true},
+		{"admin", authz.NewSessionPrincipal("admin"), w2, true},
+		{"foreign user", authz.NewSessionPrincipal("bob"), w2, false},
+		{"API key with everything else", authz.NewAPIKeyPrincipal("alice", everything(append(allFour, ops.ActionFileRead, ops.ActionFileWrite)...), ""), w2, false},
+		{"API key naming app_install", authz.NewAPIKeyPrincipal("alice", everything(ops.ActionAppInstall), ""), w2, true},
+		{"Worker identity", authz.NewWorkerPrincipal("W2"), w2, false},
+	} {
+		if got := a.Decide(ctx, c.p, install, c.res) == nil; got != c.want {
+			t.Errorf("%s: app_install allowed=%t, want %t", c.name, got, c.want)
+		}
+	}
+	// A master acceptance: only a row with the flag, for its own Worker.
+	scope := grantScope(tW2, tW3Build)
+	off := authz.FileAcceptance{ID: "acc-w2", TargetWorkerID: "W2", FilesPush: true}
+	on := off
+	on.AppsInstall = true
+	if a.Decide(ctx, authz.NewBoundMasterPrincipal("A1", scope).WithVerifiedFiles("main", []authz.FileAcceptance{off}), install, w2) == nil {
+		t.Error("an acceptance without apps_install allows app_install")
+	}
+	if err := a.Decide(ctx, authz.NewBoundMasterPrincipal("A1", scope).WithVerifiedFiles("main", []authz.FileAcceptance{on}), install, w2); err != nil {
+		t.Errorf("an acceptance with apps_install: %v", err)
+	}
+	if a.Decide(ctx, authz.NewBoundMasterPrincipal("A1", scope), install, w2) == nil {
+		t.Error("a master without verified authority allows app_install")
+	}
+}

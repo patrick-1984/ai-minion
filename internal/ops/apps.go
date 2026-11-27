@@ -2,7 +2,10 @@ package ops
 
 import (
 	"reflect"
+	"strconv"
 	"strings"
+
+	"github.com/patrick-1984/ai-minion/internal/proto"
 )
 
 // App install on the Android Worker (v0.25.0, docs/guides/android-apps.md):
@@ -126,6 +129,26 @@ type AppInstallResult struct {
 	InstalledVersionCode int64 `json:"installed_version_code,omitempty"`
 	// NewInstall says the app was not installed before.
 	NewInstall bool `json:"new_install,omitempty"`
+}
+
+// AppInstallAuditDetail is the detail of the Hub's audit row of an app
+// install: the package, the version, the signer and the digest of the APK, and
+// the reason of an outcome other than installed. It never holds a path or
+// file contents.
+func AppInstallAuditDetail(r AppInstallResult) string {
+	word := func(s string, n int) string {
+		if s == "" {
+			return "none"
+		}
+		return proto.SafeText(strings.Join(strings.Fields(s), "_"), n)
+	}
+	d := "package=" + word(r.Package, 255) + " version_code=" + strconv.FormatInt(r.VersionCode, 10) +
+		" version=" + word(r.VersionName, 60) + " signer_sha256=" + word(r.SignerSHA256, 200) +
+		" sha256=" + word(r.SHA256, 64) + " new_install=" + strconv.FormatBool(r.NewInstall)
+	if r.Reason != "" && r.Outcome != AppInstallInstalled {
+		d += " reason=" + strconv.Quote(proto.SafeText(r.Reason, 200))
+	}
+	return d
 }
 
 // AppInstallStatusArgs are the arguments of app_install_status.

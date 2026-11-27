@@ -106,6 +106,10 @@ type Grant struct {
 	// neither.
 	FilesPull bool `json:"files_pull,omitempty"`
 	FilesPush bool `json:"files_push,omitempty"`
+	// AppsInstall lets the source session install apps on the target's
+	// Android Worker from its Minion files folder (app_install, v0.25.0).
+	// Level control and a verified source only; never implied by files_push.
+	AppsInstall bool `json:"apps_install,omitempty"`
 
 	// Display members, filled by the handler.
 	SourceWorkerName string `json:"source_worker_name,omitempty"`
@@ -176,6 +180,10 @@ type GrantSetArgs struct {
 	// control.
 	FilesPull *bool `json:"files_pull,omitempty"`
 	FilesPush *bool `json:"files_push,omitempty"`
+	// AppsInstall sets the app install flag (see Grant.AppsInstall). Absent
+	// keeps the stored flag on a change (unset on a create); true needs
+	// level control.
+	AppsInstall *bool `json:"apps_install,omitempty"`
 }
 
 // Validate checks the shape of a grant. Whether the caller may decide it is
@@ -233,6 +241,9 @@ func (a GrantSetArgs) Validate() error {
 	}
 	if a.FilesPush != nil && *a.FilesPush && a.Level != GrantLevelControl {
 		return invalid("files_push", "pushing files needs level control")
+	}
+	if a.AppsInstall != nil && *a.AppsInstall && a.Level != GrantLevelControl {
+		return invalid("apps_install", "installing apps needs level control")
 	}
 	return nil
 }

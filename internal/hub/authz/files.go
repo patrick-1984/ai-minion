@@ -49,6 +49,8 @@ type FileAcceptance struct {
 	Sessions []string
 	// FilesPull and FilesPush are the file transfer flags of the row.
 	FilesPull, FilesPush bool
+	// AppsInstall is the app install flag of the row (v0.25.0).
+	AppsInstall bool
 }
 
 // covers reports whether the row reaches the session res.
@@ -131,6 +133,28 @@ func (s subject) acceptFileFor(a FileAcceptance, res ResolvedResource) []ops.Act
 		return nil
 	}
 	return fileFlagsActions(a.FilesPull, a.FilesPush, s.grantActions(res))
+}
+
+// appInstallActions is what the apps_install flags of the principal's
+// verified direct grants and acceptance rows authorize on res: app_install on
+// a Worker resource that is not the principal's own Worker. A direct grant
+// counts at level Control while it is valid for the Worker (directFor); an
+// acceptance row of that Worker counts while the master scope reaches it.
+func (s subject) appInstallActions(res ResolvedResource) []ops.Action {
+	if s.p.Kind != KindWorker || s.p.files == nil || res.Kind != ResourceWorker || res.WorkerID == s.p.WorkerID {
+		return nil
+	}
+	for _, g := range s.p.directList() {
+		if g.AppsInstall && g.Level == LevelControl && len(s.directFor(g, res)) != 0 {
+			return []ops.Action{ops.ActionAppInstall}
+		}
+	}
+	for _, a := range s.p.files.accepts {
+		if a.AppsInstall && a.TargetWorkerID == res.WorkerID && len(s.grantActions(res)) != 0 {
+			return []ops.Action{ops.ActionAppInstall}
+		}
+	}
+	return nil
 }
 
 // fileActions is the union of what the file flags of the principal's direct

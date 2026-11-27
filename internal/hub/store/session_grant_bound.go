@@ -43,9 +43,10 @@ func (s *Store) BindSessionGrant(ctx context.Context, id, incarnation string, if
 			return err
 		}
 		// A claimed grant carries no file authority: unbinding clears the
-		// file transfer flags (files.v1).
+		// file transfer flags (files.v1) and the app install flag.
 		if _, err := tx.ExecContext(ctx, `UPDATE session_grant SET source_incarnation = ?1,
 			files_pull = CASE WHEN ?1 = '' THEN 0 ELSE files_pull END, files_push = CASE WHEN ?1 = '' THEN 0 ELSE files_push END,
+			apps_install = CASE WHEN ?1 = '' THEN 0 ELSE apps_install END,
 			revision = revision + 1, updated_at = ?2 WHERE id = ?3 AND revision = ?4`, incarnation, time.Now().UnixMilli(), id, int64(ifRevision)); err != nil {
 			if strings.Contains(err.Error(), "UNIQUE constraint") {
 				return ErrGrantExists

@@ -1076,6 +1076,117 @@
         ],
         "type": "object"
       },
+      "AppInstallArgs": {
+        "properties": {
+          "allow_new": {
+            "type": "boolean"
+          },
+          "path": {
+            "type": "string"
+          },
+          "worker_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "type": "object"
+      },
+      "AppInstallFile": {
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "size": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "path",
+          "size"
+        ],
+        "type": "object"
+      },
+      "AppInstallResult": {
+        "properties": {
+          "installed_version_code": {
+            "type": "integer"
+          },
+          "label": {
+            "type": "string"
+          },
+          "new_install": {
+            "type": "boolean"
+          },
+          "outcome": {
+            "type": "string"
+          },
+          "package": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "sha256": {
+            "type": "string"
+          },
+          "signer_sha256": {
+            "type": "string"
+          },
+          "size": {
+            "type": "integer"
+          },
+          "version_code": {
+            "type": "integer"
+          },
+          "version_name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "outcome"
+        ],
+        "type": "object"
+      },
+      "AppInstallStatus": {
+        "properties": {
+          "block_reason": {
+            "type": "string"
+          },
+          "files": {
+            "items": {
+              "$ref": "#/components/schemas/AppInstallFile"
+            },
+            "type": "array"
+          },
+          "last": {
+            "$ref": "#/components/schemas/AppInstallResult"
+          },
+          "ready": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "files",
+          "ready"
+        ],
+        "type": "object"
+      },
+      "AppInstallStatusArgs": {
+        "properties": {
+          "worker_id": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
       "AuditEvent": {
         "properties": {
           "acting_as": {
@@ -1175,6 +1286,9 @@
       },
       "ControlAccept": {
         "properties": {
+          "apps_install": {
+            "type": "boolean"
+          },
           "files_pull": {
             "type": "boolean"
           },
@@ -1345,6 +1459,9 @@
       "ControlSetAcceptArgs": {
         "properties": {
           "accept": {
+            "type": "boolean"
+          },
+          "apps_install": {
             "type": "boolean"
           },
           "files_pull": {
@@ -2164,6 +2281,9 @@
       },
       "Grant": {
         "properties": {
+          "apps_install": {
+            "type": "boolean"
+          },
           "authority": {
             "type": "string"
           },
@@ -2397,6 +2517,9 @@
       },
       "GrantSetArgs": {
         "properties": {
+          "apps_install": {
+            "type": "boolean"
+          },
           "command_shell": {
             "type": "boolean"
           },
@@ -8864,6 +8987,249 @@
         "x-minion-session-only": false,
         "x-minion-stream": false,
         "x-minion-write": true
+      }
+    },
+    "/api/v1/ops/app_install": {
+      "post": {
+        "operationId": "app_install",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AppInstallArgs"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AppInstallResult"
+                }
+              }
+            },
+            "description": "The result of the operation."
+          },
+          "400": {
+            "$ref": "#/components/responses/Error400"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error403"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error404"
+          },
+          "405": {
+            "$ref": "#/components/responses/Error405"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error409"
+          },
+          "410": {
+            "$ref": "#/components/responses/Error410"
+          },
+          "413": {
+            "$ref": "#/components/responses/Error413"
+          },
+          "426": {
+            "$ref": "#/components/responses/Error426"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error429"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error500"
+          },
+          "501": {
+            "$ref": "#/components/responses/Error501"
+          },
+          "502": {
+            "$ref": "#/components/responses/Error502"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error503"
+          }
+        },
+        "summary": "Install an app on an Android Worker from an APK in its Minion files folder (owner or admin, or a session with the apps_install flag); a first install needs one confirmation on the device.",
+        "x-minion-actions": [
+          "app_install"
+        ],
+        "x-minion-guards": [],
+        "x-minion-mutates": true,
+        "x-minion-scope": "worker",
+        "x-minion-session-only": false,
+        "x-minion-stream": false,
+        "x-minion-write": false
+      }
+    },
+    "/api/v1/ops/app_install_status": {
+      "get": {
+        "operationId": "app_install_status_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "worker_id",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AppInstallStatus"
+                }
+              }
+            },
+            "description": "The result of the operation."
+          },
+          "400": {
+            "$ref": "#/components/responses/Error400"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error403"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error404"
+          },
+          "405": {
+            "$ref": "#/components/responses/Error405"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error409"
+          },
+          "410": {
+            "$ref": "#/components/responses/Error410"
+          },
+          "413": {
+            "$ref": "#/components/responses/Error413"
+          },
+          "426": {
+            "$ref": "#/components/responses/Error426"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error429"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error500"
+          },
+          "501": {
+            "$ref": "#/components/responses/Error501"
+          },
+          "502": {
+            "$ref": "#/components/responses/Error502"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error503"
+          }
+        },
+        "security": [
+          {
+            "bearerApiKey": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "summary": "Show whether an Android Worker can install apps, its last app install and the APK files in its Minion files folder.",
+        "x-minion-actions": [
+          "app_install"
+        ],
+        "x-minion-guards": [],
+        "x-minion-mutates": false,
+        "x-minion-scope": "worker",
+        "x-minion-session-only": false,
+        "x-minion-stream": false,
+        "x-minion-write": false
+      },
+      "post": {
+        "operationId": "app_install_status",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AppInstallStatusArgs"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AppInstallStatus"
+                }
+              }
+            },
+            "description": "The result of the operation."
+          },
+          "400": {
+            "$ref": "#/components/responses/Error400"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error403"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error404"
+          },
+          "405": {
+            "$ref": "#/components/responses/Error405"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error409"
+          },
+          "410": {
+            "$ref": "#/components/responses/Error410"
+          },
+          "413": {
+            "$ref": "#/components/responses/Error413"
+          },
+          "426": {
+            "$ref": "#/components/responses/Error426"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error429"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error500"
+          },
+          "501": {
+            "$ref": "#/components/responses/Error501"
+          },
+          "502": {
+            "$ref": "#/components/responses/Error502"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error503"
+          }
+        },
+        "summary": "Show whether an Android Worker can install apps, its last app install and the APK files in its Minion files folder.",
+        "x-minion-actions": [
+          "app_install"
+        ],
+        "x-minion-guards": [],
+        "x-minion-mutates": false,
+        "x-minion-scope": "worker",
+        "x-minion-session-only": false,
+        "x-minion-stream": false,
+        "x-minion-write": false
       }
     },
     "/api/v1/ops/audit_list": {

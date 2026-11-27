@@ -832,6 +832,8 @@ func directGrantsOf(rows []store.SessionGrantRow) []authz.DirectGrant {
 			// The file flags count only for a principal with verified file
 			// authority (authz.Principal.WithVerifiedFiles).
 			FilesPull: g.FilesPull, FilesPush: g.FilesPush,
+			// So does the app install flag (v0.25.0).
+			AppsInstall: g.AppsInstall,
 		}
 		if g.ExpiresAt != nil {
 			// A stored expiry always ends the grant, the zero time included.

@@ -61,6 +61,10 @@ type ControlAccept struct {
 	// only through this acceptance; one stored before v0.24 has neither.
 	FilesPull bool `json:"files_pull,omitempty"`
 	FilesPush bool `json:"files_push,omitempty"`
+	// AppsInstall lets master sessions of the source Worker install apps on
+	// this Android Worker from its Minion files folder (app_install,
+	// v0.25.0). Default off; never implied by files_push.
+	AppsInstall bool `json:"apps_install,omitempty"`
 }
 
 // ControlWorker is the Minion control state of one Worker.
@@ -165,6 +169,10 @@ type ControlSetAcceptArgs struct {
 	// new acceptance); they are refused with accept false.
 	FilesPull *bool `json:"files_pull,omitempty"`
 	FilesPush *bool `json:"files_push,omitempty"`
+	// AppsInstall sets the app install flag of the acceptance (see
+	// ControlAccept.AppsInstall). Absent keeps the stored flag; refused with
+	// accept false.
+	AppsInstall *bool `json:"apps_install,omitempty"`
 }
 
 // Validate checks the request id and the file transfer flags: a flag set to
@@ -175,6 +183,9 @@ func (a ControlSetAcceptArgs) Validate() error {
 	}
 	if !a.Accept && ((a.FilesPull != nil && *a.FilesPull) || (a.FilesPush != nil && *a.FilesPush)) {
 		return invalid("files_pull", "file transfer flags need accept true")
+	}
+	if !a.Accept && a.AppsInstall != nil && *a.AppsInstall {
+		return invalid("apps_install", "the app install flag needs accept true")
 	}
 	return nil
 }

@@ -205,7 +205,7 @@ func (h grantHandlers) info(g store.SessionGrantRow, ws map[string]GrantWorker) 
 		GrantedBy: g.GrantedBy, Revision: g.Revision,
 		CreatedAt: ops.Timestamp(time.UnixMilli(g.CreatedAt)), UpdatedAt: ops.Timestamp(time.UnixMilli(g.UpdatedAt)),
 		Suspended: g.SuspendedAt != nil, SuspendCause: g.SuspendCause, Note: g.Note, CommandShell: g.CommandShell,
-		FilesPull: g.FilesPull, FilesPush: g.FilesPush,
+		FilesPull: g.FilesPull, FilesPush: g.FilesPush, AppsInstall: g.AppsInstall,
 		SourceWorkerName: ws[g.SourceWorkerID].Name, TargetWorkerName: ws[g.TargetWorkerID].Name,
 		SourceOwner: ws[g.SourceWorkerID].Owner, TargetOwner: ws[g.TargetWorkerID].Owner,
 		State: ops.GrantStateActive,
@@ -388,6 +388,9 @@ func grantSetEvent(a ops.GrantSetArgs, old, now *store.SessionGrantRow) audit.Ev
 			if old != nil && old.FilesPush != now.FilesPush {
 				ev.Detail += " files_push=" + strconv.FormatBool(now.FilesPush)
 			}
+			if old != nil && old.AppsInstall != now.AppsInstall {
+				ev.Detail += " apps_install=" + strconv.FormatBool(now.AppsInstall)
+			}
 		}
 	case now != nil:
 		ev.GrantID = now.ID
@@ -513,6 +516,18 @@ func (h grantHandlers) doSet(ctx context.Context, c *Call, a ops.GrantSetArgs, o
 		if level != authz.LevelControl {
 			cur.FilesPush = false
 		}
+		// app_install (v0.25.0): the same rules as files_push, never
+		// implied by it.
+		if a.AppsInstall != nil {
+			cur.AppsInstall = *a.AppsInstall
+		}
+		if level != authz.LevelControl {
+			cur.AppsInstall = false
+		}
+		if cur.SourceIncarnation == "" && cur.AppsInstall {
+			return none, &Error{Code: proto.CodeInvalidArgument, Message: "installing apps needs a verified source: bind the grant to the source session first",
+				Details: map[string]any{"field": "apps_install"}}
+		}
 		if cur.SourceIncarnation == "" && (cur.FilesPull || cur.FilesPush) {
 			return none, &Error{Code: proto.CodeInvalidArgument, Message: "file transfer needs a verified source: bind the grant to the source session first",
 				Details: map[string]any{"field": "files_pull"}}
@@ -529,6 +544,10 @@ func (h grantHandlers) doSet(ctx context.Context, c *Call, a ops.GrantSetArgs, o
 	// files.v1: a new grant names its source by name (claimed), and a
 	// claimed source never carries file authority; the flags are set on the
 	// grant after it was bound to the source session.
+	if a.AppsInstall != nil && *a.AppsInstall {
+		return none, &Error{Code: proto.CodeInvalidArgument, Message: "installing apps needs a verified source: create the grant, bind it to the source session, then set apps_install",
+			Details: map[string]any{"field": "apps_install"}}
+	}
 	if a.FilesPull != nil && *a.FilesPull || a.FilesPush != nil && *a.FilesPush {
 		return none, &Error{Code: proto.CodeInvalidArgument, Message: "file transfer needs a verified source: create the grant, bind it to the source session, then set the file flags",
 			Details: map[string]any{"field": "files_pull"}}

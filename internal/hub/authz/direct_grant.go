@@ -62,6 +62,10 @@ type DirectGrant struct {
 	// principal whose calling session is verified
 	// ([Principal.WithVerifiedFiles]); a claimed source never carries them.
 	FilesPull, FilesPush bool
+	// AppsInstall is the app install flag of the grant (v0.25.0): app_install
+	// on the target's Worker, level Control only, for a verified calling
+	// session only, like the file flags. files_push never implies it.
+	AppsInstall bool
 }
 
 // ExpiryAt returns the ExpiresAt of a grant that ends at t.

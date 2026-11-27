@@ -699,7 +699,9 @@ func (rt *Router) call(ctx context.Context, req CallRequest, out **call) (any, e
 	if req.Op == ops.OpFilePull || req.Op == ops.OpFilePush {
 		return rt.callFile(ctx, req, out)
 	}
-	if req.Op == ops.OpFileList {
+	if req.Op == ops.OpFileList || req.Op == ops.OpAppInstall || req.Op == ops.OpAppInstallStatus {
+		// The apps_install flag counts, like the file flags, only through the
+		// verified authority of the calling session.
 		var err error
 		if req, err = rt.withFileAuthority(ctx, req); err != nil {
 			return nil, err
@@ -1089,8 +1091,9 @@ func (rt *Router) Redecide(ctx context.Context, p authz.Principal, req CallReque
 	if err != nil {
 		return err
 	}
-	if req.Op == ops.OpFileList || req.Op == ops.OpFilePull || req.Op == ops.OpFilePush {
-		// A file op is decided on the file authority of the verified
+	if req.Op == ops.OpFileList || req.Op == ops.OpFilePull || req.Op == ops.OpFilePush ||
+		req.Op == ops.OpAppInstall || req.Op == ops.OpAppInstallStatus {
+		// A file op (and an app install op) is decided on the file authority of the verified
 		// calling session, as at its dispatch.
 		req.Principal, req.admit = p, nil
 		if req, err = rt.withFileAuthority(ctx, req); err != nil {

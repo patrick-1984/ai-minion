@@ -645,8 +645,9 @@ func previewExempt(op string) bool { return op == ops.OpWorkerDebug || op == ops
 
 // IntersectActions intersects the actions a caller holds with the local
 // policy (AD-12: the local policy wins whatever the Hub sends). Unknown
-// actions are dropped; with a preview-only policy the actions operate and
-// message are dropped too, because a preview-only Worker takes no input.
+// actions are dropped; with a preview-only policy the actions operate,
+// message and app_install are dropped too, because a preview-only Worker
+// takes no input.
 func IntersectActions(held []ops.Action, p *Policy) []ops.Action {
 	previewOnly := p != nil && p.PreviewOnly()
 	out := make([]ops.Action, 0, len(held))
@@ -654,7 +655,7 @@ func IntersectActions(held []ops.Action, p *Policy) []ops.Action {
 		if !a.Valid() {
 			continue
 		}
-		if previewOnly && (a == ops.ActionOperate || a == ops.ActionMessage) {
+		if previewOnly && (a == ops.ActionOperate || a == ops.ActionMessage || a == ops.ActionAppInstall) {
 			continue
 		}
 		out = append(out, a)
