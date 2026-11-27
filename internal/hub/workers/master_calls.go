@@ -393,10 +393,14 @@ func (m *MasterControl) runMasterCall(ctx context.Context, c Call) (any, error) 
 		req.appBasis = func(b authz.FileBasis) { appBasis = b }
 	}
 	var withdrawn atomic.Bool
-	if op != ops.OpSendText && len(auth.direct) != 0 {
+	if op != ops.OpSendText && op != ops.OpAppInstall && len(auth.direct) != 0 {
 		// An admitted read leaves the pending set: a verified grant that
 		// stops authorizing it ends it within the re-check interval (D5),
-		// not when a stalled target answers.
+		// not when a stalled target answers. A write (send_text,
+		// app_install) is not re-checked: its final admission decided it,
+		// the target goes on with it whatever the Hub does next, and its
+		// audit row records what the target answered (an app install that
+		// was withdrawn here would still commit on the device, with no row).
 		stop := m.recheckRead(qctx, c, req, func() { withdrawn.Store(true); cancel() })
 		defer stop()
 	}
