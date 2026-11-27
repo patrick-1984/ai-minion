@@ -36,8 +36,8 @@ func TestFileOpsCatalogTable(t *testing.T) {
 		if op.Mutates != mutates[op.Name] || op.Write || op.Stream || op.SessionOnly {
 			t.Errorf("%s: mutates=%v write=%v stream=%v", op.Name, op.Mutates, op.Write, op.Stream)
 		}
-		if !op.Unreleased {
-			t.Errorf("%s is not Unreleased", op.Name)
+		if op.Unreleased {
+			t.Errorf("%s is still Unreleased", op.Name)
 		}
 		if !StrictArgs(op.Name) {
 			t.Errorf("%s is not strict", op.Name)
@@ -342,8 +342,8 @@ func TestFileOpsInOpenAPI(t *testing.T) {
 		if _, has := item["get"]; has != get[name] {
 			t.Errorf("%s: GET = %v", name, has)
 		}
-		if item["post"]["x-minion-unreleased"] != true {
-			t.Errorf("%s is not marked unreleased", name)
+		if item["post"]["x-minion-unreleased"] == true {
+			t.Errorf("%s is still marked unreleased", name)
 		}
 		for _, ty := range []reflect.Type{op.Args, op.Result} {
 			if _, ok := d.Components.Schemas[ty.Name()]; !ok {

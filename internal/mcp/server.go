@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"slices"
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -88,6 +89,10 @@ func New(cfg Config) (*Server, error) {
 	if list == nil {
 		list = DefaultOps()
 		if _, ok := cfg.Backend.(*client.HubBackend); ok {
+			// A transfer needs a caller end that moves the bytes: the local
+			// Worker. Through the Hub's REST API the tool would only hand the
+			// model an admission and its leg token, so it is not a tool there.
+			list = slices.DeleteFunc(list, func(o ops.Op) bool { return o.Name == ops.OpFilePull || o.Name == ops.OpFilePush })
 			for _, name := range []string{ops.OpUsageList, ops.OpUsageBucketList, ops.OpUsageReadback} {
 				if operation, exists := ops.Default.Lookup(name); exists {
 					list = append(list, operation)

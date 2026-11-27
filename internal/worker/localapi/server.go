@@ -157,7 +157,7 @@ type ResultFrame struct {
 // FullActions returns every action: the local OS user is the local owner and
 // holds all of them (AD-22).
 func FullActions() []ops.Action {
-	return []ops.Action{ops.ActionRead, ops.ActionOperate, ops.ActionMessage, ops.ActionManage}
+	return []ops.Action{ops.ActionRead, ops.ActionOperate, ops.ActionMessage, ops.ActionManage, ops.ActionFileRead, ops.ActionFileWrite}
 }
 
 // Request is one op request as the server hands it to the [Executor].

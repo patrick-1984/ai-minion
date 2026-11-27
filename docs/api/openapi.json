@@ -9159,7 +9159,6 @@
         "x-minion-scope": "worker",
         "x-minion-session-only": false,
         "x-minion-stream": false,
-        "x-minion-unreleased": true,
         "x-minion-write": false
       },
       "post": {
@@ -9237,7 +9236,6 @@
         "x-minion-scope": "worker",
         "x-minion-session-only": false,
         "x-minion-stream": false,
-        "x-minion-unreleased": true,
         "x-minion-write": false
       }
     },
@@ -9323,7 +9321,6 @@
         "x-minion-scope": "worker",
         "x-minion-session-only": false,
         "x-minion-stream": false,
-        "x-minion-unreleased": true,
         "x-minion-write": false
       }
     },
@@ -9412,7 +9409,6 @@
         "x-minion-scope": "worker",
         "x-minion-session-only": false,
         "x-minion-stream": false,
-        "x-minion-unreleased": true,
         "x-minion-write": false
       }
     },
@@ -9493,7 +9489,6 @@
         "x-minion-scope": "hub",
         "x-minion-session-only": false,
         "x-minion-stream": false,
-        "x-minion-unreleased": true,
         "x-minion-write": false
       }
     },
@@ -9605,7 +9600,6 @@
         "x-minion-scope": "hub",
         "x-minion-session-only": false,
         "x-minion-stream": false,
-        "x-minion-unreleased": true,
         "x-minion-write": false
       },
       "post": {
@@ -9683,7 +9677,6 @@
         "x-minion-scope": "hub",
         "x-minion-session-only": false,
         "x-minion-stream": false,
-        "x-minion-unreleased": true,
         "x-minion-write": false
       }
     },

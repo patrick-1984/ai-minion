@@ -37,12 +37,12 @@ import (
 // declares for a push (kind, size, entries) are hidden members: no producer
 // offers them as a flag or a tool argument.
 //
-// The ops are Unreleased until the executors, the Hub service and the caller
-// side exist: they are in the catalog, the OpenAPI document and on the wire,
-// but not MCP tools and not listed in CLI help. Until then a Worker does not
-// announce them (no handler), so the Hub answers unsupported_op without
-// opening a stream, and the Hub has no handler for the two Hub ops, so its
-// REST dispatcher answers unsupported_op.
+// The ops are released (v0.24.0): file_list, file_pull and file_push are MCP
+// tools (paths only; the local daemon moves the bytes) and `minion files
+// ls|pull|push` commands; file_transfers_list is a Hub command; file_receipt
+// is sent only by a receiving end and has no command. A Worker that cannot be
+// a transfer end does not announce them, so the Hub answers unsupported_op
+// without opening a stream.
 
 // Names of the file transfer operations.
 const (
@@ -692,18 +692,18 @@ func init() {
 	read := MustActionSet(ActionFileRead)
 	write := MustActionSet(ActionFileWrite)
 	Register(Op{Name: OpFileList, Summary: "List one folder of a session's folder (paginated): names, types, sizes and modification times.",
-		Scope: ScopeWorker, Actions: read, Unreleased: true,
+		Scope: ScopeWorker, Actions: read,
 		Args: reflect.TypeFor[FileListArgs](), Result: reflect.TypeFor[FileListResult]()})
 	Register(Op{Name: OpFilePull, Summary: "Copy a file or folder from a session's folder into the caller's folder.",
-		Scope: ScopeWorker, Actions: read, Mutates: true, Unreleased: true,
+		Scope: ScopeWorker, Actions: read, Mutates: true,
 		Args: reflect.TypeFor[FilePullArgs](), Result: reflect.TypeFor[FileTransferResult]()})
 	Register(Op{Name: OpFilePush, Summary: "Copy a file or folder from the caller's folder into a session's folder.",
-		Scope: ScopeWorker, Actions: write, Mutates: true, Unreleased: true,
+		Scope: ScopeWorker, Actions: write, Mutates: true,
 		Args: reflect.TypeFor[FilePushArgs](), Result: reflect.TypeFor[FileTransferResult]()})
 	Register(Op{Name: OpFileReceipt, Summary: "Report the final outcome of a received file transfer (receiving end only).",
-		Scope: ScopeHub, Actions: MustActionSet(ActionFileRead, ActionFileWrite), Mutates: true, Unreleased: true,
+		Scope: ScopeHub, Actions: MustActionSet(ActionFileRead, ActionFileWrite), Mutates: true,
 		Args: reflect.TypeFor[FileReceiptArgs](), Result: reflect.TypeFor[FileReceiptResult]()})
 	Register(Op{Name: OpFileTransfersList, Summary: "List the file transfers that touch your Workers or that you started (administrators: all).",
-		Scope: ScopeHub, Actions: read, Unreleased: true,
+		Scope: ScopeHub, Actions: read,
 		Args: reflect.TypeFor[FileTransfersListArgs](), Result: reflect.TypeFor[FileTransfersListResult]()})
 }
