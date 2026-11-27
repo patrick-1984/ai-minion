@@ -2,6 +2,7 @@ package devctl
 
 import (
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -69,5 +70,31 @@ func TestParseStatPPID(t *testing.T) {
 	}
 	if _, err := parseStatPPID([]byte("garbage")); err == nil {
 		t.Fatal("accepted")
+	}
+}
+
+func TestTokenLine(t *testing.T) {
+	var tok Token
+	tok.ReadLine(strings.NewReader("MINION_ADB_BRIDGE_TOKEN=" + strings.Repeat("ab", 32) + "\nrest"))
+	if tok.Get() != strings.Repeat("ab", 32) {
+		t.Fatal(tok.Get())
+	}
+	for _, bad := range []string{"", "MINION_ADB_BRIDGE_TOKEN=short\n", "OTHER=" + strings.Repeat("ab", 32) + "\n"} {
+		var b Token
+		b.ReadLine(strings.NewReader(bad))
+		if b.Get() != "" {
+			t.Fatalf("%q accepted", bad)
+		}
+	}
+}
+
+func TestTokenLineLeavesTheRestOfStdin(t *testing.T) {
+	r := strings.NewReader("MINION_ADB_BRIDGE_TOKEN=" + strings.Repeat("cd", 32) + "\nnext line\n")
+	var tok Token
+	tok.ReadLine(r)
+	rest := make([]byte, 64)
+	n, _ := r.Read(rest)
+	if tok.Get() == "" || string(rest[:n]) != "next line\n" {
+		t.Fatalf("token %q rest %q", tok.Get(), rest[:n])
 	}
 }

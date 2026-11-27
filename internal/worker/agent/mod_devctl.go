@@ -56,7 +56,7 @@ func startDeviceControl(ctx context.Context, env *Env) (StopFunc, error) {
 	if err == nil {
 		bridge = devctl.NewClient(filepath.Join(filepath.Dir(sock), devctl.SocketName), tok.Get)
 		if in := deviceControlStdin(); in != nil {
-			go tok.ReadFrom(in)
+			go tok.ReadLine(in)
 		}
 	} else {
 		log.Warn("device control has no bridge socket path", "error", err)
