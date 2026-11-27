@@ -1,5 +1,5 @@
 // Package devctl is the Go side of on-device adb ("Device control") of the
-// Android Worker (docs/minion-android-adb/bridge-protocol.md).
+// Android Worker (docs/architecture/device-control-bridge.md).
 //
 // The adb client itself lives in the Minion app process (the Kotlin
 // AdbBridge): it holds the key, pairs, dials adbd over TLS on loopback and
@@ -80,6 +80,7 @@ const (
 	ErrDisabled           = "disabled"             // the owner has not enabled it, or it was disabled
 	ErrNotPaired          = "not_paired"           // no pairing, or Android ended the authorization
 	ErrNeedsWiFi          = "needs_wifi"           // Wireless debugging is off (no Wi-Fi)
+	ErrAmbiguous          = "ambiguous"            // several local adb endpoints, none chosen by the owner
 	ErrEndpointUnverified = "endpoint_unverified"  // the provenance check failed (DESIGN 4.4)
 	ErrTimeout            = "timeout"              // the command ran past its timeout
 	ErrBadToken           = "bad_token"            // the bridge token did not match
@@ -184,6 +185,8 @@ func Reason(code string) string {
 		return "not paired: authorization ended in Android; pair again in the Minion app"
 	case ErrNeedsWiFi:
 		return "needs Wi-Fi: Wireless debugging is off (Android turns it off without Wi-Fi)"
+	case ErrAmbiguous:
+		return "several adb endpoints on this device: enter the connection port in the Minion app"
 	case ErrEndpointUnverified:
 		return "endpoint unverified: the adb endpoint did not prove it is the device's adbd; nothing was sent"
 	case ErrTimeout:

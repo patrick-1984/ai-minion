@@ -3,7 +3,7 @@ package ops
 import "reflect"
 
 // Device control (on-device adb) of the Android Worker
-// (docs/minion-android-adb/bridge-protocol.md). The ops are Unreleased until
+// (docs/architecture/device-control-bridge.md). The ops are Unreleased until
 // the device gate passes (DESIGN section 9): the MCP server offers no tool for
 // them and the generic CLI commands are hidden; `minion adb ...` is the
 // command surface.

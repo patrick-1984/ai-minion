@@ -83,7 +83,7 @@ class BridgeServer(private val socketFile: File, private val token: String, priv
                         handler.disable(request.optString("reason", "worker"))
                         control(out, JSONObject().put("type", "ok"))
                     }
-                    "shell", "screencap", "input" -> runOp(op, request, out)
+                    "shell", "screencap", "input" -> runOp(op, request, inp, out)
                     else -> error(out, "bad_request", "unknown op")
                 }
             }
@@ -94,16 +94,21 @@ class BridgeServer(private val socketFile: File, private val token: String, priv
         }
     }
 
-    private fun runOp(op: String, request: JSONObject, out: DataOutputStream) {
+    private fun runOp(op: String, request: JSONObject, inp: DataInputStream, out: DataOutputStream) {
         if (!slots.tryAcquire()) return error(out, "busy", "too many device-control operations at once")
         try {
             var started = false
-            val sink = OutputSink { channel, data ->
+            val sink = CancellableSink { channel, data ->
                 if (!started) { control(out, JSONObject().put("type", "started")); started = true }
                 BridgeFrames.writeData(out, channel, data)
             }
+            // The Worker sends nothing after its request: end of input means it hung up (caller left, its timeout, a
+            // disable). Close the adb stream at once, also while the command prints nothing.
+            Thread({ runCatching { inp.read() }; sink.cancel() }, "adb-bridge-hangup").apply { isDaemon = true }.start()
             val code = try { handler.run(op, request, sink) } catch (e: BridgeException) {
                 return error(out, e.code, e.message ?: e.code)
+            } catch (_: Exception) {
+                return error(out, "internal", "device control failed")
             }
             if (!started) control(out, JSONObject().put("type", "started"))
             control(out, JSONObject().put("type", "exit").put("code", code))
@@ -117,5 +122,23 @@ class BridgeServer(private val socketFile: File, private val token: String, priv
 
     private fun error(out: DataOutputStream, code: String, message: String) {
         runCatching { control(out, JSONObject().put("type", "error").put("code", code).put("message", message)) }
+    }
+}
+
+/** Sink whose adb stream is closed by [cancel]; a stream bound after the cancel is closed at once. */
+internal class CancellableSink(private val forward: (Int, ByteArray) -> Unit) : OutputSink {
+    private var stream: java.io.Closeable? = null
+    private var cancelled = false
+
+    override fun write(channel: Int, data: ByteArray) = forward(channel, data)
+
+    override fun bind(stream: java.io.Closeable) {
+        val closeNow = synchronized(this) { if (!cancelled) this.stream = stream; cancelled }
+        if (closeNow) runCatching { stream.close() }
+    }
+
+    fun cancel() {
+        val s = synchronized(this) { cancelled = true; stream.also { stream = null } }
+        runCatching { s?.close() }
     }
 }

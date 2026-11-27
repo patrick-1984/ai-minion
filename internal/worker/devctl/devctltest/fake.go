@@ -1,6 +1,6 @@
 // Package devctltest is a fake of the app's adb bridge socket for tests. It
-// speaks the bridge protocol of package devctl (docs/minion-android-adb/
-// bridge-protocol.md) and never touches a device.
+// speaks the bridge protocol of package devctl
+// (docs/architecture/device-control-bridge.md) and never touches a device.
 package devctltest
 
 import (

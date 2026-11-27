@@ -150,6 +150,31 @@ class DeviceControlTest {
         try { conn.open("shell,v2,raw:id"); fail("closed connection must refuse new streams") } catch (_: IOException) {}
     }
 
+    @Test fun workerHangupClosesASilentStreamAtOnce() {
+        fake = FakeAdbd { _, reply, _ -> reply(FakeAdbd.okay()) } // a command that prints nothing
+        val conn = fake!!.connect()
+        val sink = CancellableSink { _, _ -> }
+        val ended = CountDownLatch(1)
+        Thread {
+            try { AdbOps.shell(conn, "sleep 600", 60_000, sink) } catch (_: IOException) {}
+            ended.countDown()
+        }.start()
+        val deadline = System.currentTimeMillis() + 2_000
+        while (conn.activeStreams < 1 && System.currentTimeMillis() < deadline) Thread.sleep(10)
+        sink.cancel()
+        assertTrue("the operation ends within 2 s of the hang-up", ended.await(2, TimeUnit.SECONDS))
+        assertTrue("the stream was closed towards adbd", fake!!.closedByClient.await(2, TimeUnit.SECONDS))
+        assertFalse("the connection stays up for other streams", conn.closed)
+    }
+
+    @Test fun hangupBeforeTheStreamOpensClosesItOnBind() {
+        val sink = CancellableSink { _, _ -> }
+        sink.cancel()
+        var closed = false
+        sink.bind(java.io.Closeable { closed = true })
+        assertTrue(closed)
+    }
+
     @Test fun refusedServiceIsAnError() {
         fake = FakeAdbd { _, reply, _ -> reply(FakeAdbd.clse()) }
         val conn = fake!!.connect()

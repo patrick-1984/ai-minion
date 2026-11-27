@@ -85,12 +85,14 @@ Answers (channel 0 unless noted):
 | shell, screencap, input | `{"type":"started"}`, then any number of channel 1 / 2 frames, then `{"type":"exit","code":N}` |
 | any | instead: `{"type":"error","code":"<code>","message":"<short class text>"}` |
 
-Error codes: `not_available`, `disabled`, `not_paired`, `needs_wifi`, `endpoint_unverified`, `timeout`,
-`bad_token`, `bad_request`, `busy`, `internal`. The Worker adds `shared`, `bridge_unavailable` and
+Error codes: `not_available`, `disabled`, `shared`, `not_paired`, `needs_wifi`, `ambiguous` (several local
+adb endpoints, none chosen by the owner), `endpoint_unverified`, `timeout`, `bad_token`, `bad_request`, `busy`,
+`internal`. The app's bridge also refuses `shared` itself (it sees the share mode in `worker status --json`). The Worker adds `shared`, `bridge_unavailable` and
 `unsupported_platform` on its side. Messages are short class texts; they never hold a command, output, a
 code, a key or the token.
 
-Cancellation: the Worker closing the connection ends the operation; the bridge closes the adb stream. A
+Cancellation: the Worker closing the connection ends the operation; the bridge watches its side of the socket
+for end of input and closes the adb stream at once, also while the command prints nothing. A
 disable makes the bridge end every open stream with `{"type":"error","code":"disabled"}` (the caller exits
 255 "device control disabled") and refuse new ones. The Worker dials with a 5 s timeout and expects the first
 answer of status and disable within 5 s ("no hang").

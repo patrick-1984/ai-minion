@@ -80,6 +80,14 @@ Disable (app button, `op: disable`, or a share change seen in `worker status --j
 connection, which ends every running stream at once: running calls get `error disabled` (or
 `needs_wifi`), new calls get `disabled`.
 
+Cancel: the Worker sends nothing after its request, so the bridge reads its side of the socket during an
+operation; end of input (the caller left, its timeout, the Worker's own disable) closes that adb stream at once,
+also while the command prints nothing. Other streams and the connection stay up.
+
+WAITING_WIFI: the Worker refuses calls in this state without asking the bridge, so a status request in this
+state starts a background reconnect (at most every 5 s) when an endpoint is known again; the next call finds
+READY. ENDPOINT_UNVERIFIED stays until the endpoint changes (NSD) or the owner sets the connection port.
+
 The app never enables on a request from the socket; there is no `enable` op.
 
 ## What the app does on its own

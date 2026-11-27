@@ -150,14 +150,21 @@ class AdbStream internal constructor(private val conn: AdbConnection, val localI
     private companion object { val EOF = ByteArray(0) }
 }
 
-/** Result sink for an operation's output: channel 1 = stdout, 2 = stderr. */
-fun interface OutputSink { fun write(channel: Int, data: ByteArray) }
+/**
+ * Result sink for an operation's output: channel 1 = stdout, 2 = stderr. [bind] gets the operation's adb stream as
+ * soon as it is open, so the bridge can close it when the Worker hangs up (cancel, even while no output flows).
+ */
+fun interface OutputSink {
+    fun write(channel: Int, data: ByteArray)
+    fun bind(stream: Closeable) {}
+}
 
 object AdbOps {
     /** Runs a non-interactive `shell,v2,raw:` command; returns the remote exit code. */
     fun shell(conn: AdbConnection, commandLine: String, timeoutMs: Long, sink: OutputSink): Int {
         val deadline = System.currentTimeMillis() + timeoutMs
         conn.open("shell,v2,raw:$commandLine").use { s ->
+            sink.bind(s)
             // Best effort: a fast command may already have sent its output, exit packet and CLSE.
             try { s.write(ShellV2.packet(ShellV2.CLOSE_STDIN)) } catch (_: IOException) {}
             val parser = ShellV2.Parser()
@@ -178,6 +185,7 @@ object AdbOps {
         val deadline = System.currentTimeMillis() + timeoutMs
         var total = 0L
         conn.open("exec:screencap -p").use { s ->
+            sink.bind(s)
             while (true) {
                 val left = deadline - System.currentTimeMillis()
                 if (left <= 0) throw AdbTimeoutException("timeout")

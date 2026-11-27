@@ -30,6 +30,7 @@ class DeviceControl private constructor(context: Context) : BridgeHandler {
     @Volatile private var lastCode = ""
     @Volatile private var lastError = ""
     @Volatile private var lastOk = ""
+    @Volatile private var lastRetry = 0L
     @Volatile private var keyStorage = ""
     @Volatile private var key: AdbKey? = null
     @Volatile private var server: BridgeServer? = null
@@ -181,6 +182,7 @@ class DeviceControl private constructor(context: Context) : BridgeHandler {
     // --- BridgeHandler -------------------------------------------------------------------------------------------
 
     override fun status(): JSONObject = JSONObject()
+        .also { retryIfWaiting() }
         .put("type", "status")
         .put("feature_enabled", available)
         .put("enabled", enabled)
@@ -242,6 +244,20 @@ class DeviceControl private constructor(context: Context) : BridgeHandler {
             streams.decrementAndGet()
             changed()
         }
+    }
+
+    /**
+     * The Worker refuses calls while the state is WAITING_WIFI, so the bridge retries in the background when an
+     * endpoint is known again (manual port, or an NSD record without a change event), at most every 5 s. The call
+     * that sees WAITING_WIFI is still refused honestly; the next one finds READY.
+     */
+    private fun retryIfWaiting() {
+        if (!enabled || !paired || conn?.closed == false || lastCode != "needs_wifi") return
+        if (choice() !is EndpointChoice.Port) return
+        val now = SystemClock.elapsedRealtime()
+        if (now - lastRetry < 5_000) return
+        lastRetry = now
+        background.execute { runCatching { ensureConnection() } }
     }
 
     private fun checkedConnection(): AdbConnection {
