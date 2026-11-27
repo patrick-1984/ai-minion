@@ -4,6 +4,7 @@ import android.Manifest
 import android.app.Activity
 import android.app.AlertDialog
 import android.app.UiModeManager
+import android.content.ActivityNotFoundException
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
@@ -14,9 +15,11 @@ import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.StateListDrawable
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.IBinder
+import android.provider.Settings
 import android.text.InputFilter
 import android.text.InputType
 import android.view.Gravity
@@ -44,6 +47,7 @@ class MainActivity : Activity() {
     private var drawing = false
     private var television = false
     private var bootQuestion: AlertDialog? = null
+    private var installQuestion: AlertDialog? = null
 
     private lateinit var status: TextView
     private lateinit var notice: TextView
@@ -55,6 +59,10 @@ class MainActivity : Activity() {
     private lateinit var expires: TextView
     private lateinit var sessions: TextView
     private lateinit var usageStatus: TextView
+    private lateinit var updateStatus: TextView
+    private lateinit var installUpdate: Button
+    private lateinit var allowInstalls: Button
+    private lateinit var updatePolicy: Button
     private lateinit var share: CheckBox
     private lateinit var boot: CheckBox
     private lateinit var done: Button
@@ -93,6 +101,20 @@ class MainActivity : Activity() {
         bound = bindService(Intent(this, WorkerService::class.java), service, Context.BIND_AUTO_CREATE)
     }
 
+    override fun onResume() {
+        super.onResume()
+        // Only the visible screen may start the system confirmation.
+        val updater = ApkUpdater.get(this)
+        updater.launcher = ::confirmUpdate
+        // Back from the Install unknown apps page: read the switch again.
+        updater.refresh()
+    }
+
+    override fun onPause() {
+        ApkUpdater.get(this).launcher = null
+        super.onPause()
+    }
+
     override fun onStop() {
         worker?.observe(null)
         if (bound) unbindService(service)
@@ -105,6 +127,8 @@ class MainActivity : Activity() {
         // A question still open is asked again by the next screen.
         bootQuestion?.dismiss()
         bootQuestion = null
+        installQuestion?.dismiss()
+        installQuestion = null
         super.onDestroy()
     }
 
@@ -207,6 +231,8 @@ class MainActivity : Activity() {
         details.addView(sessions, row(8))
         usageStatus = label("", 16f, ink)
         details.addView(usageStatus, row(8))
+        updateStatus = label("", 16f, ink)
+        details.addView(updateStatus, row(8))
 
         done = button("OK, keep running in the background") { keepRunningInBackground() }
         pair = button("Pair with a Hub") { showJoin(byToken = false) }
@@ -224,7 +250,8 @@ class MainActivity : Activity() {
                 worker?.stop()
             }
         }
-        for (action in listOf(done, pair, token, start, pause, stop)) page.addView(action, row(10))
+        installUpdate = button("Install update") { installUpdateNow() }
+        for (action in listOf(installUpdate, done, pair, token, start, pause, stop)) page.addView(action, row(10))
 
         share = CheckBox(this).apply {
             text = "Share terminal sessions with the Hub"
@@ -258,6 +285,10 @@ class MainActivity : Activity() {
                 .setPositiveButton("Clear") { _, _ -> worker?.clearDialOverride() }.show()
         }
         page.addView(clearOverride, row(6))
+        allowInstalls = button("Allow Minion to install updates") { openInstallSettings() }
+        page.addView(allowInstalls, row(6))
+        updatePolicy = button("Updates: Automatic") { choosePolicy() }
+        page.addView(updatePolicy, row(6))
         return scroll
     }
 
@@ -305,7 +336,18 @@ class MainActivity : Activity() {
         reviewUsage.visible(value.usage?.accepted == false && !value.busy)
         forget.visible(configured && !value.wanted && !value.busy)
         clearOverride.visible(value.dialOverride.isNotBlank() && !value.wanted && !value.busy)
-        val controls = listOf(done, pair, token, start, pause, stop, share, boot, reviewUsage, forget, clearOverride)
+        val update = value.update
+        updateStatus.show(if (configured) updateText(update) else "")
+        installUpdate.visible(update.offer && !value.busy)
+        installUpdate.text = if (update.state == ApkUpdater.NEEDS_CONFIRMATION) "Install update ${update.version} (confirm)"
+            else "Install update ${update.version}".trim()
+        allowInstalls.visible(configured && !update.canInstall && update.selfSigned && update.policy != UpdatePolicy.OFF)
+        updatePolicy.visible(configured && !value.busy)
+        updatePolicy.text = "Updates: ${update.policy.label}"
+        val controls = listOf(
+            installUpdate, done, pair, token, start, pause, stop, share, boot, reviewUsage, forget, clearOverride,
+            allowInstalls, updatePolicy,
+        )
         for (control in controls) control.isEnabled = worker != null
         if (television && currentFocus == null) {
             controls.firstOrNull { it.isEnabled && it.visibility == View.VISIBLE }?.requestFocus()
@@ -318,6 +360,132 @@ class MainActivity : Activity() {
             workerPreferences(this).getBoolean(BOOT_QUESTION, false)) {
             askBootStart()
         }
+        if (configured && !value.busy && worker != null && bootQuestion == null && installQuestion == null &&
+            !update.canInstall && update.selfSigned && update.policy != UpdatePolicy.OFF && !isFinishing && !isDestroyed &&
+            !workerPreferences(this).getBoolean(BOOT_QUESTION, false) &&
+            !workerPreferences(this).getBoolean(INSTALL_SETUP_ASKED, false)) {
+            askInstallSetup()
+        }
+    }
+
+    // The one-time setup step of self-updates: Android asks the user once to
+    // allow Install unknown apps for Minion. Asked once; the button below
+    // the status stays while the switch is off.
+    private fun askInstallSetup() {
+        val answered = {
+            installQuestion = null
+            workerPreferences(this).edit().putBoolean(INSTALL_SETUP_ASKED, true).apply()
+        }
+        val dialog = AlertDialog.Builder(this)
+            .setTitle("Allow Minion to install updates")
+            .setMessage(
+                "Minion can update itself when the Hub offers a new version, so you never install an APK by hand again.\n\n" +
+                    "Android asks once: on the next page turn on \"Allow from this source\" for ${getString(R.string.app_name)}, " +
+                    "then press Back to return here.\n\n" +
+                    "You can change this later: Updates on the Minion screen, or the same Android setting."
+            )
+            .setNegativeButton("Not now") { _, _ -> answered() }
+            .setPositiveButton("Open settings") { _, _ ->
+                answered()
+                openInstallSettings()
+            }
+            .setOnCancelListener { answered() }
+            .create()
+        dialog.setCanceledOnTouchOutside(false)
+        dialog.setOnShowListener { dialog.getButton(AlertDialog.BUTTON_POSITIVE).requestFocus() }
+        installQuestion = dialog
+        dialog.show()
+    }
+
+    private fun openInstallSettings() {
+        val page = Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:$packageName"))
+        for (intent in listOf(page, Intent(Settings.ACTION_SECURITY_SETTINGS), Intent(Settings.ACTION_SETTINGS))) {
+            try {
+                startActivity(intent)
+                if (intent !== page) {
+                    Toast.makeText(this, "Find Install unknown apps (or Unknown sources) and allow ${getString(R.string.app_name)}.",
+                        Toast.LENGTH_LONG).show()
+                }
+                return
+            } catch (_: ActivityNotFoundException) {
+                // Some TV builds lack the per-app page: try the next one.
+            } catch (_: SecurityException) {
+            }
+        }
+        Toast.makeText(this, "Android has no settings page for this. Use adb: appops set $packageName REQUEST_INSTALL_PACKAGES allow",
+            Toast.LENGTH_LONG).show()
+    }
+
+    private fun installUpdateNow() {
+        val update = model.update
+        val sessions = model.sessions.toIntOrNull() ?: 0
+        if (update.state == ApkUpdater.NEEDS_CONFIRMATION || sessions <= 0) {
+            worker?.installUpdate()
+            return
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Install update ${update.version}?")
+            .setMessage(
+                "The update restarts Minion. $sessions terminal ${if (sessions == 1) "session ends" else "sessions end"}, " +
+                    "with the programs running in them. Kept sessions come back with their windows and folders."
+            )
+            .setNegativeButton("Cancel", null)
+            .setPositiveButton("Install") { _, _ -> worker?.installUpdate() }
+            .show()
+    }
+
+    // Launches the system's "Do you want to update this app?" (D-pad: Update).
+    private fun confirmUpdate(confirm: Intent) {
+        if (isFinishing || isDestroyed) return
+        try {
+            startActivity(confirm)
+        } catch (_: ActivityNotFoundException) {
+            Toast.makeText(this, "Android could not show the update confirmation.", Toast.LENGTH_LONG).show()
+        } catch (_: SecurityException) {
+            Toast.makeText(this, "Android could not show the update confirmation.", Toast.LENGTH_LONG).show()
+        }
+    }
+
+    private fun choosePolicy() {
+        val choices = UpdatePolicy.entries
+        AlertDialog.Builder(this)
+            .setTitle("Updates on this device")
+            .setSingleChoiceItems(choices.map { it.label }.toTypedArray(), choices.indexOf(model.update.policy)) { dialog, which ->
+                worker?.updatePolicy(choices[which])
+                dialog.dismiss()
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun updateText(update: UpdateView): String {
+        val lines = mutableListOf("Updates  ${update.policy.label}")
+        if (!update.selfSigned) lines.add("Self-update needs the release-signed app")
+        else lines.add("Install unknown apps  ${if (update.canInstall) "allowed" else "not allowed"}")
+        val version = update.version
+        val state = when (update.state) {
+            "" -> ""
+            ApkUpdater.WAITING_APPROVAL -> "ready to install"
+            ApkUpdater.WAITING_IDLE -> "waits until the terminal sessions are idle"
+            ApkUpdater.WAITING_THROTTLE -> "waits a moment"
+            ApkUpdater.INSTALLING -> "installing"
+            ApkUpdater.NEEDS_CONFIRMATION -> "confirm it with Install update"
+            ApkUpdater.INSTALLED -> "installed"
+            ApkUpdater.DECLINED -> "cancelled"
+            ApkUpdater.REFUSED -> "refused"
+            ApkUpdater.FAILED -> "failed"
+            ApkUpdater.BLOCKED -> "blocked"
+            ApkUpdater.OFF -> "not installed (updates are off)"
+            ApkUpdater.INTERRUPTED -> "interrupted"
+            else -> update.state
+        }
+        if (state.isNotEmpty()) {
+            lines.add("Update $version: $state" + if (update.reason.isBlank() || update.state == ApkUpdater.INSTALLING) "" else
+                "\n${update.reason}")
+        } else if (update.lastResult.isNotBlank()) {
+            lines.add(update.lastResult)
+        }
+        return lines.joinToString("\n")
     }
 
     private fun showJoin(byToken: Boolean) {
@@ -511,5 +679,7 @@ class MainActivity : Activity() {
         // Set when a pairing or a join is submitted, cleared when the
         // start-on-boot question is answered or dismissed with Back.
         const val BOOT_QUESTION = "boot_question_pending"
+        // Set when the one-time "Allow Minion to install updates" question was answered.
+        const val INSTALL_SETUP_ASKED = "install_setup_asked"
     }
 }

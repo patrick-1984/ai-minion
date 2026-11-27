@@ -38,6 +38,7 @@ internal data class WorkerView(
     val expires: String = "",
     val usage: UsageRegistration? = null,
     val dialOverride: String = "",
+    val update: UpdateView = UpdateView(),
 )
 
 internal fun workerPreferences(context: Context): SharedPreferences =
@@ -49,6 +50,7 @@ class WorkerService : Service() {
     private val stopping = AtomicBoolean()
     private lateinit var native: NativeWorker
     private lateinit var preferences: SharedPreferences
+    private lateinit var updater: ApkUpdater
     private var worker: java.lang.Process? = null
     private var tmux: java.lang.Process? = null
 
@@ -111,6 +113,23 @@ class WorkerService : Service() {
             }
         }
 
+        // Updates: Automatic / Ask / Off. Off is also the Worker's local veto
+        // (remote_update=off, read at its next start); the app enforces it at once.
+        fun updatePolicy(policy: UpdatePolicy) {
+            updater.setPolicy(policy)
+            queue.execute {
+                if (busy) return@execute
+                val value = if (policy == UpdatePolicy.OFF) "off" else "on"
+                val saved = runCatching { native.workerCommand("config", "set", "remote_update", value) }.getOrDefault(false)
+                if (!saved && !report?.optString("hub_url").isNullOrBlank()) {
+                    notice = "The Worker could not save the update setting. The app still applies it."
+                }
+                publish()
+            }
+        }
+
+        fun installUpdate() = updater.installNow()
+
         // Takes effect on the next start; only offered while the Worker is stopped.
         fun clearDialOverride() {
             queue.execute {
@@ -144,6 +163,8 @@ class WorkerService : Service() {
         super.onCreate()
         native = NativeWorker(this)
         preferences = workerPreferences(this)
+        updater = ApkUpdater.get(this)
+        updater.onChange = { queue.execute { publish() } }
         getSystemService(NotificationManager::class.java).createNotificationChannel(
             NotificationChannel(CHANNEL, "Minion Worker", NotificationManager.IMPORTANCE_LOW)
         )
@@ -293,6 +314,7 @@ class WorkerService : Service() {
             if (now >= nextReport) {
                 report = native.report()
                 nextReport = now + 4_000
+                updater.poll(report, wanted && !busy && !stopping.get() && worker?.isAlive == true)
                 if (report?.optBoolean("paired") != true) {
                     usage = null
                     nextUsageReport = 0
@@ -397,7 +419,7 @@ class WorkerService : Service() {
             r?.optBoolean("paired") == true, r?.optInt("sessions", -1)?.takeIf { it >= 0 }?.toString().orEmpty(),
             share?.optString("mode") != "none", preferences.getBoolean("boot", false),
             livePairing?.optString("code").orEmpty(), if (livePairing != null) expires else "",
-            usage, preferences.getString(HubDialOverride.PREFERENCE, null).orEmpty(),
+            usage, preferences.getString(HubDialOverride.PREFERENCE, null).orEmpty(), updater.view,
         )
         main.post {
             if (v != view) {
@@ -445,6 +467,7 @@ class WorkerService : Service() {
 
     override fun onDestroy() {
         listener = null
+        updater.onChange = null
         stopping.set(true)
         native.cancelCommand()
         queue.execute {

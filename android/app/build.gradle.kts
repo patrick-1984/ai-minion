@@ -12,6 +12,10 @@ require(major <= 209 && minor <= 99 && patch <= 99 && (parts[4].isEmpty() || rc 
     "The Minion version does not fit the Android version code"
 }
 val nativePackage = providers.gradleProperty("minionNativePackage").map(::file)
+// The release signing certificate (SHA-256 of its DER encoding). The updater
+// installs only APKs signed with exactly this certificate.
+val signingCert = rootProject.file("signing-cert.sha256").readText().trim().lowercase()
+require(Regex("[0-9a-f]{64}").matches(signingCert)) { "android/signing-cert.sha256 must hold one SHA-256 in hex" }
 
 android {
     namespace = "cc.nasz.minion"
@@ -25,6 +29,11 @@ android {
         versionCode = (major * 10_000_000 + minor * 100_000 + patch * 1_000 + rc).toInt()
         versionName = minionVersion
         ndk.abiFilters += listOf("arm64-v8a", "armeabi-v7a")
+        buildConfigField("String", "SIGNING_CERT_SHA256", "\"$signingCert\"")
+    }
+
+    buildFeatures {
+        buildConfig = true
     }
 
     compileOptions {
@@ -45,6 +54,10 @@ android {
         useLegacyPackaging = true
         keepDebugSymbols += "**/lib*.so"
     }
+}
+
+dependencies {
+    testImplementation("junit:junit:4.13.2")
 }
 
 kotlin {

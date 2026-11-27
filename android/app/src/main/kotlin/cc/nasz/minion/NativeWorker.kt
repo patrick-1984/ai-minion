@@ -62,6 +62,14 @@ internal class NativeWorker(private val context: Context) {
         return if (result.success && result.output.isNotBlank()) JSONObject(result.output) else null
     }
 
+    // The self-update's offline re-authentication of the staged APK: a fresh
+    // process of the installed libminion.so checks the Sigstore signature of
+    // the staged checksums.txt for this tag and the APK's digest.
+    fun verifyStagedApk(tag: String): JSONObject? {
+        val result = run("libminion.so", listOf("worker", "apk-verify", "--tag", tag, "--json"), timeout = 60, capture = true)
+        return if (result.success && result.output.isNotBlank()) runCatching { JSONObject(result.output) }.getOrNull() else null
+    }
+
     fun usageRegistration(): UsageRegistration? {
         val result = run("libminion.so", listOf("worker", "config", "usage", "--json"), timeout = 4, capture = true)
         if (!result.success || result.output.isBlank()) return null
