@@ -14,6 +14,9 @@ import (
 type fakeWorkerHiddenStore struct {
 	owners map[string]string
 	set    map[string]*bool
+	// reassign, when set, is the owner the Worker has by the time the write
+	// runs (a reassignment between the check and the write).
+	reassign string
 }
 
 func (f *fakeWorkerHiddenStore) WorkerOwner(_ context.Context, id string) (string, error) {
@@ -24,7 +27,17 @@ func (f *fakeWorkerHiddenStore) WorkerOwner(_ context.Context, id string) (strin
 	return o, nil
 }
 
-func (f *fakeWorkerHiddenStore) SetWorkerHiddenSessions(_ context.Context, id string, allow *bool, _ string) error {
+func (f *fakeWorkerHiddenStore) SetWorkerHiddenSessionsIfOwner(_ context.Context, id string, allow *bool, _, owner string) error {
+	now, ok := f.owners[id]
+	if !ok {
+		return store.ErrWorkerNotFound
+	}
+	if f.reassign != "" {
+		now = f.reassign
+	}
+	if owner != "" && now != owner {
+		return store.ErrWorkerOwnerChanged
+	}
 	f.set[id] = allow
 	return nil
 }
@@ -87,5 +100,22 @@ func TestWorkerHiddenSessionsSetIsTheOwnersOrAnAdmins(t *testing.T) {
 	h.hub = func() string { return "disabled" }
 	if res, err := h.set(context.Background(), c, args); err != nil || len(res.Warnings) != 1 || res.Warnings[0].Code != WarnHubPolicy {
 		t.Errorf("under a disabled Hub: %+v, %v", res, err)
+	}
+}
+
+// A choice decided for the owner is not stored once the Worker was reassigned
+// before the write; an administrator's (manage) does not depend on the owner.
+func TestWorkerHiddenSessionsSetRechecksTheOwnerAtTheWrite(t *testing.T) {
+	wid := ops.NewUUIDv7()
+	st := &fakeWorkerHiddenStore{owners: map[string]string{wid: "alice"}, set: map[string]*bool{}, reassign: "bob"}
+	h := workerHiddenHandlers{st: st, dec: userManagerDecider{admins: map[string]bool{"root": true}}, hub: func() string { return "user-controlled" }}
+	args := ops.WorkerHiddenSessionsSetArgs{WriteArgs: ops.WriteArgs{RequestID: ops.NewUUIDv7()}, WorkerID: wid, HiddenSessions: ops.WorkerHiddenAllow}
+	c := &Call{Principal: authz.NewSessionPrincipal("alice"), Identity: Identity{Actor: "alice"}}
+	if _, err := h.set(context.Background(), c, args); ErrorOf(err).Code != proto.CodeConflict || len(st.set) != 0 {
+		t.Fatalf("the old owner after a reassignment: %v, stored %v", err, st.set)
+	}
+	c = &Call{Principal: authz.NewSessionPrincipal("root"), Identity: Identity{Actor: "root"}}
+	if _, err := h.set(context.Background(), c, args); err != nil || st.set[wid] == nil {
+		t.Fatalf("an administrator: %v, stored %v", err, st.set)
 	}
 }

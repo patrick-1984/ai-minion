@@ -638,11 +638,11 @@ type CallRequest struct {
 	// grants, now): the transfer service re-decides a running transfer on
 	// it, so a revoked grant or an ended lease stops the transfer.
 	fileRefresh func(context.Context) (authz.Principal, error)
-	// commandShell, when set, is told the command shell grant (A116) that let
+	// CommandShell, when set, is told the command shell grant (A116) that let
 	// the origin carry shell_ok, "" for none, each time the request is decided
 	// (before the dispatch and at the final admission); for the audit of the
-	// caller.
-	commandShell func(grantID string)
+	// caller (the call stream and the REST dispatcher). It decides nothing.
+	CommandShell func(grantID string)
 }
 
 // Call routes a non-streaming op and returns its result as a value of the
@@ -999,7 +999,7 @@ type call struct {
 	granted  func(ids []string)
 	// shell is set for a request that may carry shell_ok (shellCandidate);
 	// the final admission decides it again. report is
-	// CallRequest.commandShell.
+	// CallRequest.CommandShell.
 	shell  bool
 	report func(grantID string)
 	// dispatched is set when the Worker's connection took the op (the
@@ -1184,7 +1184,7 @@ func (rt *Router) prepare(ctx context.Context, req CallRequest, wantStream bool)
 	}
 	shell := shellCandidate(op.Name, req)
 	if shell {
-		if err := rt.decideShell(ctx, &origin, req.Principal, res, req.commandShell); err != nil {
+		if err := rt.decideShell(ctx, &origin, req.Principal, res, req.CommandShell); err != nil {
 			return nil, err
 		}
 	}
@@ -1208,7 +1208,7 @@ func (rt *Router) prepare(ctx context.Context, req CallRequest, wantStream bool)
 		res:      res,
 		granted:  req.granted,
 		shell:    shell,
-		report:   req.commandShell,
+		report:   req.CommandShell,
 		frame: OpRequest{
 			Type: proto.TypeOpRequest, Op: op.WireName(), RequestID: id,
 			Args: args, Actions: actions, Origin: origin, TargetWorkerID: routedTargetWorker(op.Name, args, req.WorkerID),

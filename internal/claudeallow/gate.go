@@ -63,8 +63,11 @@ func (g Gate) Active() bool {
 // read that some rule names (Claude Code runs it with no prompt) is limited to
 // the rules' targets in the same way; any other read passes, and so do
 // sessions_list and workers_list, which name no session. A session code
-// without a worker_id is refused ([ErrCodeTarget]). An allowlist that cannot be
-// read refuses every write and every read with a target (fail closed).
+// without a worker_id is refused ([ErrCodeTarget]), except on the local socket
+// ([Gate.LocalWorker]), where it is a local session name. An allowlist that
+// exists but cannot be read, or whose existence cannot be checked, refuses
+// every write and every read with a target (fail closed); a path that cannot
+// hold a file (see [Load]) is no allowlist.
 func (g Gate) Check(op ops.Op, args json.RawMessage) (string, error) {
 	write := op.ChangesState()
 	if !write && (op.Name == ops.OpSessionsList || op.Name == ops.OpWorkersList) {
@@ -87,7 +90,10 @@ func (g Gate) Check(op ops.Op, args json.RawMessage) (string, error) {
 	if !ok {
 		return "", ErrNotAllowed
 	}
-	if worker == "" && session != "" {
+	// Only the Hub resolves a session code to a Worker; on the local socket
+	// (LocalWorker) a target without a worker_id is a local session name,
+	// whatever it looks like ("2024-11").
+	if worker == "" && session != "" && g.LocalWorker == nil {
 		if _, _, isCode := ops.ParseSessionCode(session); isCode {
 			return "", ErrCodeTarget
 		}

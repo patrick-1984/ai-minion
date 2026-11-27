@@ -46,6 +46,20 @@ func TestWorkerHiddenSessions(t *testing.T) {
 	if v, _ := f.s.WorkerHiddenSessions(ctx, w.ID); v != nil {
 		t.Fatalf("after reassignment = %v", *v)
 	}
+	// A choice decided for the old owner is refused in the write's own
+	// transaction; one for the new owner, or with no owner check, is stored.
+	if err := f.s.SetWorkerHiddenSessionsIfOwner(ctx, w.ID, &yes, f.u1, f.u1); !errors.Is(err, ErrWorkerOwnerChanged) {
+		t.Fatalf("the old owner after a reassignment: %v", err)
+	}
+	if v, _ := f.s.WorkerHiddenSessions(ctx, w.ID); v != nil {
+		t.Fatalf("stored for the old owner = %v", *v)
+	}
+	if err := f.s.SetWorkerHiddenSessionsIfOwner(ctx, w.ID, &yes, f.u2, f.u2); err != nil {
+		t.Fatalf("the new owner: %v", err)
+	}
+	if err := f.s.SetWorkerHiddenSessionsIfOwner(ctx, w.ID, nil, f.admin, ""); err != nil {
+		t.Fatalf("no owner check: %v", err)
+	}
 	// The removal takes the row with the Worker.
 	if err := f.s.SetWorkerHiddenSessions(ctx, other.ID, &yes, f.u1); err != nil {
 		t.Fatal(err)

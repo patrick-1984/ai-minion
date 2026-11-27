@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -159,6 +160,57 @@ func TestGateRefusesASessionCodeWithoutAWorker(t *testing.T) {
 	in := json.RawMessage(`{"target":{"worker_id":"` + workerB + `","session_name":"5-667"},"text":"x"}`)
 	if _, err := g.Check(op(t, ops.OpSendText), in); err != nil {
 		t.Fatalf("a named Worker: %v", err)
+	}
+}
+
+// On the local socket only the local Worker runs a target without a
+// worker_id, and it never resolves a session code, so a name that looks like
+// one ("2024-11") is judged as an ordinary session of that Worker.
+func TestGateTakesACodeLikeNameOnTheLocalSocketAsASession(t *testing.T) {
+	r := sampleRule() // the whole of workerB
+	g := Gate{Path: writeList(t, &File{Version: Version, Rules: []Rule{r}}), LocalWorker: func() (string, error) { return workerB, nil }}
+	for _, name := range []string{"2024-11", "5-667"} {
+		in := json.RawMessage(`{"target":{"session_name":"` + name + `"},"text":"x"}`)
+		if _, err := g.Check(op(t, ops.OpSendText), in); err != nil {
+			t.Errorf("local session %s: %v", name, err)
+		}
+	}
+	g.LocalWorker = func() (string, error) { return workerA, nil } // rule: only "shell" of workerA
+	in := json.RawMessage(`{"target":{"session_name":"2024-11"},"text":"x"}`)
+	if _, err := g.Check(op(t, ops.OpSendText), in); !sameErr(err, ErrNotAllowed) {
+		t.Fatalf("a local session outside the rule: %v", err)
+	}
+}
+
+// A path that cannot hold a file (a directory of it is a file) is no
+// allowlist; a file that exists but cannot be read still fails closed.
+func TestGateTakesAPathThatCannotHoldAFileAsNoAllowlist(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "plain")
+	if err := os.WriteFile(file, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	g := Gate{Path: filepath.Join(file, "minion", FileName)}
+	in := json.RawMessage(`{"target":{"worker_id":"` + workerA + `","session_name":"x"}}`)
+	if _, err := g.Check(op(t, ops.OpSessionSnapshot), in); err != nil {
+		t.Fatalf("a read under ENOTDIR: %v", err)
+	}
+	if _, err := g.Check(op(t, ops.OpSendText), in); err != nil {
+		t.Fatalf("a write under ENOTDIR without Required: %v", err)
+	}
+	g.Required = true
+	if _, err := g.Check(op(t, ops.OpSendText), in); !sameErr(err, ErrNoRuleLeft) {
+		t.Fatalf("a required write under ENOTDIR: %v", err)
+	}
+	if os.Geteuid() == 0 || runtime.GOOS == "windows" {
+		t.Skip("root (and Windows) reads a file of mode 0")
+	}
+	locked := writeList(t, &File{Version: Version, Rules: []Rule{sampleRule()}})
+	if err := os.Chmod(locked, 0); err != nil {
+		t.Fatal(err)
+	}
+	g = Gate{Path: locked}
+	if _, err := g.Check(op(t, ops.OpSessionSnapshot), in); err == nil || !strings.Contains(err.Error(), "cannot be read") {
+		t.Fatalf("an unreadable allowlist passed a read it names: %v", err)
 	}
 }
 

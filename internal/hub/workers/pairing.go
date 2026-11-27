@@ -351,11 +351,15 @@ func (ps *Pairings) Pending() int {
 	return len(ps.live)
 }
 
-// IsPending reports whether a Worker connection waits for the pairing id.
+// IsPending reports whether a Worker connection waits for the pairing id: its
+// entry is registered and its pairing row has been read (or written), so the
+// row is in the store from then on. An entry whose row is still being read is
+// not pending yet.
 func (ps *Pairings) IsPending(pairingID string) bool {
 	ps.mu.Lock()
 	defer ps.mu.Unlock()
-	return ps.live[pairingID] != nil
+	p := ps.live[pairingID]
+	return p != nil && isReady(p)
 }
 
 // sameIP is 1 when the pending entry belongs to the address key, else 0.

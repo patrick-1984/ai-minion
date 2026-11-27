@@ -639,23 +639,31 @@ func (e *TurnEmitter) run(ctx context.Context, st EventStream) (linkDone bool) {
 				continue
 			}
 			f := turnFrame{Type: FrameTurn, TurnID: t.TurnID, Session: t.Session, MessageID: t.MessageID, Text: t.Text, Time: ops.Timestamp(t.At)}
+			// The send is recorded before the write: the Hub can answer
+			// before the write returns, and an answer the reader handles
+			// first (a busy hold, the removal of sentAt) must not be
+			// overwritten by this bookkeeping afterwards.
+			mu.Lock()
+			inflight++ // a send that is due again was not counted: its time had run out
+			sentAt[t.TurnID] = now
+			mu.Unlock()
+			e.releaseHold(t.TurnID)
 			if err := e.write(st, f); err != nil {
 				if errors.Is(err, proto.ErrFrameTooLarge) {
 					// Final for this turn: sending it again cannot help and
 					// would block every turn behind it. Nothing was written,
 					// so the stream stays.
 					e.log.Warn("a turn is too large for one frame and is dropped", "turn_id", t.TurnID)
+					mu.Lock()
+					inflight--
+					delete(sentAt, t.TurnID)
+					mu.Unlock()
 					e.forget(t.TurnID)
 					continue
 				}
 				st.Reset()
 				return ctx.Err() != nil
 			}
-			mu.Lock()
-			inflight++ // a send that is due again was not counted: its time had run out
-			sentAt[t.TurnID] = now
-			mu.Unlock()
-			e.releaseHold(t.TurnID)
 		}
 		select {
 		case <-ctx.Done():
