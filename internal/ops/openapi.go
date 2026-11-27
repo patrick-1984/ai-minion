@@ -174,6 +174,9 @@ func (g *apiGen) operation(op Op, method string, errRefs map[string]any) map[str
 		"x-minion-session-only": op.SessionOnly,
 		"x-minion-guards":       guards,
 	}
+	if op.Unreleased {
+		o["x-minion-unreleased"] = true
+	}
 	args := g.schema(op.Args)
 	fields := structFields(op.Args)
 	var hidden []any

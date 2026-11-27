@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Device control (on-device adb). Merged only into builds made with -PminionDeviceControl=true (the gate RC).
+  Without the flag, no build declares any of this: no provider, no screen, no overlay permission.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Used only while the pairing keypad is shown over TV Settings (design 4.2); the owner may revoke it after. -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+
+    <application>
+        <activity
+            android:name="cc.nasz.minion.devicecontrol.DeviceControlActivity"
+            android:exported="false"
+            android:label="Device control" />
+
+        <!--
+          Endpoint provenance check (design 4.4). Exported so that `content call` run by adbd's shell (uid 2000)
+          reaches it; call() accepts only uid 2000 with a pending one-time nonce and has no data and no other method.
+        -->
+        <provider
+            android:name="cc.nasz.minion.devicecontrol.ProvenanceProvider"
+            android:authorities="cc.nasz.minion.adbprobe"
+            android:exported="true"
+            android:grantUriPermissions="false"
+            android:multiprocess="false" />
+    </application>
+</manifest>

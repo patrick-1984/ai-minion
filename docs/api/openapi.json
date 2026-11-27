@@ -873,6 +873,149 @@
         ],
         "type": "object"
       },
+      "AdbAuditEntry": {
+        "properties": {
+          "actor": {
+            "type": "string"
+          },
+          "duration_ms": {
+            "type": "integer"
+          },
+          "op": {
+            "type": "string"
+          },
+          "result": {
+            "type": "string"
+          },
+          "session": {
+            "type": "string"
+          },
+          "time": {
+            "type": "string"
+          },
+          "transport": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "actor",
+          "duration_ms",
+          "op",
+          "result",
+          "session",
+          "time",
+          "transport"
+        ],
+        "type": "object"
+      },
+      "AdbDisableArgs": {
+        "properties": {
+          "worker_id": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "AdbDisableResult": {
+        "properties": {
+          "device_control": {
+            "$ref": "#/components/schemas/DeviceControlStatus"
+          }
+        },
+        "required": [
+          "device_control"
+        ],
+        "type": "object"
+      },
+      "AdbInputArgs": {
+        "properties": {
+          "args": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "worker_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "args",
+          "kind"
+        ],
+        "type": "object"
+      },
+      "AdbRunResult": {
+        "properties": {
+          "exit_code": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "exit_code"
+        ],
+        "type": "object"
+      },
+      "AdbScreencapArgs": {
+        "properties": {
+          "timeout_s": {
+            "type": "integer"
+          },
+          "worker_id": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "AdbShellArgs": {
+        "properties": {
+          "argv": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "timeout_s": {
+            "type": "integer"
+          },
+          "worker_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "argv"
+        ],
+        "type": "object"
+      },
+      "AdbStatusArgs": {
+        "properties": {
+          "worker_id": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "AdbStatusResult": {
+        "properties": {
+          "audit": {
+            "items": {
+              "$ref": "#/components/schemas/AdbAuditEntry"
+            },
+            "type": "array"
+          },
+          "device_control": {
+            "$ref": "#/components/schemas/DeviceControlStatus"
+          }
+        },
+        "required": [
+          "audit",
+          "device_control"
+        ],
+        "type": "object"
+      },
       "AdminLinkConsentArgs": {
         "properties": {
           "force": {
@@ -1391,6 +1534,48 @@
         "required": [
           "col",
           "row"
+        ],
+        "type": "object"
+      },
+      "DeviceControlStatus": {
+        "properties": {
+          "active_streams": {
+            "type": "integer"
+          },
+          "available": {
+            "type": "boolean"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "key_storage": {
+            "type": "string"
+          },
+          "last_error": {
+            "type": "string"
+          },
+          "last_ok": {
+            "type": "string"
+          },
+          "port": {
+            "type": "integer"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "shared": {
+            "type": "boolean"
+          },
+          "state": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "active_streams",
+          "available",
+          "enabled",
+          "shared",
+          "state"
         ],
         "type": "object"
       },
@@ -7037,6 +7222,492 @@
         "x-minion-session-only": false,
         "x-minion-stream": false,
         "x-minion-write": true
+      }
+    },
+    "/api/v1/ops/adb_disable": {
+      "post": {
+        "operationId": "adb_disable",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdbDisableArgs"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdbDisableResult"
+                }
+              }
+            },
+            "description": "The result of the operation."
+          },
+          "400": {
+            "$ref": "#/components/responses/Error400"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error403"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error404"
+          },
+          "405": {
+            "$ref": "#/components/responses/Error405"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error409"
+          },
+          "410": {
+            "$ref": "#/components/responses/Error410"
+          },
+          "413": {
+            "$ref": "#/components/responses/Error413"
+          },
+          "426": {
+            "$ref": "#/components/responses/Error426"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error429"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error500"
+          },
+          "501": {
+            "$ref": "#/components/responses/Error501"
+          },
+          "502": {
+            "$ref": "#/components/responses/Error502"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error503"
+          }
+        },
+        "summary": "Disable device control on an Android Worker and close its open streams; it can only be enabled on the device.",
+        "x-minion-actions": [
+          "operate"
+        ],
+        "x-minion-guards": [],
+        "x-minion-mutates": true,
+        "x-minion-scope": "worker",
+        "x-minion-session-only": false,
+        "x-minion-stream": false,
+        "x-minion-unreleased": true,
+        "x-minion-write": false
+      }
+    },
+    "/api/v1/ops/adb_input": {
+      "post": {
+        "operationId": "adb_input",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdbInputArgs"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdbRunResult"
+                }
+              }
+            },
+            "description": "The result of the operation."
+          },
+          "400": {
+            "$ref": "#/components/responses/Error400"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error403"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error404"
+          },
+          "405": {
+            "$ref": "#/components/responses/Error405"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error409"
+          },
+          "410": {
+            "$ref": "#/components/responses/Error410"
+          },
+          "413": {
+            "$ref": "#/components/responses/Error413"
+          },
+          "426": {
+            "$ref": "#/components/responses/Error426"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error429"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error500"
+          },
+          "501": {
+            "$ref": "#/components/responses/Error501"
+          },
+          "502": {
+            "$ref": "#/components/responses/Error502"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error503"
+          }
+        },
+        "summary": "Send a validated key event, text, tap or swipe to this Android Worker's device (local sessions only).",
+        "x-minion-actions": [
+          "operate"
+        ],
+        "x-minion-guards": [],
+        "x-minion-mutates": true,
+        "x-minion-scope": "worker",
+        "x-minion-session-only": false,
+        "x-minion-stream": false,
+        "x-minion-unreleased": true,
+        "x-minion-write": false
+      }
+    },
+    "/api/v1/ops/adb_screencap": {
+      "post": {
+        "operationId": "adb_screencap",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdbScreencapArgs"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdbRunResult"
+                }
+              }
+            },
+            "description": "The result of the operation."
+          },
+          "400": {
+            "$ref": "#/components/responses/Error400"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error403"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error404"
+          },
+          "405": {
+            "$ref": "#/components/responses/Error405"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error409"
+          },
+          "410": {
+            "$ref": "#/components/responses/Error410"
+          },
+          "413": {
+            "$ref": "#/components/responses/Error413"
+          },
+          "426": {
+            "$ref": "#/components/responses/Error426"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error429"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error500"
+          },
+          "501": {
+            "$ref": "#/components/responses/Error501"
+          },
+          "502": {
+            "$ref": "#/components/responses/Error502"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error503"
+          }
+        },
+        "summary": "Capture the screen of this Android Worker's device as PNG (local sessions only).",
+        "x-minion-actions": [
+          "operate"
+        ],
+        "x-minion-guards": [],
+        "x-minion-mutates": true,
+        "x-minion-scope": "worker",
+        "x-minion-session-only": false,
+        "x-minion-stream": false,
+        "x-minion-unreleased": true,
+        "x-minion-write": false
+      }
+    },
+    "/api/v1/ops/adb_shell": {
+      "post": {
+        "operationId": "adb_shell",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdbShellArgs"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdbRunResult"
+                }
+              }
+            },
+            "description": "The result of the operation."
+          },
+          "400": {
+            "$ref": "#/components/responses/Error400"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error403"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error404"
+          },
+          "405": {
+            "$ref": "#/components/responses/Error405"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error409"
+          },
+          "410": {
+            "$ref": "#/components/responses/Error410"
+          },
+          "413": {
+            "$ref": "#/components/responses/Error413"
+          },
+          "426": {
+            "$ref": "#/components/responses/Error426"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error429"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error500"
+          },
+          "501": {
+            "$ref": "#/components/responses/Error501"
+          },
+          "502": {
+            "$ref": "#/components/responses/Error502"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error503"
+          }
+        },
+        "summary": "Run a non-interactive shell command with shell-uid rights on this Android Worker's own device (local sessions only).",
+        "x-minion-actions": [
+          "operate"
+        ],
+        "x-minion-guards": [],
+        "x-minion-mutates": true,
+        "x-minion-scope": "worker",
+        "x-minion-session-only": false,
+        "x-minion-stream": false,
+        "x-minion-unreleased": true,
+        "x-minion-write": false
+      }
+    },
+    "/api/v1/ops/adb_status": {
+      "get": {
+        "operationId": "adb_status_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "worker_id",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdbStatusResult"
+                }
+              }
+            },
+            "description": "The result of the operation."
+          },
+          "400": {
+            "$ref": "#/components/responses/Error400"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error403"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error404"
+          },
+          "405": {
+            "$ref": "#/components/responses/Error405"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error409"
+          },
+          "410": {
+            "$ref": "#/components/responses/Error410"
+          },
+          "413": {
+            "$ref": "#/components/responses/Error413"
+          },
+          "426": {
+            "$ref": "#/components/responses/Error426"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error429"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error500"
+          },
+          "501": {
+            "$ref": "#/components/responses/Error501"
+          },
+          "502": {
+            "$ref": "#/components/responses/Error502"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error503"
+          }
+        },
+        "security": [
+          {
+            "bearerApiKey": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "summary": "Report the device control (on-device adb) status of an Android Worker and its last audit entries.",
+        "x-minion-actions": [
+          "read"
+        ],
+        "x-minion-guards": [],
+        "x-minion-mutates": false,
+        "x-minion-scope": "worker",
+        "x-minion-session-only": false,
+        "x-minion-stream": false,
+        "x-minion-unreleased": true,
+        "x-minion-write": false
+      },
+      "post": {
+        "operationId": "adb_status",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdbStatusArgs"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdbStatusResult"
+                }
+              }
+            },
+            "description": "The result of the operation."
+          },
+          "400": {
+            "$ref": "#/components/responses/Error400"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error403"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error404"
+          },
+          "405": {
+            "$ref": "#/components/responses/Error405"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error409"
+          },
+          "410": {
+            "$ref": "#/components/responses/Error410"
+          },
+          "413": {
+            "$ref": "#/components/responses/Error413"
+          },
+          "426": {
+            "$ref": "#/components/responses/Error426"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error429"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error500"
+          },
+          "501": {
+            "$ref": "#/components/responses/Error501"
+          },
+          "502": {
+            "$ref": "#/components/responses/Error502"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error503"
+          }
+        },
+        "summary": "Report the device control (on-device adb) status of an Android Worker and its last audit entries.",
+        "x-minion-actions": [
+          "read"
+        ],
+        "x-minion-guards": [],
+        "x-minion-mutates": false,
+        "x-minion-scope": "worker",
+        "x-minion-session-only": false,
+        "x-minion-stream": false,
+        "x-minion-unreleased": true,
+        "x-minion-write": false
       }
     },
     "/api/v1/ops/admin_link_consent": {

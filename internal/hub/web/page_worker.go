@@ -108,6 +108,10 @@ type WorkerPage struct {
 	// AppUpdateURL is the App updates panel (v0.24.0): set for an
 	// administrator on the page of an Android Worker.
 	AppUpdateURL string
+	// DeviceURL is the Device control panel (on-device adb); the panel
+	// renders nothing for a Worker that is not Android. Empty when this person
+	// may not operate the Worker.
+	DeviceURL string
 	// Name is the heading (the Worker's name; the id when it has none).
 	Name    string
 	Context string
@@ -251,6 +255,7 @@ func workerData(get func() LiveSource) func(*http.Request) (any, error) {
 			p.RenameURL = WorkerRenamePath(id)
 			p.MaxName = ops.MaxWorkerNameLen
 			p.HiddenURL = WorkerHiddenPath(id)
+			p.DeviceURL = WorkerDevicePath(id)
 		}
 		if v.Worker.Android && isAdminRequest(r) {
 			p.AppUpdateURL = WorkerAppUpdatePath(id)

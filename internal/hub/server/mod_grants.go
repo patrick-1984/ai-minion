@@ -71,7 +71,11 @@ func initGrants(_ context.Context, env *Env) error {
 		}
 		return out, nil
 	}
-	if err := api.RegisterGrants(handlers, st, list, az, alog); err != nil {
+	var opts []api.GrantOption
+	if rt, err := Require[*workers.Router](env); err == nil {
+		opts = append(opts, api.WithGrantTargetGuard(deviceControlGuard(rt)))
+	}
+	if err := api.RegisterGrants(handlers, st, list, az, alog, opts...); err != nil {
 		return fmt.Errorf("grants: %w", err)
 	}
 	// The expiry sweep: once at start and then once a day, grants that

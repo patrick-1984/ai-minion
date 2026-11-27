@@ -16,6 +16,7 @@ import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.os.SystemClock
+import cc.nasz.minion.devicecontrol.DeviceControl
 import org.json.JSONObject
 import java.time.Instant
 import java.util.concurrent.ScheduledThreadPoolExecutor
@@ -39,6 +40,8 @@ internal data class WorkerView(
     val usage: UsageRegistration? = null,
     val dialOverride: String = "",
     val update: UpdateView = UpdateView(),
+    // "" unless device control is compiled in and enabled; else its status line (design 4.7).
+    val deviceControl: String = "",
 )
 
 internal fun workerPreferences(context: Context): SharedPreferences =
@@ -94,7 +97,18 @@ class WorkerService : Service() {
             launch(server, null, share, acceptUsage, dialOverride)
         fun stop() = stopWorker()
         fun pause(paused: Boolean) = runCommand(if (paused) "resume" else "pause")
-        fun share(share: Boolean) = runCommand("config", "share", if (share) "all" else "none")
+        fun share(share: Boolean) {
+            // Design 5: device control needs a dedicated Worker; sharing is refused while it is enabled.
+            if (share && DeviceControl.available && DeviceControl.get(this@WorkerService).enabled) {
+                queue.execute {
+                    notice = "Disable Device control before sharing this Worker's terminal sessions."
+                    nextReport = 0
+                    publish()
+                }
+                return
+            }
+            runCommand("config", "share", if (share) "all" else "none")
+        }
         fun boot(boot: Boolean) {
             queue.execute {
                 preferences.edit().putBoolean("boot", boot).commit()
@@ -289,6 +303,7 @@ class WorkerService : Service() {
             NativeWorker.reap(worker)
         } finally {
             worker = null
+            runCatching { native.stopBridge() }
             NativeWorker.reap(tmux)
             tmux = null
             expectingTmux = false
@@ -414,16 +429,21 @@ class WorkerService : Service() {
             }
         }
         val share = r?.optJSONObject("share")
+        if (DeviceControl.available) {
+            // Fail closed: a share change while enabled disables device control and closes its streams.
+            DeviceControl.get(this).observeShare(if (worker?.isAlive == true) share?.optString("mode") else null)
+        }
         val v = WorkerView(
             wanted, busy, status, notice, r?.optString("hub_url").orEmpty(), workerWords, hubWords,
             r?.optBoolean("paired") == true, r?.optInt("sessions", -1)?.takeIf { it >= 0 }?.toString().orEmpty(),
             share?.optString("mode") != "none", preferences.getBoolean("boot", false),
             livePairing?.optString("code").orEmpty(), if (livePairing != null) expires else "",
             usage, preferences.getString(HubDialOverride.PREFERENCE, null).orEmpty(), updater.view,
+            if (DeviceControl.available && DeviceControl.get(this).enabled) DeviceControl.get(this).statusLine() else "",
         )
         main.post {
             if (v != view) {
-                val changed = view.status != v.status
+                val changed = view.status != v.status || view.deviceControl != v.deviceControl
                 view = v
                 listener?.invoke(v)
                 if (foreground && changed) {
@@ -451,7 +471,9 @@ class WorkerService : Service() {
         return Notification.Builder(this, CHANNEL)
             .setSmallIcon(R.drawable.notification_icon)
             .setContentTitle(getString(R.string.app_name))
-            .setContentText(status)
+            .setContentText(
+                view.deviceControl.ifEmpty { null }?.let { "$status · $it" } ?: status
+            )
             .setContentIntent(open)
             .setOngoing(true)
             .setVisibility(Notification.VISIBILITY_PRIVATE)

@@ -179,6 +179,10 @@ type Request struct {
 	TmuxSocketUnknown bool
 	// ClientRule is [RequestFrame].ClientRule when it is a valid id, or "".
 	ClientRule string
+	// PeerPID is the pid of the connected process as the kernel reports it for
+	// the socket (SO_PEERCRED), never sent by the caller; 0 where unknown.
+	// Device control maps it to the caller's session for its audit.
+	PeerPID int
 }
 
 // Executor runs one op. progress sends one `op.progress` element to the
@@ -359,6 +363,7 @@ func (s *Server) serveConn(conn net.Conn) {
 		s.writeError(conn, perr)
 		return
 	}
+	rq.PeerPID = peerPID(conn)
 
 	// The operation ends when the client goes away: a client sends nothing
 	// after its request, so any read result means disconnect or misuse.

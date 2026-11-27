@@ -35,6 +35,7 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
+import cc.nasz.minion.devicecontrol.DeviceControl
 import java.net.URI
 import java.time.Instant
 import java.time.ZoneId
@@ -74,6 +75,8 @@ class MainActivity : Activity() {
     private lateinit var forget: Button
     private lateinit var clearOverride: Button
     private lateinit var reviewUsage: Button
+    // Only in -PminionDeviceControl=true builds (BuildConfig.DEVICE_CONTROL); never created otherwise.
+    private var deviceControl: Button? = null
 
     private val service = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName, binder: IBinder) {
@@ -289,6 +292,11 @@ class MainActivity : Activity() {
         page.addView(allowInstalls, row(6))
         updatePolicy = button("Updates: Automatic") { choosePolicy() }
         page.addView(updatePolicy, row(6))
+        if (DeviceControl.available) {
+            deviceControl = button("Device control") {
+                startActivity(Intent().setClassName(this, "cc.nasz.minion.devicecontrol.DeviceControlActivity"))
+            }.also { page.addView(it, row(6)) }
+        }
         return scroll
     }
 
@@ -344,9 +352,13 @@ class MainActivity : Activity() {
         allowInstalls.visible(configured && !update.canInstall && update.selfSigned && update.policy != UpdatePolicy.OFF)
         updatePolicy.visible(configured && !value.busy)
         updatePolicy.text = "Updates: ${update.policy.label}"
-        val controls = listOf(
+        deviceControl?.let {
+            it.visible(configured && !value.busy)
+            it.text = value.deviceControl.ifEmpty { "Device control: off" }
+        }
+        val controls = listOfNotNull(
             installUpdate, done, pair, token, start, pause, stop, share, boot, reviewUsage, forget, clearOverride,
-            allowInstalls, updatePolicy,
+            allowInstalls, updatePolicy, deviceControl,
         )
         for (control in controls) control.isEnabled = worker != null
         if (television && currentFocus == null) {

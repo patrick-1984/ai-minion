@@ -91,6 +91,9 @@ type LiveStatus struct {
 	// LogSinks is the state of the remote log sinks (syslog, otel); nil
 	// from an older Worker.
 	LogSinks []ops.LogSinkStatus
+	// DeviceControl is the on-device adb status of an Android Worker; nil
+	// elsewhere and from an older Worker.
+	DeviceControl *ops.DeviceControlStatus
 	// Paused is the pause the running Worker applies; PauseKnown is false for
 	// an older Worker, which cannot pause.
 	Paused, PauseKnown bool
@@ -147,6 +150,8 @@ type LiveStatusSource struct {
 	Health  *SessionListHealth
 	// LogSinks reports the remote log sinks; nil reports none.
 	LogSinks func() []ops.LogSinkStatus
+	// DeviceControl reports device control; nil reports none.
+	DeviceControl func(context.Context) *ops.DeviceControlStatus
 	// Pause is the pause of the Hub traffic; nil means the Worker cannot pause.
 	Pause *PauseService
 	// Private is the private pairing presentation of the managed Android
@@ -157,8 +162,11 @@ type LiveStatusSource struct {
 }
 
 // LiveStatus implements [LiveSource].
-func (s LiveStatusSource) LiveStatus(context.Context) (LiveStatus, error) {
+func (s LiveStatusSource) LiveStatus(ctx context.Context) (LiveStatus, error) {
 	var out LiveStatus
+	if s.DeviceControl != nil {
+		out.DeviceControl = s.DeviceControl(ctx)
+	}
 	if s.Connector != nil {
 		out.Connector = s.Connector.Status()
 		out.ApprovalKnown = true
@@ -381,6 +389,10 @@ type StatusReport struct {
 	// LogSinks is the state of the remote log sinks of the running Worker
 	// (syslog, otel); empty when no running Worker answered.
 	LogSinks []ops.LogSinkStatus `json:"log_sinks,omitempty"`
+	// DeviceControl is on-device adb of an Android Worker (available, enabled,
+	// state, port, key_storage, active_streams, last_ok, last_error); absent
+	// elsewhere.
+	DeviceControl *ops.DeviceControlStatus `json:"device_control,omitempty"`
 	// Problems lists what could not be read, in plain English.
 	Problems []string `json:"problems,omitempty"`
 }
@@ -521,6 +533,7 @@ func connectionOf(ctx context.Context, in StatusInputs, r *StatusReport, problem
 		r.SessionHost, r.SessionsHidden, r.SessionHostReason = live.Host.Kind, live.Host.Hidden, live.Host.Reason
 		r.SessionsListError = live.ListError
 		r.LogSinks = live.LogSinks
+		r.DeviceControl = live.DeviceControl
 		r.Alarm = live.Connector.Alarm
 		if live.Connector.TLSPath != "" {
 			r.TLS = &StatusTLS{State: live.Connector.TLSPath, Line: live.Connector.TLSLine}
@@ -609,6 +622,9 @@ func (r StatusReport) WriteText(w io.Writer) error {
 	}
 	for _, st := range r.LogSinks {
 		rows = append(rows, [2]string{"Log export (" + st.Name + ")", logSinkText(st)})
+	}
+	if r.DeviceControl != nil {
+		rows = append(rows, [2]string{"Device control", deviceControlText(*r.DeviceControl)})
 	}
 	if r.Alarm == AlarmHubIdentityChanged {
 		for i, row := range rows {
@@ -843,3 +859,16 @@ var (
 	_ StatusSessions   = term.SessionHost(nil)
 	_ LiveSource       = LiveStatusSource{}
 )
+
+// deviceControlText is the one status line of device control.
+func deviceControlText(d ops.DeviceControlStatus) string {
+	switch {
+	case !d.Available:
+		return "not available (" + orDash(d.Reason, "off") + ")"
+	case !d.Enabled:
+		return "off"
+	case d.State == "READY":
+		return fmt.Sprintf("on (TLS loopback, port %d, key %s)", d.Port, orDash(d.KeyStorage, "unknown"))
+	}
+	return "on, " + d.State + ": " + orDash(d.Reason, "not ready")
+}

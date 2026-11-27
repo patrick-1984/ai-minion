@@ -106,6 +106,9 @@ type workerConfigDeps struct {
 	applier   configApplier
 	// registry is the settings registry; nil means config.Default.
 	registry *config.Registry
+	// deviceControlOn reports whether the running Worker of stateDir has
+	// device control (on-device adb) enabled; nil never refuses.
+	deviceControlOn func(ctx context.Context, stateDir string) bool
 }
 
 func (d workerConfigDeps) reg() *config.Registry {
@@ -122,7 +125,26 @@ func defaultWorkerConfigDeps() workerConfigDeps {
 		applier: statusApplier{call: func(ctx context.Context, op string) (json.RawMessage, error) {
 			return client.Local().Call(ctx, op, nil)
 		}},
+		deviceControlOn: liveDeviceControlOn,
 	}
+}
+
+// liveDeviceControlOn asks the running Worker of stateDir whether device
+// control is enabled. No Worker, another state directory or an older Worker:
+// not on (the Worker disables device control itself when it finds the Worker
+// shared).
+func liveDeviceControlOn(ctx context.Context, stateDir string) bool {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	raw, err := client.Local().Call(ctx, agent.OpLocalStatus, nil)
+	if err != nil {
+		return false
+	}
+	var reply agent.LiveStatusReply
+	if json.Unmarshal(raw, &reply) != nil || (reply.StateDir != "" && !sameDir(reply.StateDir, stateDir)) {
+		return false
+	}
+	return reply.DeviceControl != nil && reply.DeviceControl.Enabled
 }
 
 func newWorkerConfigCmd(deps workerConfigDeps) *cobra.Command {
@@ -450,6 +472,9 @@ func runConfigShare(cmd *cobra.Command, deps workerConfigDeps, modeArg string, n
 	}
 	defer ce.release()
 	ctx := cmd.Context()
+	if mode != store.ShareNone && deps.deviceControlOn != nil && deps.deviceControlOn(ctx, ce.stateDir) {
+		return errors.New("device control is on: it needs a dedicated, unshared Worker; disable device control in the Minion app (or on the Hub) before sharing")
+	}
 	st, err := deps.openStore(ctx, ce.stateDir)
 	if err != nil {
 		return fmt.Errorf("open the Worker state in %s: %w", ce.stateDir, err)

@@ -5,6 +5,8 @@ import android.net.LocalSocket
 import android.net.LocalSocketAddress
 import android.os.Process
 import android.system.Os
+import cc.nasz.minion.devicecontrol.BridgeToken
+import cc.nasz.minion.devicecontrol.DeviceControl
 import org.json.JSONObject
 import java.io.DataInputStream
 import java.io.DataOutputStream
@@ -31,6 +33,8 @@ internal class NativeWorker(private val context: Context) {
     private val tmuxConfig = File(run, "tmux.conf")
     private val tmuxSocket = File(run, "tmux.sock")
     private val controlSocket = File(run, "minion/worker.sock")
+    private val bridgeSocket = File(run, "minion/adb-bridge.sock")
+    private val shellRc = File(run, "minion.shrc")
     private val nativeDir = File(context.applicationInfo.nativeLibraryDir)
     private val command = AtomicReference<java.lang.Process>()
     private val cancellation = AtomicLong()
@@ -44,7 +48,25 @@ internal class NativeWorker(private val context: Context) {
     fun tmuxReady(): Boolean = tmuxSocket.exists() &&
         run("libtmux.so", listOf("-N", "-S", tmuxSocket.path, "show-options", "-gqv", "exit-empty"), timeout = 2).success
 
-    fun startWorker(): java.lang.Process = start("libminion.so", listOf("worker", "run"))
+    // With device control compiled in, every Worker start gets a fresh bridge socket and token. The token goes to
+    // the Worker's stdin as one line (never into the environment); the socket path goes into its environment.
+    fun startWorker(): java.lang.Process {
+        val control = if (DeviceControl.available) DeviceControl.get(context) else null
+        val token = control?.startBridge(bridgeSocket)
+        val extra = if (token != null) mapOf(BRIDGE_ENVIRONMENT to bridgeSocket.path) else emptyMap()
+        val process = try { start("libminion.so", listOf("worker", "run"), extra = extra) } catch (e: Exception) {
+            control?.stopBridge()
+            throw e
+        }
+        if (token != null) {
+            runCatching { process.outputStream.use { it.write(BridgeToken.stdinLine(token).toByteArray(UTF_8)) } }
+        }
+        return process
+    }
+
+    fun stopBridge() {
+        if (DeviceControl.available) DeviceControl.get(context).stopBridge()
+    }
 
     fun provision(server: String?, token: String?, share: String, acceptUsage: Boolean): Boolean {
         val args = mutableListOf("worker", "up", "--configure-only", "--non-interactive-share", share)
@@ -130,6 +152,12 @@ internal class NativeWorker(private val context: Context) {
         check(controlSocket.path.toByteArray(UTF_8).size <= 100)
         copyAssets("terminfo", terminfo)
         copyAssets("tmux.conf", tmuxConfig)
+        // Interactive shells of the panes get `minion` as an alias of the packaged binary (design 4.6). The
+        // owner's own ~/.mkshrc still runs, because ENV replaces it.
+        shellRc.writeText(
+            "alias minion='\"\$MINION_BINARY\"'\n" +
+                "[ -r \"\$HOME/.mkshrc\" ] && . \"\$HOME/.mkshrc\"\n", UTF_8,
+        )
         prepared = true
     }
 
@@ -149,7 +177,9 @@ internal class NativeWorker(private val context: Context) {
         }
     }
 
-    private fun start(binary: String, args: List<String>, stdout: File? = null): java.lang.Process {
+    private fun start(
+        binary: String, args: List<String>, stdout: File? = null, extra: Map<String, String> = emptyMap(),
+    ): java.lang.Process {
         prepare()
         val executable = File(nativeDir, binary)
         val launcher = File(nativeDir, "libminion-launch.so")
@@ -176,6 +206,10 @@ internal class NativeWorker(private val context: Context) {
             put("MINION_TMUX_BINARY", File(nativeDir, "libtmux.so").path)
             put("MINION_TMUX_SOCKET", tmuxSocket.path)
             put("MINION_TMUX_CONFIG", tmuxConfig.path)
+            // nativeLibraryDir changes on every APK update: refreshed on every start, inherited by the panes.
+            put("MINION_BINARY", File(nativeDir, "libminion.so").path)
+            put("ENV", shellRc.path)
+            putAll(extra)
             // Read on every start, so it survives Worker, app and device restarts.
             HubDialOverride.saved(context).takeIf { it.isNotBlank() }?.let { put(HubDialOverride.ENVIRONMENT, it) }
         }
@@ -215,6 +249,8 @@ internal class NativeWorker(private val context: Context) {
     }
 
     companion object {
+        const val BRIDGE_ENVIRONMENT = "MINION_ADB_BRIDGE_SOCKET"
+
         fun reap(process: java.lang.Process?) {
             if (process == null) return
             if (process.isAlive) process.destroy()
