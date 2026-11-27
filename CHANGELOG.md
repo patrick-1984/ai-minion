@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- **Android self-update failed on a real device: "the update cache is not safe to use: /data is owned by uid 1000".** The update-cache check trusted only root and the app's own user as owners of the parent directories, but Android creates /data as system:system 0771. The check now also trusts the Android system user (owner and group, never writable by others) on Android only.
 - **A reconnect request right after the Worker connected was lost** (v0.24.1): the stale request was cleared after the connected state was published, so a request in that window answered "probing" but no link check ran; and a request arriving after a failed check could probe the already closed link. Both are fixed.
 - Three timing-sensitive tests are fixed at their cause (first-frame timeout in a test world, an export pipeline test that assumed a full queue).
 
