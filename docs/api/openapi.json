@@ -2595,12 +2595,6 @@
           "grant": {
             "$ref": "#/components/schemas/Grant"
           },
-          "grants": {
-            "items": {
-              "$ref": "#/components/schemas/Grant"
-            },
-            "type": "array"
-          },
           "note": {
             "type": "string"
           },

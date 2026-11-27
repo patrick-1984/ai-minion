@@ -894,10 +894,6 @@ func readGrantAdd(f url.Values, u pageUser, sources, targets []GrantWorkerOption
 		g.Missing = "Choose the target: sessions, or every shared session on one Worker."
 		return g
 	}
-	if len(a.Targets) > ops.MaxGrantTargets {
-		g.Refusal = "Choose at most " + strconv.Itoa(ops.MaxGrantTargets) + " target sessions."
-		return g
-	}
 	for _, t := range a.Targets {
 		if a.SourceWorkerID != "" && t.WorkerID == a.SourceWorkerID {
 			g.Refusal = "A grant reaches another Worker: choose targets that are not on the source Worker."

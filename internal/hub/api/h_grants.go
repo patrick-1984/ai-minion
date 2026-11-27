@@ -639,11 +639,10 @@ func (h grantHandlers) doSet(ctx context.Context, c *Call, a ops.GrantSetArgs, o
 func (h grantHandlers) manyResult(gs []store.SessionGrantRow, ws map[string]GrantWorker) ops.GrantSetResult {
 	res := ops.GrantSetResult{Outcome: ops.OutcomeDelivered}
 	for _, g := range gs {
-		res.Grants = append(res.Grants, h.info(g, ws))
 		res.CreatedIDs = append(res.CreatedIDs, g.ID)
 	}
-	if len(res.Grants) > 0 {
-		res.Grant = res.Grants[0]
+	if len(gs) > 0 {
+		res.Grant = h.info(gs[0], ws)
 	}
 	return res
 }

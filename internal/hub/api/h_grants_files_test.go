@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 
@@ -100,13 +101,26 @@ func TestGrantSetSelectors(t *testing.T) {
 		"files_pull": true}
 	code, body := k.call(ops.OpGrantSet, many)
 	var res ops.GrantSetResult
-	if code != http.StatusOK || json.Unmarshal([]byte(body), &res) != nil || len(res.CreatedIDs) != 3 || len(res.Grants) != 3 ||
-		res.Grant.ID != res.CreatedIDs[0] || res.Grants[2].TargetSession != "" || res.Grants[0].SourceScope != ops.GrantSourceWorker ||
-		res.Grants[0].SourceSession != "" || !res.Grants[1].FilesPull {
+	if code != http.StatusOK || json.Unmarshal([]byte(body), &res) != nil || len(res.CreatedIDs) != 3 ||
+		res.Grant.ID != res.CreatedIDs[0] || res.Grant.SourceScope != ops.GrantSourceWorker ||
+		res.Grant.SourceSession != "" || !res.Grant.FilesPull {
 		t.Fatalf("several targets = %d %s", code, body)
 	}
-	if l := k.listGrants(); len(l) != 3 {
+	l := k.listGrants()
+	if len(l) != 3 {
 		t.Fatalf("listed %d grants", len(l))
+	}
+	wide := 0
+	for _, g := range l {
+		if g.SourceScope != ops.GrantSourceWorker || !g.FilesPull || !slices.Contains(res.CreatedIDs, g.ID) {
+			t.Fatalf("created grant %+v", g)
+		}
+		if g.TargetSession == "" {
+			wide++
+		}
+	}
+	if wide != 1 {
+		t.Fatalf("%d Worker-wide targets, want 1", wide)
 	}
 	// One member across owners (not an administrator): nothing is created.
 	mixed := map[string]any{"source_worker_id": a1.ID, "source_session": "agent", "level": ops.GrantLevelView,
@@ -146,7 +160,7 @@ func TestGrantSetSelectors(t *testing.T) {
 	// The legacy singleton request answers as before: one grant, no list.
 	k.as(k.u1)
 	code, body = k.call(ops.OpGrantSet, grantArgs(a1, a2, ops.GrantLevelView))
-	if code != http.StatusOK || strings.Contains(body, "created_ids") || strings.Contains(body, `"grants"`) {
+	if code != http.StatusOK || strings.Contains(body, "created_ids") {
 		t.Fatalf("legacy singleton = %d %s", code, body)
 	}
 }

@@ -320,9 +320,6 @@ func (a GrantSetArgs) targetList() ([]GrantTarget, error) {
 	if len(a.Targets) == 0 {
 		return nil, invalid("targets", "choose at least one target")
 	}
-	if len(a.Targets) > MaxGrantTargets {
-		return nil, invalid("targets", "at most %d targets", MaxGrantTargets)
-	}
 	seen := make(map[GrantTarget]bool, len(a.Targets))
 	out := make([]GrantTarget, 0, len(a.Targets))
 	for _, t := range a.Targets {
@@ -334,19 +331,15 @@ func (a GrantSetArgs) targetList() ([]GrantTarget, error) {
 	return out, nil
 }
 
-// MaxGrantTargets bounds the targets of one grant_set.
-const MaxGrantTargets = 200
-
 // GrantSetResult is the result of grant_set and grant_approve: the outcome in
 // the form of a write result, and the grant as it now stands. A grant_set
-// with targets answers the first grant it created in Grant and every grant in
-// Grants, and the ids of all in CreatedIDs.
+// with targets answers the first grant it created in Grant and the ids of all
+// in CreatedIDs.
 type GrantSetResult struct {
 	Outcome    Outcome  `json:"outcome"`
 	Reason     string   `json:"reason"`
 	Note       string   `json:"note,omitempty"`
 	Grant      Grant    `json:"grant"`
-	Grants     []Grant  `json:"grants,omitempty"`
 	CreatedIDs []string `json:"created_ids,omitempty"`
 }
 
