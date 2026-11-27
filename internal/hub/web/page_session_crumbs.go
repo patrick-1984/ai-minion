@@ -116,7 +116,7 @@ func crumbsOfSession(p SessionPage) []Crumb {
 	}
 	out := []Crumb{{Label: "Control center", Path: "/"}, {Label: "Workers", Path: workers}}
 	if p.Worker != "" {
-		out = append(out, Crumb{Label: p.Worker, Path: p.WorkerURL, Switch: sw})
+		out = append(out, Crumb{Label: p.Worker, Path: p.WorkerURL, Switch: sw, Name: true})
 	}
-	return append(out, Crumb{Label: p.Session, Path: p.SelfURL, Code: strings.TrimSpace(p.Code), Current: true, Switch: sw})
+	return append(out, Crumb{Label: p.Session, Path: p.SelfURL, Code: strings.TrimSpace(p.Code), Current: true, Switch: sw, Name: true})
 }

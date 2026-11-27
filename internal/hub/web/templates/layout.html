@@ -69,7 +69,7 @@
         <ul id="top-search-results" class="top-search-results" role="listbox" aria-label="Search results" hidden></ul>
       </div>
       <nav class="crumbs" aria-label="Breadcrumb"><ol>
-        {{range .Crumbs}}<li>{{if .Path}}<a href="{{.Path}}"{{if .Current}} aria-current="page"{{end}}>{{if .Code}}<code class="crumb-code">{{.Code}}</code> {{end}}{{.Label}}</a>{{else}}<span aria-current="page">{{if .Code}}<code class="crumb-code">{{.Code}}</code> {{end}}{{.Label}}</span>{{end}}{{if .Switch}}<button type="button" class="crumb-switch-btn" popovertarget="{{.Switch}}" aria-label="Switch from {{.Label}} to another session or Worker" title="Switch session or Worker">{{template "icon" "i-chevron"}}</button>{{end}}</li>
+        {{range .Crumbs}}<li>{{if .Path}}<a href="{{.Path}}"{{if .Current}} aria-current="page"{{end}}>{{if .Code}}<code class="crumb-code">{{.Code}}</code> {{end}}{{if .Name}}<span class="crumb-label" title="{{.Label}}">{{.Label}}</span>{{else}}{{.Label}}{{end}}</a>{{else}}<span aria-current="page">{{if .Code}}<code class="crumb-code">{{.Code}}</code> {{end}}{{if .Name}}<span class="crumb-label" title="{{.Label}}">{{.Label}}</span>{{else}}{{.Label}}{{end}}</span>{{end}}{{if .Switch}}<button type="button" class="crumb-switch-btn" popovertarget="{{.Switch}}" aria-label="Switch from {{.Label}} to another session or Worker" title="Switch session or Worker">{{template "icon" "i-chevron"}}</button>{{end}}</li>
         {{end}}
       </ol></nav>
       <div class="top-tools">
