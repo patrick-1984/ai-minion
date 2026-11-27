@@ -118,6 +118,14 @@ func initRoute(ctx context.Context, env *Env) error {
 	// (the dispatcher decides the action manage on the named Worker). Remote
 	// debug (v0.10.0): the owner or an admin (operate or manage), audited; the
 	// Worker itself refuses unless it allows it.
+	// Device control (on-device adb) of an Android Worker: the Hub reads the
+	// status and can disable, never enable. The shell-power ops stay local to
+	// the Worker, which refuses them from the Hub.
+	for _, name := range ops.AdbHubOpNames {
+		if err := api.RegisterWorkerOp(handlers, name, rt); err != nil {
+			return fmt.Errorf("route: %w", err)
+		}
+	}
 	for _, name := range []string{ops.OpWorkerUpdate, ops.OpWorkerUpdateStatus, ops.OpWorkerDebug, ops.OpWorkerLogs} {
 		if err := api.RegisterWorkerOp(handlers, name, rt); err != nil {
 			return fmt.Errorf("route: %w", err)

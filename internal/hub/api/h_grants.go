@@ -45,11 +45,14 @@ var _ GrantStore = (*store.Store)(nil)
 // audit events of a refused grant_set or grant_approve. The audit row of a
 // change that commits is written by the store in the transaction of the
 // change (grant_revoke included; the dispatcher audits its refusals).
-func RegisterGrants(r *Registry, st GrantStore, workers func(context.Context) ([]GrantWorker, error), dec Decider, au Auditor) error {
+func RegisterGrants(r *Registry, st GrantStore, workers func(context.Context) ([]GrantWorker, error), dec Decider, au Auditor, opts ...GrantOption) error {
 	if st == nil || workers == nil || dec == nil {
 		return errors.New("api: the grant handlers need a store, the Workers and a decider")
 	}
 	h := grantHandlers{st: st, workers: workers, dec: dec, au: au, now: time.Now}
+	for _, o := range opts {
+		o(&h)
+	}
 	for _, reg := range []error{
 		// grant_list is decided on the caller's own user resource, so every
 		// user may call it; the handler filters by the Workers they own.
@@ -71,6 +74,20 @@ type grantHandlers struct {
 	dec     Decider
 	au      Auditor
 	now     func() time.Time
+	// targetGuard refuses a grant to a target Worker that must stay
+	// unshared (device control on); nil refuses nothing.
+	targetGuard func(ctx context.Context, p authz.Principal, workerID string) error
+}
+
+// GrantOption configures the grant handlers.
+type GrantOption func(*grantHandlers)
+
+// WithGrantTargetGuard makes grant_set ask guard before it lets a session of
+// another Worker reach the target Worker: a Worker with device control
+// (on-device adb) on must stay dedicated and unshared, so the guard answers an
+// error for it.
+func WithGrantTargetGuard(guard func(ctx context.Context, p authz.Principal, workerID string) error) GrantOption {
+	return func(h *grantHandlers) { h.targetGuard = guard }
 }
 
 func (h grantHandlers) byID(ctx context.Context) (map[string]GrantWorker, error) {
@@ -401,6 +418,11 @@ func (h grantHandlers) doSet(ctx context.Context, c *Call, a ops.GrantSetArgs, o
 	}
 	if !src.Approved || !tgt.Approved {
 		return none, NewError(proto.CodeConflict, "both Workers must be approved")
+	}
+	if h.targetGuard != nil {
+		if err := h.targetGuard(ctx, p, tgt.ID); err != nil {
+			return none, err
+		}
 	}
 	admin, err := h.isAdmin(ctx, p)
 	if err != nil {

@@ -1,0 +1,29 @@
+{{/* The Device control panel of the Worker detail page: the on-device adb status of an Android Worker, its last audit
+entries and a Disable button. The Hub can disable device control, never enable it: enabling is done on the device. */}}
+{{define "worker_device_panel"}}{{if .Show}}<section class="panel" aria-labelledby="device-h" id="device-section" data-device-state="{{.Status.State}}">
+  <h2 id="device-h">Device control</h2>
+  {{range .Results}}<div class="result result-{{.Kind}}" role="status"><p class="result-title"><strong>{{.Label}}:</strong> {{.Summary}}</p></div>
+  {{end}}{{if .Error}}<p class="notice notice-info" role="status">{{.Error}}</p>
+  {{else}}<dl class="facts">
+    <dt>Available</dt><dd>{{if .Status.Available}}yes{{else}}no{{end}}</dd>
+    <dt>Enabled</dt><dd data-device-enabled="{{.Status.Enabled}}">{{if .Status.Enabled}}yes (enabled on the device){{else}}no{{end}}</dd>
+    <dt>State</dt><dd>{{.Status.State}}{{if .Status.Reason}} - {{.Status.Reason}}{{end}}</dd>
+    <dt>Transport</dt><dd>TLS on loopback{{if .Status.Port}}, port {{.Status.Port}}{{end}}</dd>
+    <dt>Key storage</dt><dd>{{if .Status.KeyStorage}}{{.Status.KeyStorage}}{{else}}-{{end}}</dd>
+    <dt>Active streams</dt><dd>{{.Status.ActiveStreams}}</dd>
+    <dt>Last ok</dt><dd>{{if .Status.LastOK}}{{.Status.LastOK}}{{else}}-{{end}}</dd>
+    <dt>Last error</dt><dd>{{if .Status.LastError}}{{.Status.LastError}}{{else}}-{{end}}</dd>
+  </dl>
+  {{if eq .Status.KeyStorage "app-file"}}<p class="notice notice-info" role="status">Key stored in an app-private file. Every terminal of this Worker could read it.</p>
+  {{end}}<p class="help">Sessions of this worker get shell-level control of the device while device control is on. It needs a dedicated, unshared worker, so sharing it is refused while it is on. Device control needs Wi-Fi: Android turns Wireless debugging off without it. It can only be enabled on the device, in the Minion app.</p>
+  {{if .Status.Enabled}}<form method="post" action="{{.URL}}" hx-post="{{.URL}}" hx-target="#device-section" hx-swap="outerHTML" hx-disabled-elt="find button" aria-label="Disable device control on {{.Worker}}">
+    <button type="submit" class="btn btn-danger" data-control="device-disable">Disable device control</button>
+  </form>
+  {{end}}{{if .Audit}}<h3>Last operations</h3>
+  <div class="table-wrap"><table class="table">
+    <thead><tr><th scope="col">Time</th><th scope="col">Actor</th><th scope="col">Session</th><th scope="col">Operation</th><th scope="col">Result</th><th scope="col">Duration</th></tr></thead>
+    <tbody>{{range .Audit}}<tr><td>{{.Time}}</td><td>{{.Actor}}</td><td>{{.Session}}</td><td>{{.Op}}</td><td>{{.Result}}</td><td>{{.DurationMS}} ms</td></tr>
+    {{end}}</tbody>
+  </table></div>
+  {{end}}{{end}}
+</section>{{end}}{{end}}
