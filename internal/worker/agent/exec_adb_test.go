@@ -185,3 +185,16 @@ func TestDeviceControlInLocalStatus(t *testing.T) {
 		t.Fatal("a Worker without device control reports the block")
 	}
 }
+
+func TestDeviceBridgePath(t *testing.T) {
+	t.Setenv(BridgeSocketEnv, "/data/app/r/minion/adb-bridge.sock")
+	if p, err := deviceBridgePath(); err != nil || p != "/data/app/r/minion/adb-bridge.sock" {
+		t.Fatal(p, err)
+	}
+	for _, bad := range []string{"relative/adb-bridge.sock", "/tmp/other.sock"} {
+		t.Setenv(BridgeSocketEnv, bad)
+		if p, _ := deviceBridgePath(); p == bad {
+			t.Fatalf("%s accepted", bad)
+		}
+	}
+}

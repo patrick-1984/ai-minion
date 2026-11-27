@@ -50,11 +50,11 @@ func startDeviceControl(ctx context.Context, env *Env) (StopFunc, error) {
 	}
 	s := env.Settings()
 	log := s.logger()
-	sock, err := localapi.SocketPath(config.SystemPathEnv())
+	path, err := deviceBridgePath()
 	var bridge *devctl.Client
 	tok := &devctl.Token{}
 	if err == nil {
-		bridge = devctl.NewClient(filepath.Join(filepath.Dir(sock), devctl.SocketName), tok.Get)
+		bridge = devctl.NewClient(path, tok.Get)
 		if in := deviceControlStdin(); in != nil {
 			go tok.ReadLine(in)
 		}
@@ -78,4 +78,21 @@ func startDeviceControl(ctx context.Context, env *Env) (StopFunc, error) {
 	wctx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	go svc.Watch(wctx, deviceShareWatch)
 	return func(context.Context) error { cancel(); return nil }, nil
+}
+
+// BridgeSocketEnv names the bridge socket the app started for this Worker.
+const BridgeSocketEnv = "MINION_ADB_BRIDGE_SOCKET"
+
+// deviceBridgePath is the bridge socket: the app's MINION_ADB_BRIDGE_SOCKET
+// when it is an absolute path to an adb-bridge.sock, else adb-bridge.sock next
+// to worker.sock.
+func deviceBridgePath() (string, error) {
+	if p := os.Getenv(BridgeSocketEnv); p != "" && filepath.IsAbs(p) && filepath.Base(p) == devctl.SocketName {
+		return filepath.Clean(p), nil
+	}
+	sock, err := localapi.SocketPath(config.SystemPathEnv())
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(filepath.Dir(sock), devctl.SocketName), nil
 }

@@ -47,8 +47,10 @@ Worker became shared by a path that did not ask (for example while the Worker wa
 
 ## Bridge protocol (Worker -> app), version 1
 
-Socket: `<runtime dir>/adb-bridge.sock` (the directory of `worker.sock`, `r/minion/` in the app), a filesystem
-Unix socket, 0600, peer uid == app uid, served by the app's `BridgeServer`. No TCP listener anywhere.
+Socket: the path in `MINION_ADB_BRIDGE_SOCKET` (set by the app's `NativeWorker.startWorker`; it must be an
+absolute path ending in `adb-bridge.sock`), else `<runtime dir>/adb-bridge.sock` next to `worker.sock`
+(`r/minion/` in the app); a filesystem Unix socket, 0600, peer uid == app uid, served by the app's
+`BridgeServer`. No TCP listener anywhere.
 
 Token: the app writes exactly one line to the Worker's stdin at launch, `MINION_ADB_BRIDGE_TOKEN=<64 hex>\n`
 (`BridgeToken.stdinLine`). The Worker reads that one line on Android only and sends the token in every request.
