@@ -118,7 +118,8 @@ type Status struct {
 	FeatureEnabled bool `json:"feature_enabled"`
 	// Enabled is the owner's on-device choice.
 	Enabled bool `json:"enabled"`
-	// State is OFF, UNPAIRED, PAIRED, READY, WAITING_WIFI or
+	// State is UNAVAILABLE, OFF, UNPAIRED, PAIRED (paired, not connected
+	// now), READY (connected and verified), WAITING_WIFI or
 	// ENDPOINT_UNVERIFIED (DESIGN 4.3, 4.4).
 	State string `json:"state"`
 	// Port is the adbd TLS connection port on 127.0.0.1, 0 when none.
@@ -134,6 +135,7 @@ type Status struct {
 
 // Bridge states.
 const (
+	StateUnavailable        = "UNAVAILABLE"
 	StateOff                = "OFF"
 	StateUnpaired           = "UNPAIRED"
 	StatePaired             = "PAIRED"

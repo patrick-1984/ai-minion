@@ -36,7 +36,8 @@ OpenAPI). Nothing is reachable by default.
 4. The owner enabled it on the device (`enabled`), else `disabled`.
 5. The Worker is unshared (`share = none`; `later`, `select` and `all` are shared). A shared Worker with device
    control on is **disabled** at once (fail closed), and the call is refused with `shared`.
-6. Bridge state `READY`, else `not_paired`, `needs_wifi` or `endpoint_unverified`.
+6. Bridge state `READY` or `PAIRED` (the bridge connects on demand and checks provenance first), else
+   `not_paired` (UNPAIRED), `needs_wifi` (WAITING_WIFI) or `endpoint_unverified`.
 
 `adb_shell`, `adb_screencap` and `adb_input` are refused from the Hub (only a session of this Worker, through
 its control socket, can use them). `adb_status` and `adb_disable` are routed by the Hub too; the Hub can
@@ -77,7 +78,7 @@ Answers (channel 0 unless noted):
 
 | Request | Answer |
 |---|---|
-| status | `{"type":"status","feature_enabled":B,"enabled":B,"state":"OFF|UNPAIRED|PAIRED|READY|WAITING_WIFI|ENDPOINT_UNVERIFIED","port":N,"key_storage":"android-keystore (TEE|STRONGBOX|SOFTWARE)|app-file","active_streams":N,"last_ok":"RFC 3339","last_error":"<code>"}` |
+| status | `{"type":"status","feature_enabled":B,"enabled":B,"state":"UNAVAILABLE|OFF|UNPAIRED|PAIRED|READY|WAITING_WIFI|ENDPOINT_UNVERIFIED","port":N,"key_storage":"android-keystore (TEE|STRONGBOX|SOFTWARE)|app-file","active_streams":N,"last_ok":"RFC 3339","last_error":"<code>"}` |
 | disable | `{"type":"ok"}` after every stream is closed |
 | shell, screencap, input | `{"type":"started"}`, then any number of channel 1 / 2 frames, then `{"type":"exit","code":N}` |
 | any | instead: `{"type":"error","code":"<code>","message":"<short class text>"}` |

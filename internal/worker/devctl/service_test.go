@@ -151,6 +151,19 @@ func TestPolicyRefusals(t *testing.T) {
 	}
 }
 
+// PAIRED (not connected now) goes to the bridge, which connects on demand.
+func TestPairedGoesToTheBridge(t *testing.T) {
+	f := newFixture(t, "android")
+	f.fake.SetStatus(devctl.Status{FeatureEnabled: true, Enabled: true, State: devctl.StatePaired})
+	if _, err := f.svc.Run(caller(1), devctl.OpShell, "id", 0, nil); err != nil {
+		t.Fatal(err)
+	}
+	f.fake.SetStatus(devctl.Status{FeatureEnabled: false, State: devctl.StateUnavailable})
+	if _, err := f.svc.Run(caller(1), devctl.OpShell, "id", 0, nil); devctl.CodeOf(err) != devctl.ErrNotAvailable {
+		t.Fatal(err)
+	}
+}
+
 func TestSharedWorkerDisablesDeviceControl(t *testing.T) {
 	f := newFixture(t, "android")
 	f.setShare("all")

@@ -161,13 +161,16 @@ func (s *Service) Status(ctx context.Context) Report {
 // Recent returns the last audit entries for the Hub panel.
 func (s *Service) Recent() []Entry { return s.c.Audit.Recent() }
 
-// stateCode maps a bridge state that is not READY to the error code a call
-// gets.
+// stateCode maps a bridge state to the error code a call gets, "" when the
+// call goes to the bridge. PAIRED goes: the bridge connects on demand and runs
+// the provenance check before any operation (and answers its own error).
 func stateCode(state string) string {
 	switch state {
-	case StateReady:
+	case StateReady, StatePaired:
 		return ""
-	case StateUnpaired, StatePaired:
+	case StateUnavailable:
+		return ErrNotAvailable
+	case StateUnpaired:
 		return ErrNotPaired
 	case StateWaitingWiFi:
 		return ErrNeedsWiFi

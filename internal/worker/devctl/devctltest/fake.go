@@ -188,7 +188,7 @@ func (b *Bridge) conn(c net.Conn) {
 		fail(c, devctl.ErrDisabled)
 		return
 	}
-	if st.State != devctl.StateReady {
+	if st.State != devctl.StateReady && st.State != devctl.StatePaired {
 		fail(c, map[string]string{
 			devctl.StateWaitingWiFi: devctl.ErrNeedsWiFi, devctl.StateEndpointUnverified: devctl.ErrEndpointUnverified,
 		}[st.State])

@@ -104,7 +104,9 @@ func runGate(ctx context.Context, deps adbDeps) []gateLine {
 	if err == nil {
 		err = json.Unmarshal(raw, &st)
 	}
-	ready := err == nil && st.DeviceControl.Enabled && st.DeviceControl.State == devctl.StateReady
+	// PAIRED is usable too: the bridge connects on the first call.
+	ready := err == nil && st.DeviceControl.Enabled &&
+		(st.DeviceControl.State == devctl.StateReady || st.DeviceControl.State == devctl.StatePaired)
 	if err != nil {
 		add("G12", "FAIL", "status: "+errText(err))
 	} else {
@@ -113,7 +115,7 @@ func runGate(ctx context.Context, deps adbDeps) []gateLine {
 	}
 	add("G0", "MANUAL", "Minion "+version.Version+"; check the values below: SDK 34, armeabi-v7a, ro.debuggable=0, app not debuggable")
 	if !ready {
-		add("G3", "FAIL", "device control is not READY: "+orDashText(st.DeviceControl.Reason))
+		add("G3", "FAIL", "device control is not ready: "+orDashText(st.DeviceControl.Reason))
 	} else {
 		out, code, _, err := gateShell(ctx, deps, 30, "getprop ro.build.fingerprint; getprop ro.build.version.sdk; getprop ro.product.cpu.abi; getprop ro.debuggable")
 		if err != nil || code != 0 {
