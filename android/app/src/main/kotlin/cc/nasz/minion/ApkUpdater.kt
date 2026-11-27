@@ -739,12 +739,7 @@ class PackageReplacedReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         if (intent.action != Intent.ACTION_MY_PACKAGE_REPLACED) return
         ApkUpdater.get(context) // records the outcome of the attempt
-        if (workerPreferences(context).getBoolean("wanted", false)) {
-            try {
-                context.startForegroundService(Intent(context, WorkerService::class.java))
-            } catch (_: IllegalStateException) {
-                // A restricted app may have to be opened and started manually.
-            }
-        }
+        // Starts whenever Enabled (A124), and a Disabled Worker the update interrupted.
+        autostartAfter(context, Autostart.Trigger.PACKAGE_REPLACED)
     }
 }

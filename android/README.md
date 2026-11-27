@@ -30,17 +30,30 @@ On an existing enrollment, **Review usage monitoring** shows the Hub
 fingerprint, registration and owner before you accept locally.
 
 **Pause** disconnects from the Hub and keeps the terminal sessions running.
-**Resume** reconnects. **Stop Worker** disconnects and closes its terminal
-sessions. Closing the screen leaves a running Worker in the background:
-**OK, keep running in the background** and Back (Escape on a keyboard) move
-the screen away and say so; they never stop the Worker. After the first
-pairing or join the app asks once **Start Minion when this device turns
-on?** (**Yes, start automatically** is focused for the D-pad, **No** keeps
-it off) and then moves to the background. The same choice stays on the
-screen as **Start Minion automatically when this device turns on**; on some
-devices it takes effect after the first unlock. Android
-or the device vendor may suspend or stop the service. A system force-stop
-requires opening the app and starting the Worker again. The Worker's Go
+**Resume** reconnects. Closing the screen leaves a running Worker in the
+background: **OK, keep running in the background** and Back (Escape on a
+keyboard) move the screen away and say so; they never stop the Worker.
+
+**Starting by itself.** Once a Hub is set up the Worker is **Enabled** by
+default: it starts after every device restart (on some devices after the
+first unlock), after an app install or update, and when the app is opened.
+One line below the status says what happens, for example "Running · starts
+automatically" or "Stopped · disabled". Three separate buttons change it:
+
+- **Stop Worker now** disconnects and closes the terminal sessions. The
+  Worker stays Enabled, so it starts again after the next restart or app
+  update; opening the app does not start it again until then.
+- **Disable: do not start after a restart** leaves a running Worker running,
+  but after the next device restart it stays stopped and does not talk to the
+  Hub (an app update only interrupts a running Worker, which comes back).
+- **Enable: start after every restart** turns starting by itself on again and
+  starts a stopped Worker at once.
+
+An install that chose **No** to the earlier "Start Minion when this device
+turns on?" question, or cleared the checkbox, stays Disabled; every other
+install becomes Enabled. Android or the device vendor may suspend or stop the
+service; after a system force-stop Android delivers no restart broadcast
+until the app is opened, which starts an Enabled Worker. The Worker's Go
 connection uses its own TLS and proxy settings.
 
 **Hub address override.** On a network whose DNS cannot resolve the Hub's

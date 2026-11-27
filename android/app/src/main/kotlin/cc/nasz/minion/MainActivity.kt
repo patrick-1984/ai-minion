@@ -47,10 +47,10 @@ class MainActivity : Activity() {
     private var model = WorkerView()
     private var drawing = false
     private var television = false
-    private var bootQuestion: AlertDialog? = null
     private var installQuestion: AlertDialog? = null
 
     private lateinit var status: TextView
+    private lateinit var autostart: TextView
     private lateinit var notice: TextView
     private lateinit var hub: TextView
     private lateinit var dialOverride: TextView
@@ -65,13 +65,14 @@ class MainActivity : Activity() {
     private lateinit var allowInstalls: Button
     private lateinit var updatePolicy: Button
     private lateinit var share: CheckBox
-    private lateinit var boot: CheckBox
     private lateinit var done: Button
     private lateinit var pair: Button
     private lateinit var token: Button
     private lateinit var start: Button
     private lateinit var pause: Button
     private lateinit var stop: Button
+    private lateinit var enable: Button
+    private lateinit var disable: Button
     private lateinit var forget: Button
     private lateinit var clearOverride: Button
     private lateinit var reviewUsage: Button
@@ -82,6 +83,7 @@ class MainActivity : Activity() {
         override fun onServiceConnected(name: ComponentName, binder: IBinder) {
             worker = binder as WorkerService.LocalBinder
             worker?.observe(::render)
+            worker?.opened()
         }
 
         override fun onServiceDisconnected(name: ComponentName) {
@@ -95,6 +97,9 @@ class MainActivity : Activity() {
         // The launcher is exported for TV and phone launchers. Its intent is
         // never a source of Worker settings, commands, or credentials.
         television = getSystemService(UiModeManager::class.java).currentModeType == Configuration.UI_MODE_TYPE_TELEVISION
+        // The one-time start-on-boot question (A112) is gone: Enabled is the
+        // default and the Enable / Disable buttons replace it.
+        workerPreferences(this).edit().remove(OLD_BOOT_QUESTION).apply()
         setContentView(screen())
         render(model)
     }
@@ -128,8 +133,6 @@ class MainActivity : Activity() {
 
     override fun onDestroy() {
         // A question still open is asked again by the next screen.
-        bootQuestion?.dismiss()
-        bootQuestion = null
         installQuestion?.dismiss()
         installQuestion = null
         super.onDestroy()
@@ -150,41 +153,6 @@ class MainActivity : Activity() {
     private fun keepRunningInBackground() {
         Toast.makeText(this, "Minion keeps running in the background. Open Minion again to stop it.", Toast.LENGTH_LONG).show()
         if (!moveTaskToBack(true)) finish()
-    }
-
-    // Asked once after a pairing or a join succeeds (until answered):
-    // whether the Worker starts by itself after a device restart. Either
-    // answer, and Back, leaves the Worker running and moves this screen to
-    // the background.
-    private fun askBootStart() {
-        val answer = { value: Boolean? ->
-            bootQuestion = null
-            workerPreferences(this).edit().putBoolean(BOOT_QUESTION, false).apply()
-            if (value != null) {
-                val target = worker
-                if (target != null) target.boot(value)
-                else workerPreferences(this).edit().putBoolean("boot", value).apply()
-            }
-            keepRunningInBackground()
-        }
-        val dialog = AlertDialog.Builder(this)
-            .setTitle("Start Minion when this device turns on?")
-            .setMessage(
-                "Minion is set up. It keeps running in the background, so the Hub can reach this device.\n\n" +
-                    "Yes: after this device restarts, Minion starts by itself (on some devices after the first unlock).\n" +
-                    "No: after a restart, Minion stays off until you open it and choose Start Worker.\n\n" +
-                    "You can change this later on the Minion screen."
-            )
-            .setNegativeButton("No") { _, _ -> answer(false) }
-            .setPositiveButton("Yes, start automatically") { _, _ -> answer(true) }
-            .setOnCancelListener { answer(null) }
-            .create()
-        // A stray tap next to the dialog is no answer: only the buttons and
-        // Back close it (the theme would close it on a touch outside).
-        dialog.setCanceledOnTouchOutside(false)
-        dialog.setOnShowListener { dialog.getButton(AlertDialog.BUTTON_POSITIVE).requestFocus() }
-        bootQuestion = dialog
-        dialog.show()
     }
 
     private fun screen(): View {
@@ -208,6 +176,8 @@ class MainActivity : Activity() {
         page.addView(label(getString(R.string.app_name), if (television) 36f else 30f, Color.WHITE, true))
         status = label("", if (television) 25f else 21f, mint, true)
         page.addView(status, row(8))
+        autostart = label("", 17f, ink)
+        page.addView(autostart, row(4))
         notice = label("", 16f, ink)
         notice.accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE
         page.addView(notice, row(5))
@@ -246,15 +216,18 @@ class MainActivity : Activity() {
             if (model.sessions.toIntOrNull()?.let { it > 0 } == true) {
                 AlertDialog.Builder(this)
                     .setTitle("Stop Worker?")
-                    .setMessage("The Worker disconnects and closes its terminal sessions.")
+                    .setMessage("The Worker disconnects and closes its terminal sessions." +
+                        if (model.boot) " It starts again after the next restart or app update (Enabled)." else "")
                     .setNegativeButton("Cancel", null)
                     .setPositiveButton("Stop") { _, _ -> worker?.stop() }.show()
             } else {
                 worker?.stop()
             }
         }
+        enable = button(Autostart.enableLabel(running = false)) { worker?.autostart(true) }
+        disable = button(Autostart.DISABLE_LABEL) { worker?.autostart(false) }
         installUpdate = button("Install update") { installUpdateNow() }
-        for (action in listOf(installUpdate, done, pair, token, start, pause, stop)) page.addView(action, row(10))
+        for (action in listOf(installUpdate, done, pair, token, start, pause, stop, enable, disable)) page.addView(action, row(10))
 
         share = CheckBox(this).apply {
             text = "Share terminal sessions with the Hub"
@@ -262,14 +235,7 @@ class MainActivity : Activity() {
             minHeight = dp(48)
             setOnCheckedChangeListener { _, value -> if (!drawing) worker?.share(value) }
         }
-        boot = CheckBox(this).apply {
-            text = "Start Minion automatically when this device turns on"
-            textSize = if (television) 18f else 16f
-            minHeight = dp(48)
-            setOnCheckedChangeListener { _, value -> if (!drawing) worker?.boot(value) }
-        }
         page.addView(share, row(12))
-        page.addView(boot, row(2))
         reviewUsage = button("Review usage monitoring") { model.usage?.let(::showUsage) }
         page.addView(reviewUsage, row(6))
         forget = button("Forget this Hub") {
@@ -304,6 +270,9 @@ class MainActivity : Activity() {
         model = value
         drawing = true
         status.text = value.status
+        val configured = value.hub.isNotBlank()
+        val running = value.wanted || value.busy
+        autostart.show(if (configured) Autostart.stateLine(running, value.boot) else "")
         notice.show(value.message)
         hub.show(if (value.hub.isBlank()) "No Hub configured" else "Hub\n${value.hub}")
         dialOverride.show(if (value.dialOverride.isBlank()) "" else
@@ -331,16 +300,18 @@ class MainActivity : Activity() {
             false -> if (value.usage.required) "Usage monitoring pending local acceptance" else "Usage monitoring acceptance is available"
             null -> ""
         })
-        val configured = value.hub.isNotBlank()
         done.visible(value.wanted && !value.busy && value.code.isBlank())
         pair.visible(!configured && !value.busy)
         token.visible(!configured && !value.busy)
         start.visible(configured && !value.wanted && !value.busy)
         pause.visible(value.wanted && !value.busy)
         pause.text = if (value.status == "Paused") "Resume" else "Pause"
-        stop.visible(value.wanted || value.busy)
+        stop.visible(running)
+        stop.text = Autostart.stopLabel(value.boot)
+        enable.visible(configured && !value.boot && !value.busy)
+        enable.text = Autostart.enableLabel(running)
+        disable.visible(configured && value.boot && !value.busy)
         share.visible(configured && !value.busy)
-        boot.visible(configured && !value.busy)
         reviewUsage.visible(value.usage?.accepted == false && !value.busy)
         forget.visible(configured && !value.wanted && !value.busy)
         clearOverride.visible(value.dialOverride.isNotBlank() && !value.wanted && !value.busy)
@@ -357,7 +328,7 @@ class MainActivity : Activity() {
             it.text = value.deviceControl.ifEmpty { "Device control: off" }
         }
         val controls = listOfNotNull(
-            installUpdate, done, pair, token, start, pause, stop, share, boot, reviewUsage, forget, clearOverride,
+            installUpdate, done, pair, token, start, pause, stop, enable, disable, share, reviewUsage, forget, clearOverride,
             allowInstalls, updatePolicy, deviceControl,
         )
         for (control in controls) control.isEnabled = worker != null
@@ -365,16 +336,10 @@ class MainActivity : Activity() {
             controls.firstOrNull { it.isEnabled && it.visibility == View.VISIBLE }?.requestFocus()
         }
         share.isChecked = value.share
-        boot.isChecked = value.boot
         drawing = false
-        if (value.wanted && !value.busy && value.paired && value.code.isBlank() && worker != null &&
-            bootQuestion == null && !isFinishing && !isDestroyed &&
-            workerPreferences(this).getBoolean(BOOT_QUESTION, false)) {
-            askBootStart()
-        }
-        if (configured && !value.busy && worker != null && bootQuestion == null && installQuestion == null &&
+        // Not over a pairing in progress: only once the Hub knows this Worker.
+        if (configured && value.paired && value.code.isBlank() && !value.busy && worker != null && installQuestion == null &&
             !update.canInstall && update.selfSigned && update.policy != UpdatePolicy.OFF && !isFinishing && !isDestroyed &&
-            !workerPreferences(this).getBoolean(BOOT_QUESTION, false) &&
             !workerPreferences(this).getBoolean(INSTALL_SETUP_ASKED, false)) {
             askInstallSetup()
         }
@@ -594,7 +559,6 @@ class MainActivity : Activity() {
                     return@setOnClickListener
                 }
                 val target = worker ?: return@setOnClickListener
-                workerPreferences(this).edit().putBoolean(BOOT_QUESTION, true).apply()
                 val selectionValue = if (selection.isChecked) "all" else "none"
                 if (byToken) target.join(value, selectionValue, usage.isChecked, dialValue)
                 else target.pair(value, selectionValue, usage.isChecked, dialValue)
@@ -688,9 +652,8 @@ class MainActivity : Activity() {
     private val ink = Color.parseColor("#CFD8DA")
 
     private companion object {
-        // Set when a pairing or a join is submitted, cleared when the
-        // start-on-boot question is answered or dismissed with Back.
-        const val BOOT_QUESTION = "boot_question_pending"
+        // The removed start-on-boot question's pending flag (A112), dropped on start.
+        const val OLD_BOOT_QUESTION = "boot_question_pending"
         // Set when the one-time "Allow Minion to install updates" question was answered.
         const val INSTALL_SETUP_ASKED = "install_setup_asked"
     }
