@@ -134,6 +134,10 @@ type Executor struct {
 	memMu sync.Mutex
 	mem   map[string]memEntry
 
+	// files is the file transfer end (files.v1, exec_files.go); nil until
+	// the files module attaches it.
+	files atomic.Pointer[Files]
+
 	// localWrites is told about every write of a local caller that this
 	// executor really ran (see [Executor.OnLocalWrite]); nil when unset.
 	localWrites atomic.Pointer[func(LocalWrite)]
