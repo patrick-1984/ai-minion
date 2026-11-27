@@ -22,7 +22,7 @@ Why two files: a Claude Code allow rule for an MCP tool names the tool only, nev
 
 The target is judged as it will run:
 
-- Name the target by Worker id and session name (`{"worker_id":"<id>","session_name":"shell"}`). A session code such as `5-667` without a `worker_id` is refused under a standing rule (`a session code is not a target of a standing Minion allow rule`): the Hub resolves a code to whichever Worker holds it, so a rule cannot be matched against it.
+- Name the target by Worker id and session name (`{"worker_id":"<id>","session_name":"shell"}`). A session code such as `5-667` without a `worker_id` is refused under a standing rule (`a session code is not a target of a standing Minion allow rule`): the Hub resolves a code to whichever Worker holds it, so a rule cannot be matched against it. On the local control socket (`minion mcp` without a Hub and without `--hub-worker`) no code is resolved: such a name is a session of the local Worker and is judged as one.
 - With a Hub (`MINION_HUB_URL`), a target without a `worker_id` goes to the `--hub-worker` of `minion mcp` and is matched against it.
 - On the local control socket (no Hub URL) with `--hub-worker` (`MINION_HUB_WORKER`), a target without a `worker_id` goes to that Worker and is matched against it: the local Worker forwards it there through its Hub, or runs it itself when `--hub-worker` names the local Worker.
 - On the local control socket without `--hub-worker`, a target without a `worker_id` is a session of the local Worker. `minion mcp` asks the local Worker for its id and matches the rule against that id; while the id is not known (the Worker is not running or has not connected to its Hub yet), such a call is refused.

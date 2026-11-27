@@ -25,6 +25,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/patrick-1984/ai-minion/internal/ops"
@@ -95,10 +96,13 @@ func DefaultPath() (string, error) {
 }
 
 // Load reads the allowlist at path. A missing file returns (nil, nil): no
-// standing rule exists and "minion mcp" behaves as without this package.
+// standing rule exists and "minion mcp" behaves as without this package. So
+// does a path that cannot hold a file because one of its directories is a
+// file (ENOTDIR). Any other error (a file that exists but cannot be read, or a
+// directory that cannot be searched, so its existence is unknown) is returned.
 func Load(path string) (*File, error) {
 	info, err := os.Lstat(path)
-	if errors.Is(err, os.ErrNotExist) {
+	if errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.ENOTDIR) {
 		return nil, nil
 	}
 	if err != nil {

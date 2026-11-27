@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **`minion mcp` on the local control socket: a session named like a session code (`2024-11`) needed a `worker_id` under a standing allow rule.** Only the Hub resolves session codes; on the local socket (no Hub, no `--hub-worker`) such a name is a session of the local Worker, and the gate now judges it as one.
+- **`minion mcp`: an allowlist path whose directory is a file (ENOTDIR) refused every targeted read** although no allowlist can exist there; it now counts as no allowlist. A file that exists but cannot be read, or a directory that cannot be searched, still refuses (fail closed).
+- **`minion mcp`: a re-enrolled local Worker was judged by its old id** for the life of the server; the gate now asks the local Worker for its id on every call that needs it.
+
 ## v0.24.2
 
 ### Fixed
