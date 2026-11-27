@@ -621,6 +621,11 @@ type CallRequest struct {
 	// (a verified bound master lease, or a session named on a call stream);
 	// it only attributes the request in its origin.
 	source originSource
+	// fileRefresh, for a file op of a verified calling session, reads the
+	// caller's principal again from its admission path (the lease and its
+	// grants, now): the transfer service re-decides a running transfer on
+	// it, so a revoked grant or an ended lease stops the transfer.
+	fileRefresh func(context.Context) (authz.Principal, error)
 	// commandShell, when set, is told the command shell grant (A116) that let
 	// the origin carry shell_ok, "" for none, each time the request is decided
 	// (before the dispatch and at the final admission); for the audit of the
@@ -682,7 +687,54 @@ func (rt *Router) call(ctx context.Context, req CallRequest, out **call) (any, e
 	if req.Op == ops.OpFilePull || req.Op == ops.OpFilePush {
 		return rt.callFile(ctx, req, out)
 	}
+	if req.Op == ops.OpFileList {
+		var err error
+		if req, err = rt.withFileAuthority(ctx, req); err != nil {
+			return nil, err
+		}
+	}
 	return rt.callRouted(ctx, req, out)
+}
+
+// verifiedSession is the calling session of req when its admission path
+// verified it, "" otherwise.
+func (req CallRequest) verifiedSession() string {
+	if req.source.proof == proto.OriginProofVerified {
+		return req.source.session
+	}
+	return ""
+}
+
+// withFileAuthority gives the principal of a file_list of a verified calling
+// session its file authority (the file flags of its verified grants and
+// master acceptances), also at the final admission. A request without a
+// verified session, or a Hub without a transfer service that can tell it, is
+// returned as it is: it holds no file action through flags.
+func (rt *Router) withFileAuthority(ctx context.Context, req CallRequest) (CallRequest, error) {
+	verified := req.verifiedSession()
+	ap := rt.files.Load()
+	if verified == "" || ap == nil {
+		return req, nil
+	}
+	fa, ok := (*ap).(FileAuthorizer)
+	if !ok {
+		return req, nil
+	}
+	p, err := fa.FileAuthority(ctx, req.Principal, verified)
+	if err != nil {
+		return req, err
+	}
+	req.Principal = p
+	if inner := req.admit; inner != nil {
+		req.admit = func(ctx context.Context, on Online) (authz.Principal, error) {
+			p, err := inner(ctx, on)
+			if err != nil {
+				return p, err
+			}
+			return fa.FileAuthority(ctx, p, verified)
+		}
+	}
+	return req, nil
 }
 
 // FileCall is a file_pull or file_push as the Router got it, before the Hub's
@@ -700,6 +752,11 @@ type FileCall struct {
 	// it (the session of a bound master lease); "" for a claimed source or no
 	// session. Only a verified session carries file authority.
 	VerifiedSession string
+	// Refresh, when set, reads the caller's principal again from its
+	// admission path (a bound master lease and its verified grants, now);
+	// the transfer service re-decides a running transfer on it. Nil: the
+	// principal of the admission is re-decided as it is.
+	Refresh func(ctx context.Context) (authz.Principal, error)
 }
 
 // FileDispatch is what the transfer service answers to an admitted
@@ -726,6 +783,14 @@ type FileAdmitter interface {
 	AdmitFile(ctx context.Context, c FileCall) (FileDispatch, error)
 }
 
+// FileAuthorizer is the optional part of a [FileAdmitter] that gives a
+// Worker principal the file authority of its verified calling session (the
+// file flags of its verified grants and master acceptances, read now), for
+// file_list and the re-decisions of a file op.
+type FileAuthorizer interface {
+	FileAuthority(ctx context.Context, p authz.Principal, verifiedSession string) (authz.Principal, error)
+}
+
 // SetFileAdmitter installs the transfer service. Without one the Router
 // refuses file_pull and file_push with unsupported_op: their hidden members
 // are the Hub's, and a request that bypassed the admission would carry the
@@ -744,14 +809,15 @@ func (rt *Router) callFile(ctx context.Context, req CallRequest, out **call) (an
 	if ap == nil {
 		return nil, proto.NewError(proto.CodeUnsupportedOp, "file transfer is not available on this Hub")
 	}
-	verified := ""
-	if req.source.proof == proto.OriginProofVerified {
-		verified = req.source.session
-	}
-	d, err := (*ap).AdmitFile(ctx, FileCall{
+	verified := req.verifiedSession()
+	fc := FileCall{
 		Principal: req.Principal, Op: req.Op, WorkerID: req.WorkerID, Session: req.Session,
 		Args: req.Args, VerifiedSession: verified,
-	})
+	}
+	if verified != "" {
+		fc.Refresh = req.fileRefresh
+	}
+	d, err := (*ap).AdmitFile(ctx, fc)
 	if err != nil {
 		return nil, err
 	}
@@ -1010,6 +1076,15 @@ func (rt *Router) Redecide(ctx context.Context, p authz.Principal, req CallReque
 	accepted, res, err := requestDecision(op, req)
 	if err != nil {
 		return err
+	}
+	if req.Op == ops.OpFileList || req.Op == ops.OpFilePull || req.Op == ops.OpFilePush {
+		// A file op is decided on the file authority of the verified
+		// calling session, as at its dispatch.
+		req.Principal, req.admit = p, nil
+		if req, err = rt.withFileAuthority(ctx, req); err != nil {
+			return err
+		}
+		p = req.Principal
 	}
 	return rt.az.Decide(ctx, p, accepted, res)
 }

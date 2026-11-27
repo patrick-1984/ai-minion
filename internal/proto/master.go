@@ -96,9 +96,14 @@ func ValidMasterSessionName(s string) bool {
 		strings.TrimSpace(s) == s && !strings.ContainsAny(s, ":.") && strings.IndexFunc(s, unicode.IsControl) < 0
 }
 
+// IsMasterOperation reports whether name is an operation of the master lane.
+// The file ops (files.v1) are served there for a session caller whose
+// incarnation the Hub verified (a bound master lease): the caller daemon of
+// the Worker sends them, the harness's own tool catalog does not offer them.
 func IsMasterOperation(name string) bool {
 	switch name {
-	case "workers_list", "sessions_list", "session_snapshot", "send_text":
+	case "workers_list", "sessions_list", "session_snapshot", "send_text",
+		"file_list", "file_pull", "file_push":
 		return true
 	default:
 		return false

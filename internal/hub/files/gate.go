@@ -107,6 +107,13 @@ func (s *Service) fileAuthority(ctx context.Context, p authz.Principal, verified
 	return p.WithVerifiedFiles(verified, accepts), nil
 }
 
+// FileAuthority returns p with the verified file authority of its calling
+// session verified (workers.FileAuthorizer): for file_list and the
+// re-decisions of a file op on the master lane.
+func (s *Service) FileAuthority(ctx context.Context, p authz.Principal, verified string) (authz.Principal, error) {
+	return s.fileAuthority(ctx, p, verified)
+}
+
 // redecide decides a live transfer again on the principal it was admitted
 // with, with its file authority read now (grants on a Worker principal are
 // the ones of its admission path; a path that can revoke them ends the call
@@ -117,7 +124,20 @@ func (s *Service) redecide(ctx context.Context, t *transfer) error {
 			return err
 		}
 	}
-	p, err := s.fileAuthority(ctx, t.principal, t.verified)
+	base := t.principal
+	if t.refresh != nil {
+		// The authority of the admission path now (a bound master lease and
+		// its verified grants): a revoked grant or an ended lease refuses.
+		fresh, err := t.refresh(ctx)
+		if err != nil {
+			return err
+		}
+		if fresh.Kind != base.Kind || fresh.WorkerID != base.WorkerID {
+			return proto.NewError(proto.CodeForbidden, "not allowed")
+		}
+		base = fresh
+	}
+	p, err := s.fileAuthority(ctx, base, t.verified)
 	if err != nil {
 		return err
 	}

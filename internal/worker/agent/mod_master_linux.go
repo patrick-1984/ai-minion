@@ -41,7 +41,7 @@ func startMaster(parent context.Context, env *Env) (StopFunc, error) {
 		return nil, nil
 	}
 	b := newMasterBroker(h, ex, self)
-	if err := Provide(env, &masterIntegration{serve: b.serveLink}); err != nil {
+	if err := Provide(env, &masterIntegration{serve: b.serveLink, files: b.fileCall}); err != nil {
 		_ = ln.Close()
 		return nil, err
 	}

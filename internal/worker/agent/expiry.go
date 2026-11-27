@@ -131,6 +131,19 @@ func (s guardedSession) OpenEvents(ctx context.Context) (*transport.Stream, erro
 	return s.Session.OpenEvents(ctx)
 }
 
+// OpenLeg opens a data leg (files.v1) of the session, as the other opens
+// do, when the session carries data legs.
+func (s guardedSession) OpenLeg(ctx context.Context) (*transport.LegConn, error) {
+	if s.g.check() {
+		return nil, ErrHubCertExpired
+	}
+	lo, ok := s.Session.(legOpener)
+	if !ok {
+		return nil, transport.ErrFilesNotNegotiated
+	}
+	return lo.OpenLeg(ctx)
+}
+
 // watch runs the deadline timer and the periodic check until ctx ends. The
 // timer is set from the monotonic reading, the tick re-reads the wall clock too,
 // so that a wall clock that jumped (or a sleep) is noticed at the next tick.

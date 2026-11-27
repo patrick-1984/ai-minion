@@ -1,14 +1,21 @@
 package agent
 
 // The local daemon as the caller end of a session caller's transfer (WP8,
-// BRD FR-4, FR-10, FR-20): a file_pull or file_push on the local socket whose
-// target is a session of another Worker. The root is the folder of the
-// calling pane (its session must be shared, FR-10), the admission goes to
-// the Hub on a call stream with the calling session as source_session, and
-// the bytes move on an fx data leg of the same Hub connection. Progress is
+// WP12, BRD FR-4, FR-10, FR-20, 5.6): a file_pull or file_push on the local
+// socket whose target is a session of another Worker. The root is the folder
+// of the calling pane (its session must be shared, FR-10). The admission goes
+// to the Hub on the master lane when the calling session holds a verified
+// lease (a bound master or a grant bound to its incarnation) and the caller
+// runs in that session's harness (masterFiles); only that source carries file
+// authority. Otherwise it goes on an ordinary call stream with the calling
+// session as source_session (a claimed source), which the Hub refuses with a
+// message that says how to get a verified one; an older Hub answers
+// unsupported_op. The bytes move on an fx data leg of the same Hub
+// connection, and the receipt of a pull goes on a call stream. Progress is
 // sent as op.progress elements ([FileProgress]); the answer is the final
-// FileTransferResult. A file_list of another Worker is forwarded like the
-// session-control reads (forwardsToHub).
+// FileTransferResult. A file_list of another Worker goes on the master lane
+// in the same case and is forwarded like the session-control reads
+// otherwise (forwardsToHub).
 
 import (
 	"context"
@@ -85,6 +92,14 @@ func (l localExecutor) fileCall(ctx context.Context, rq Request, caller callerPa
 		Allow: f.requireEffect,
 		Admit: func(ctx context.Context, op string, args any) (ops.FileTransferResult, error) {
 			var res ops.FileTransferResult
+			if mf := l.masterFiles(); mf != nil {
+				if handled, err := mf(ctx, session, caller.PeerPID, op, args, &res); handled {
+					if err != nil {
+						return ops.FileTransferResult{}, forwardError(err)
+					}
+					return res, nil
+				}
+			}
 			if err := cc.Do(WithSourceSession(ctx, session), op, args, &res); err != nil {
 				return res, forwardError(err)
 			}
@@ -144,6 +159,41 @@ func (l localExecutor) fileCall(ctx context.Context, rq Request, caller callerPa
 		return nil, internalErr("encode the result", err)
 	}
 	return b, nil
+}
+
+// masterFiles is the master lane's sender of file ops, or nil.
+func (l localExecutor) masterFiles() masterFiles {
+	if l.master == nil {
+		return nil
+	}
+	return l.master()
+}
+
+// masterFileList sends a local file_list of another Worker on the master
+// lane when the calling session holds a verified lease; handled is false
+// otherwise (the caller forwards it as a claimed call).
+func (l localExecutor) masterFileList(ctx context.Context, raw json.RawMessage, caller callerPane) (json.RawMessage, bool, error) {
+	mf := l.masterFiles()
+	if mf == nil || caller.PeerPID <= 0 {
+		return nil, false, nil
+	}
+	var a ops.FileListArgs
+	if err := json.Unmarshal(raw, &a); err != nil || a.Validate() != nil {
+		return nil, false, nil
+	}
+	session := l.ex.sourceSession(ctx, caller)
+	if session == "" {
+		return nil, false, nil
+	}
+	var res json.RawMessage
+	handled, err := mf(ctx, session, caller.PeerPID, ops.OpFileList, a, &res)
+	if !handled {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, true, forwardError(err)
+	}
+	return res, true, nil
 }
 
 // decodeFileArgs decodes and validates the arguments of a local file op. The

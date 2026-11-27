@@ -13,7 +13,10 @@ import (
 	"github.com/patrick-1984/ai-minion/internal/proto"
 )
 
-var _ workers.FileAdmitter = (*Service)(nil)
+var (
+	_ workers.FileAdmitter   = (*Service)(nil)
+	_ workers.FileAuthorizer = (*Service)(nil)
+)
 
 // request is a caller's file_pull or file_push, decoded.
 type request struct {
@@ -108,7 +111,7 @@ func (s *Service) AdmitFile(ctx context.Context, c workers.FileCall) (workers.Fi
 		id: ops.NewUUIDv7(), direction: req.direction, kind: req.kind, path: req.path,
 		targetWorker: c.WorkerID, targetSession: c.Session,
 		callerID:  identityOf(c.Principal),
-		principal: c.Principal, verified: c.VerifiedSession,
+		principal: c.Principal, verified: c.VerifiedSession, refresh: c.Refresh,
 		web:  c.Principal.Kind == authz.KindBrowserSession || c.Principal.Kind == authz.KindActAs,
 		size: req.size,
 	}

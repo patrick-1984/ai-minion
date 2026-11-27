@@ -54,6 +54,8 @@ type fxWorker struct {
 	ahead atomic.Int64
 	dirs  map[string]string
 	stop  func()
+	// link is the Worker's current Hub link (fxWorkerOptions.master).
+	link atomic.Pointer[agent.Link]
 }
 
 // setMode sets the Worker's local switch (ops.FileMode*).
@@ -90,6 +92,10 @@ type fxWorkerOptions struct {
 	// noFiles starts a Worker without a file transfer end: it announces
 	// neither the file ops nor files.v1, as a v0.23 Worker.
 	noFiles bool
+	// master announces the master lane (proto.FeatureMasterSessionV1) and
+	// keeps the Hub link in fxWorker.link, for a test that plays the
+	// Worker's master broker on it (files_master_unix_test.go).
+	master bool
 }
 
 // startWorker starts a Worker named name owned by the owner, with one tmux
@@ -163,8 +169,12 @@ func (e *fxE2E) startWorker(name string, opt fxWorkerOptions, sessions ...string
 	if err != nil {
 		t.Fatal(err)
 	}
+	features := w.ex.Features
+	if opt.master {
+		features = func() []string { return append(w.ex.Features(), proto.FeatureMasterSessionV1) }
+	}
 	conn, err := agent.NewConnector(agent.ConnectorConfig{
-		HubURL: "https://" + e.ph.addr, Name: name, Ops: w.ex.Ops, Features: w.ex.Features, Key: enr.LoadKey, Enrollment: enr, Policy: policy,
+		HubURL: "https://" + e.ph.addr, Name: name, Ops: w.ex.Ops, Features: features, Key: enr.LoadKey, Enrollment: enr, Policy: policy,
 		Dialer:   agent.NewHubDialer(),
 		Backoff:  &transport.Backoff{Initial: 5 * time.Millisecond, Max: 40 * time.Millisecond},
 		IdlePoll: 20 * time.Millisecond,
@@ -174,6 +184,9 @@ func (e *fxE2E) startWorker(name string, opt fxWorkerOptions, sessions ...string
 	}
 	conn.OnLink("op-server", srv.Serve)
 	conn.OnLink("events", pub.Serve)
+	if opt.master {
+		conn.OnLink("test-link", func(l *agent.Link) { w.link.Store(l) })
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() { defer close(done); conn.Run(ctx) }()

@@ -152,6 +152,9 @@ func initFiles(_ context.Context, env *Env) error {
 		return fmt.Errorf("files: %w", err)
 	}
 	rt.SetFileAdmitter(fs)
+	if err := registerFileCalls(svc, fs); err != nil {
+		return err
+	}
 	for _, name := range []string{ops.OpFileList, ops.OpFilePull, ops.OpFilePush} {
 		if err := api.RegisterWorkerOp(handlers, name, rt); err != nil {
 			return fmt.Errorf("files: %w", err)

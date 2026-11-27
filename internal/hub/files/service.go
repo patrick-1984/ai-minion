@@ -180,6 +180,9 @@ type transfer struct {
 	// verified is the verified calling session ("" for none).
 	principal authz.Principal
 	verified  string
+	// refresh, when set, reads the caller's principal again from its
+	// admission path (workers.FileCall.Refresh) for every re-decision.
+	refresh func(ctx context.Context) (authz.Principal, error)
 
 	// release gives back the concurrency slots of the transfer.
 	release func()

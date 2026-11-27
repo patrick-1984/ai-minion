@@ -119,6 +119,12 @@ func (d localAPIDeps) start(_ context.Context, env *Env) (StopFunc, error) {
 		Executor: localExecutor{
 			ex: ex, log: log, live: live, stateDir: env.Settings().StateDir, pipe: pipeSvc, calls: calls, stop: env.RequestStop,
 			instance: instance, enrollments: enrollments, pause: pause, receipts: receipts,
+			master: func() masterFiles {
+				if m := masterFeature(env); m != nil {
+					return m.files
+				}
+				return nil
+			},
 		},
 		Logger: log,
 	})
@@ -158,6 +164,9 @@ type localExecutor struct {
 	// receipts is the outbox of the receipts of this Worker's pulls
 	// (files_receipts.go); nil sends each receipt once.
 	receipts *ReceiptOutbox
+	// master returns the master lane's sender of a calling session's file
+	// ops (files.v1, WP12), or nil when there is none; looked up per call.
+	master func() masterFiles
 }
 
 func (l localExecutor) Execute(ctx context.Context, rq localapi.Request, progress func(json.RawMessage)) (json.RawMessage, error) {
@@ -221,7 +230,7 @@ func (l localExecutor) Execute(ctx context.Context, rq localapi.Request, progres
 		if l.pause != nil && l.pause.Paused() {
 			return nil, l.protoError(rq.Op, pauseRefusal())
 		}
-		raw, err := l.fileCall(ctx, Request{Op: rq.Op, Actions: rq.Actions, Args: rq.Args}, callerPane{Pane: rq.Pane, Socket: rq.TmuxSocket, ServerPID: rq.TmuxServerPID, SocketUnknown: rq.TmuxSocketUnknown})
+		raw, err := l.fileCall(ctx, Request{Op: rq.Op, Actions: rq.Actions, Args: rq.Args}, callerPane{Pane: rq.Pane, Socket: rq.TmuxSocket, ServerPID: rq.TmuxServerPID, SocketUnknown: rq.TmuxSocketUnknown, PeerPID: rq.PeerPID})
 		if err != nil {
 			return nil, l.protoError(rq.Op, err)
 		}
@@ -231,8 +240,19 @@ func (l localExecutor) Execute(ctx context.Context, rq localapi.Request, progres
 		if l.pause != nil && l.pause.Paused() {
 			return nil, l.protoError(rq.Op, pauseRefusal())
 		}
+		if rq.Op == ops.OpFileList {
+			// A verified calling session lists on the master lane
+			// (caller_files_daemon.go); otherwise it is forwarded as before.
+			caller := callerPane{Pane: rq.Pane, Socket: rq.TmuxSocket, ServerPID: rq.TmuxServerPID, SocketUnknown: rq.TmuxSocketUnknown, PeerPID: rq.PeerPID}
+			if raw, handled, err := l.masterFileList(ctx, rq.Args, caller); handled {
+				if err != nil {
+					return nil, l.protoError(rq.Op, err)
+				}
+				return raw, nil
+			}
+		}
 		// The target is on another Worker: only the Hub reaches it.
-		raw, err := l.forwardSessionControl(ctx, Request{Op: rq.Op, Actions: rq.Actions, Args: rq.Args}, callerPane{Pane: rq.Pane, Socket: rq.TmuxSocket, ServerPID: rq.TmuxServerPID, SocketUnknown: rq.TmuxSocketUnknown})
+		raw, err := l.forwardSessionControl(ctx, Request{Op: rq.Op, Actions: rq.Actions, Args: rq.Args}, callerPane{Pane: rq.Pane, Socket: rq.TmuxSocket, ServerPID: rq.TmuxServerPID, SocketUnknown: rq.TmuxSocketUnknown, PeerPID: rq.PeerPID})
 		if err != nil {
 			return nil, l.protoError(rq.Op, err)
 		}

@@ -51,8 +51,41 @@ minion files push --target build-box:api ./assets
 - Ctrl-C stops the transfer; nothing is published at the receiving end.
 
 Inside a session of a Worker (no Hub configured in that shell, the CLI talks to the local daemon) the caller end is
-that session's own folder. That path needs the calling session to hold file authority through the Hub (see
-[Who may transfer](#who-may-transfer)).
+that session's own folder. That path needs the calling session to hold file authority through the Hub: see
+[From a session on another Worker](#from-a-session-on-another-worker).
+
+### From a session on another Worker
+
+A session (an agent or you in its shell) copies files between its own folder and a session on another Worker with
+the same commands, run inside that session: `minion files ls|pull|push --target worker:session ...`, or the MCP file
+tools of `minion mcp`. Its Worker's daemon moves the bytes; the session's folder is the caller end.
+
+The Hub gives a session file authority only for a **Verified** source: the session's terminal incarnation holds a
+bound lease on the master lane. That is the case when
+
+1. the session is a prepared Claude Code terminal (`exec minion master claude` as the pane's process, Linux; see
+   [AI agents](agents.md#prepare-one-claude-code-terminal)) and is either made the bound master in Minion control
+   or has its direct grant **bound** to that terminal (the `grant_bind` op); and
+2. the authority names the file action: the grant (or, for a bound master, the target Worker's master
+   acceptance) has **files_pull** (list and pull, level View or higher) or **files_push** (push, level Control)
+   ticked. Both are off by default, and a grant must be bound before the flags can be set.
+
+The daemon then sends the request on the master lane, and only when the command runs inside that pane (its process
+descends from the pane's process); the Hub decides it on the grant or acceptance flags, re-checks it every 15
+seconds while bytes move and once more before the receiver publishes. Revoking or unbinding the grant, ending the
+master, removing a flag or unsharing a session stops a running transfer and publishes nothing.
+
+A session without a verified lease is only named by its Worker (a **Claimed** source). The Hub refuses its file
+requests with `forbidden` and the message says what to do: bind the session as a master or bind its grant, and tick
+`files_pull` or `files_push`. A Hub older than v0.24.0 answers `unsupported_op`.
+
+```sh
+# Owner: grant boss on box-a Control on build on box-b (grant_set), bind it to the
+# prepared terminal of boss (grant_bind), then set files_pull and files_push (grant_set).
+# Inside the pane of boss on box-a (an agent's tool or the shell below it):
+minion files pull --target box-b:build dist/app.tar
+minion files push --target box-b:build ./fix.patch --as patches/fix.patch
+```
 
 ### From an AI agent (MCP)
 
@@ -76,7 +109,7 @@ the receiver may publish (the commit gate). A refusal at any of these points pub
 | Administrator (browser) | every session |
 | Owner (browser, act-as) | own sessions |
 | API key | only the file actions the key **names**: `file_read` (list, pull) and `file_write` (push). A key with "everything" or a wildcard scope, and every key created before v0.24.0, has no file action. |
-| Session on another Worker | only through a **Verified** grant or master acceptance with the flag `files_pull` or `files_push` (default off). A Claimed source never carries file authority. `files_pull` needs level View or higher, `files_push` needs Control. |
+| Session on another Worker | only through a **Verified** grant or master acceptance with the flag `files_pull` or `files_push` (default off): a grant bound to the session or a bound master, requested on the master lane ([how](#from-a-session-on-another-worker)). A Claimed source never carries file authority (`forbidden`). `files_pull` needs level View or higher, `files_push` needs Control. |
 | Worker identity | none |
 
 On top of the caller's authority:
