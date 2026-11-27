@@ -10972,7 +10972,7 @@
             "sessionCookie": []
           }
         ],
-        "summary": "Bind a session grant to the verified terminal of its source session, or unbind it (owner of both Workers or administrator). Browser session with a fresh sign-in only.",
+        "summary": "Deprecated, not needed to use a grant: bind a grant for one named source session to the verified terminal of that session, or unbind it (owner of both Workers or administrator). Browser session with a fresh sign-in only.",
         "x-minion-actions": [
           "operate"
         ],
@@ -11486,7 +11486,7 @@
             "sessionCookie": []
           }
         ],
-        "summary": "Create a session grant, or change the level, expiry, note or command shell flag of an existing one (owner of the Workers or administrator). Browser session with a fresh sign-in only.",
+        "summary": "Create session grants in one step (one source session, every shared session of a Worker, or everyone; one or several targets; level and the file and app boxes), or change the level, expiry, note or flags of an existing one (owner of the Workers or administrator). Browser session with a fresh sign-in only.",
         "x-minion-actions": [
           "operate"
         ],

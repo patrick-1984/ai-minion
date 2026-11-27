@@ -196,7 +196,7 @@ type GrantSetArgs struct {
 	// Targets are the targets of a create of several grants: one grant per
 	// distinct target, all created together or none.
 	Targets []GrantTarget `json:"targets,omitempty"`
-	Level         string `json:"level"`
+	Level   string        `json:"level"`
 	// ExpiresAt is RFC 3339 UTC with milliseconds; empty means no expiry.
 	ExpiresAt string `json:"expires_at,omitempty"`
 	Note      string `json:"note,omitempty"`
@@ -405,7 +405,7 @@ func init() {
 	// grant_set and grant_approve are SessionOnly, which the catalog allows
 	// only on a Mutates op: they return the grant, not a WriteResult, declare
 	// no guards, and their handlers audit them.
-	Register(Op{Name: OpGrantSet, Summary: "Create a session grant, or change the level, expiry, note or command shell flag of an existing one (owner of the Workers or administrator). Browser session with a fresh sign-in only.",
+	Register(Op{Name: OpGrantSet, Summary: "Create session grants in one step (one source session, every shared session of a Worker, or everyone; one or several targets; level and the file and app boxes), or change the level, expiry, note or flags of an existing one (owner of the Workers or administrator). Browser session with a fresh sign-in only.",
 		Scope: ScopeHub, Actions: operate, Mutates: true, SessionOnly: true,
 		Args: reflect.TypeFor[GrantSetArgs](), Result: reflect.TypeFor[GrantSetResult]()})
 	Register(Op{Name: OpGrantRevoke, Summary: "Revoke a session grant (owner of a Worker it touches or administrator).",

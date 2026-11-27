@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- **Grants are saved in one step, and the file and app boxes work from an ordinary session.** The boxes **Receive files from target** (`files_pull`), **Send files to target** (`files_push`, needs Control) and **Install apps** (`apps_install`, needs Control) are saved with the grant when it is created; no bind, no master, no lease and no second submission are needed (the two failing cases of the Add grant form: one target session, and every shared session of the target Worker). `file_list`, `file_pull`, `file_push`, `app_install` and `app_install_status` from an ordinary session are decided by the same rule as every other call: one live grant or one applicable master acceptance that covers this caller, this target and this action. A running transfer and its commit are decided again by that rule, so a revoke stops it. Master acceptance boxes count for the nominated master sessions on any lane, on limited acceptances too; a box that was on before this version keeps its old bound-master restriction until it is switched off or switched on again.
+- **Many-to-many grants.** `grant_set` takes `source_scope` (`session`, `worker` for every shared session of the source Worker including later ones, `everyone` for every shared session of every eligible Worker, administrators only) and `targets[]` (several named sessions or Worker-wide targets): one grant per target is created in one transaction, all or nothing, with one request receipt, and the answer names `created_ids`. A request without them keeps its meaning and its answer. A named target or source keeps its session-replacement fence; Worker-wide and everyone selectors include sessions shared later, and an unshared calling session never matches them. Every pair stays cross-Worker. The access matrix and **Why?** report the same scopes. The audit records the selector at create (`*` for everyone, `<worker>:*` for a whole Worker) and the actual caller at use.
+- `grant_bind` is deprecated and no longer part of setting up a grant; a grant bound before this version keeps its incarnation as a restriction (Hub migration 0045 rebuilds `session_grant` with an explicit `source_scope`).
+
 ## v0.25.0
 
 ### Added
