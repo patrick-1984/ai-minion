@@ -30,19 +30,33 @@ type otlpSink struct {
 	want     string
 	requests atomic.Int64
 	wrong    atomic.Int64
+	// stall makes every later request wait until its client gives up (or the
+	// test ends); stalled counts the requests that wait.
+	stall   atomic.Bool
+	stalled atomic.Int64
 }
 
 func newOTLPSink(t *testing.T, want string) *otlpSink {
 	s := &otlpSink{want: want}
+	release := make(chan struct{})
 	s.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.Copy(io.Discard, r.Body)
 		s.requests.Add(1)
 		if r.Header.Get("X-Key") != s.want || r.URL.Path != "/v1/logs" {
 			s.wrong.Add(1)
 		}
+		if s.stall.Load() {
+			s.stalled.Add(1)
+			select {
+			case <-r.Context().Done():
+				return
+			case <-release:
+			}
+		}
 		w.Header().Set("Content-Type", "application/x-protobuf")
 	}))
 	t.Cleanup(s.srv.Close)
+	t.Cleanup(func() { close(release) }) // before Close, which waits for the handlers
 	return s
 }
 
@@ -133,6 +147,18 @@ func TestRotateEndpointAndHeadersAtomically(t *testing.T) {
 		}()
 	}
 	time.Sleep(1500 * time.Millisecond)
+	// The old endpoint stops answering before the change, so that the old
+	// pipeline still holds records when it is discarded: a queue that drained
+	// in the moment between the switch and the discard (a loaded runner) would
+	// leave nothing to drop, and the drop count is what this test checks.
+	a.stall.Store(true)
+	deadline := time.Now().Add(30 * time.Second)
+	for a.stalled.Load() == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("no export reached the old endpoint")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 	o.set(t, ops.SettingChange{Key: "otel_endpoint", Value: b.srv.URL}, ops.SettingChange{Key: "otel_headers", Value: "X-Key: key-b"})
 	time.Sleep(1500 * time.Millisecond)
 	close(stop)

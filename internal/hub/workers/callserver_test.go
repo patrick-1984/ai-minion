@@ -605,7 +605,9 @@ func newWorld(t *testing.T, recs ...WorkerRecord) *world {
 	}
 	pr.p = p
 	events := NewEventHub(EventHubOptions{})
-	ing, err := NewIngest(IngestOptions{Hub: events, FirstFrameTimeout: 300 * time.Millisecond})
+	// Short, so that the tests of a silent ev stream run fast, but with room
+	// for a loaded race-enabled runner between the open and the first frame.
+	ing, err := NewIngest(IngestOptions{Hub: events, FirstFrameTimeout: time.Second})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -730,6 +732,15 @@ func (ww *worldWorker) call(t *testing.T, op string, args any, key string) (prot
 // emit is what the turn emitter of a Worker does on its turn channel.
 func (ww *worldWorker) emit(t *testing.T, session, text string, at time.Time) TurnAckFrame {
 	t.Helper()
+	// The frames are built before the stream is opened: the Hub resets an ev
+	// stream whose first frame does not come within the first-frame timeout,
+	// and the delivery lookup (store reads and a write) can take longer than
+	// that on a loaded runner.
+	id, _ := pipe.NewTurnID(at)
+	frames := []any{
+		map[string]string{"type": FrameTurnsOpen},
+		TurnFrame{Type: FrameTurn, TurnID: id, Session: session, MessageID: ww.rig.delivery(t, ww.rec, session), Text: text, Time: ops.Timestamp(at)},
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	st, err := ww.sess.OpenEvents(ctx)
@@ -737,11 +748,7 @@ func (ww *worldWorker) emit(t *testing.T, session, text string, at time.Time) Tu
 		t.Fatal(err)
 	}
 	defer st.Reset()
-	id, _ := pipe.NewTurnID(at)
-	for _, f := range []any{
-		map[string]string{"type": FrameTurnsOpen},
-		TurnFrame{Type: FrameTurn, TurnID: id, Session: session, MessageID: ww.rig.delivery(t, ww.rec, session), Text: text, Time: ops.Timestamp(at)},
-	} {
+	for _, f := range frames {
 		if err := st.WriteFrame(f); err != nil {
 			t.Fatal(err)
 		}

@@ -86,7 +86,7 @@ func checkTrustedDir(dir string) error {
 // checkTrustedOwner refuses an object that is owned by neither root nor the
 // effective user.
 func checkTrustedOwner(p string, fi os.FileInfo, euid int) error {
-	if st, ok := fi.Sys().(*syscall.Stat_t); ok && st.Uid != 0 && int(st.Uid) != euid {
+	if st, ok := fi.Sys().(*syscall.Stat_t); ok && st.Uid != 0 && int(st.Uid) != euid && !platformTrustedUID(st.Uid) {
 		return errUntrusted(fmt.Sprintf("%s is owned by uid %d (not by root or by uid %d), so that user can replace what is below it", p, st.Uid, euid))
 	}
 	return nil
@@ -105,7 +105,7 @@ func checkTrustedDirAt(p string, stickyOK bool, euid int) error {
 	if err := checkTrustedOwner(p, fi, euid); err != nil {
 		return err
 	}
-	if fi.Mode().Perm()&0o022 != 0 && (!stickyOK || fi.Mode()&os.ModeSticky == 0) {
+	if fi.Mode().Perm()&0o022 != 0 && (!stickyOK || fi.Mode()&os.ModeSticky == 0) && !platformTrustedGroupWrite(fi) {
 		return errUntrusted(fmt.Sprintf("%s is writable by group or others (mode %04o), so another user can replace what is below it", p, fi.Mode().Perm()))
 	}
 	return nil
