@@ -191,6 +191,10 @@ type accessEval struct {
 	accepts map[[2]string]store.AcceptRow
 	masters map[[2]string]accessMaster
 	grants  map[[2]string][]store.SessionGrantRow
+	// wide are the grants for every shared session of a source Worker, by
+	// that Worker; every the grants for everyone.
+	wide  map[string][]store.SessionGrantRow
+	every []store.SessionGrantRow
 }
 
 // accessVerdict is what one grant or one master reach gives for one pair.
@@ -227,7 +231,8 @@ func (v accessVerdict) authorized() string {
 
 func newAccessEval(f AccessFacts) *accessEval {
 	e := &accessEval{f: f, now: f.Now, workers: map[string]AccessWorker{}, accepts: map[[2]string]store.AcceptRow{},
-		masters: map[[2]string]accessMaster{}, grants: map[[2]string][]store.SessionGrantRow{}}
+		masters: map[[2]string]accessMaster{}, grants: map[[2]string][]store.SessionGrantRow{},
+		wide: map[string][]store.SessionGrantRow{}}
 	if e.now == 0 {
 		e.now = time.Now().UnixMilli()
 	}
@@ -255,7 +260,13 @@ func newAccessEval(f AccessFacts) *accessEval {
 	// ones bound to one incarnation of the source (the master broker, while
 	// that incarnation holds a lease).
 	for _, g := range f.Grants {
-		if g.SourceWorkerID != g.TargetWorkerID {
+		switch {
+		case g.SourceWorkerID == g.TargetWorkerID:
+		case g.Scope() == store.GrantSourceEveryone:
+			e.every = append(e.every, g)
+		case g.Scope() == store.GrantSourceWorker:
+			e.wide[g.SourceWorkerID] = append(e.wide[g.SourceWorkerID], g)
+		default:
 			k := [2]string{g.SourceWorkerID, g.SourceSession}
 			e.grants[k] = append(e.grants[k], g)
 		}
@@ -408,7 +419,12 @@ func (e *accessEval) grantVerdict(g store.SessionGrantRow, src, t AccessWorker, 
 		v.Authority = ops.AccessBlockedSourceIncarnation
 	case !src.OwnerActive:
 		v.Authority = ops.AccessBlockedOwnerInactive
-	case v.Granted == "" || g.SourceOwnerID == "" || t.OwnerID == "" || g.SourceOwnerID != src.OwnerID || g.TargetOwnerID != t.OwnerID:
+	case g.Scope() == store.GrantSourceEveryone && (v.Granted == "" || t.OwnerID == "" || g.TargetOwnerID != t.OwnerID ||
+		g.Authority != store.GrantAuthorityAdmin):
+		// Everyone pins no source owner; it stands on an administrator.
+		v.Authority = ops.AccessBlockedAuthority
+	case g.Scope() != store.GrantSourceEveryone && (v.Granted == "" || g.SourceOwnerID == "" || t.OwnerID == "" ||
+		g.SourceOwnerID != src.OwnerID || g.TargetOwnerID != t.OwnerID):
 		v.Authority = ops.AccessBlockedAuthority
 	case g.Authority == store.GrantAuthorityAdmin:
 		if !e.f.Admins[g.GrantedBy] {
@@ -451,7 +467,7 @@ func (e *accessEval) pair(src AccessWorker, session string, t AccessWorker, name
 	if m, ok := e.masters[[2]string{src.ID, session}]; ok && e.accepted(src.ID, t.ID, name) && m.limit(t.ID, name) {
 		best = e.masterVerdict(m, src, t, name)
 	}
-	for _, g := range e.grants[[2]string{src.ID, session}] {
+	for _, g := range e.sourceGrants(src.ID, session) {
 		if g.TargetWorkerID != t.ID || g.TargetSession != "" && g.TargetSession != name {
 			continue
 		}
@@ -462,10 +478,27 @@ func (e *accessEval) pair(src AccessWorker, session string, t AccessWorker, name
 	return best
 }
 
+// sourceGrants are the grants whose source selector covers session on worker,
+// as dispatch reads them: by name, by its Worker or everyone (a Worker-wide
+// or everyone grant only while the session is shared).
+func (e *accessEval) sourceGrants(worker, session string) []store.SessionGrantRow {
+	out := e.grants[[2]string{worker, session}]
+	if len(e.wide[worker]) == 0 && len(e.every) == 0 || !e.shared(worker, session) {
+		return out
+	}
+	out = append(slices.Clone(out), e.wide[worker]...)
+	for _, g := range e.every {
+		if g.TargetWorkerID != worker {
+			out = append(out, g)
+		}
+	}
+	return out
+}
+
 // grantsProof is the proof of a source that only holds grants: Verified when
 // every one of them is bound to an incarnation.
 func (e *accessEval) grantsProof(worker, session string) string {
-	gs := e.grants[[2]string{worker, session}]
+	gs := e.sourceGrants(worker, session)
 	for _, g := range gs {
 		if g.SourceIncarnation == "" {
 			return ops.AccessProofClaimed

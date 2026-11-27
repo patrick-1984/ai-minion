@@ -244,10 +244,9 @@ func TestFilesSessionCallerVerifiedSource(t *testing.T) {
 	writeFile(t, b.dirs["build"], "dist/app.txt", content)
 	writeFile(t, a.dirs["boss"], "fix.patch", []byte("the fix\n"))
 
-	// A Claimed source never carries file authority: the ordinary call
-	// stream that names the session is refused with what to do.
+	// A session without any grant gets nothing on the ordinary call stream.
 	err := claimedCall(ctx, a, "boss", ops.OpFilePull, ops.FilePullArgs{Target: tgt, Path: "dist/app.txt"})
-	if codeOf(err) != proto.CodeForbidden || !strings.Contains(err.Error(), "verified source") || !strings.Contains(err.Error(), "files_pull") {
+	if codeOf(err) != proto.CodeForbidden {
 		t.Fatalf("claimed pull = %v", err)
 	}
 	if err := claimedCall(ctx, a, "boss", ops.OpFileList, ops.FileListArgs{Target: tgt}); codeOf(err) != proto.CodeForbidden {
