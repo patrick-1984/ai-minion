@@ -34,6 +34,13 @@ const claimedFileMessage = "a session transfers files only with a verified sourc
 	"which never carries file authority. Ask the owner to run the session as a bound master (minion master claude, Minion control) " +
 	"or to bind its grant to the session (grant_bind), and to tick files_pull or files_push on that grant or on the master acceptance of the target Worker"
 
+// claimedAppMessage is the refusal of an app install op with a claimed source
+// (v0.25.0): a session installs apps only on the master lane.
+const claimedAppMessage = "a session installs apps only with a verified source: this call only names its session (a claimed source), " +
+	"which never carries the authority to install. Ask the owner to run the session as a bound master (minion master claude, Minion control) " +
+	"or to bind its grant to the session (grant_bind), and to tick apps_install on that grant or on the master acceptance of the Android Worker; " +
+	"or run minion apps install with a Hub API key whose scope names app_install"
+
 // fileCallTimeout bounds the work of a file call stream op.
 const fileCallTimeout = 10 * time.Second
 
@@ -43,6 +50,15 @@ func registerFileCalls(svc *workers.Service, fs *files.Service) error {
 	for _, op := range []string{ops.OpFileList, ops.OpFilePull, ops.OpFilePush} {
 		if !svc.HandleCallOp(op, func(_ context.Context, c workers.Call) {
 			replyCall(c.Stream, nil, proto.NewError(proto.CodeForbidden, claimedFileMessage))
+		}) {
+			return errFileCallTaken(op)
+		}
+	}
+	// App installs of a session caller (v0.25.0) are served on the master
+	// lane only, like the file ops.
+	for _, op := range ops.AppInstallOpNames {
+		if !svc.HandleCallOp(op, func(_ context.Context, c workers.Call) {
+			replyCall(c.Stream, nil, proto.NewError(proto.CodeForbidden, claimedAppMessage))
 		}) {
 			return errFileCallTaken(op)
 		}

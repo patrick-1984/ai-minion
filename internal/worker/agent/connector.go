@@ -76,6 +76,10 @@ type HubWelcome struct {
 	// Hub sets it only when this Worker announced proto.FeatureFilesV1; false
 	// from a v0.23 or older Hub.
 	FilesV1 bool `json:"files_v1,omitempty"`
+	// AppInstallV1 says that the Hub routes app_install and
+	// app_install_status of a session on the master lane (v0.25.0); false
+	// from a v0.24 or older Hub.
+	AppInstallV1 bool `json:"app_install_v1,omitempty"`
 	proto.Range
 }
 

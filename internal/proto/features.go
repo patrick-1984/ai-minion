@@ -37,6 +37,12 @@ const (
 	// running it on its own terminals. It is a property of the local control
 	// socket only; the Worker does not announce it to the Hub.
 	FeatureSessionForward = "session.forward"
+	// FeatureAppInstallForward: the local Worker daemon sends an app_install
+	// or app_install_status whose worker_id names another Worker to its Hub
+	// (on the master lane for a verified session, v0.25.0) instead of
+	// running it itself. Like FeatureSessionForward it is a property of the
+	// local control socket only and is not announced to the Hub.
+	FeatureAppInstallForward = "app.install.forward"
 	// FeatureSelfUpdate: the Worker serves worker_update and can replace its
 	// own binary with a signed release and restart (v0.9.0). It is announced
 	// only when the install method allows it (not a package, not a container,

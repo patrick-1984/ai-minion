@@ -97,13 +97,17 @@ func ValidMasterSessionName(s string) bool {
 }
 
 // IsMasterOperation reports whether name is an operation of the master lane.
-// The file ops (files.v1) are served there for a session caller whose
-// incarnation the Hub verified (a bound master lease): the caller daemon of
-// the Worker sends them, the harness's own tool catalog does not offer them.
+// The file ops (files.v1) and the app install ops (v0.25.0) are served there
+// for a session caller whose incarnation the Hub verified (a bound master
+// lease): the caller daemon of the Worker sends them, the harness's own tool
+// catalog does not offer them.
 func IsMasterOperation(name string) bool {
 	switch name {
 	case "workers_list", "sessions_list", "session_snapshot", "send_text",
-		"file_list", "file_pull", "file_push":
+		"file_list", "file_pull", "file_push",
+		// v0.25.0: decided on the apps_install flag of the verified grants
+		// and acceptances.
+		"app_install", "app_install_status":
 		return true
 	default:
 		return false

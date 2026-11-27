@@ -4,6 +4,8 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/patrick-1984/ai-minion/internal/proto"
 )
@@ -131,22 +133,41 @@ type AppInstallResult struct {
 	NewInstall bool `json:"new_install,omitempty"`
 }
 
+// appInstallAuditBudget bounds the detail AppInstallAuditDetail returns, in
+// runes: the audit row holds at most MaxAuditFieldLen, and the Hub adds its
+// own pairs (proof, client rule) to it.
+const appInstallAuditBudget = 176
+
 // AppInstallAuditDetail is the detail of the Hub's audit row of an app
-// install: the package, the version, the signer and the digest of the APK, and
-// the reason of an outcome other than installed. It never holds a path or
-// file contents.
+// install: the package, the version code, the signer (the SHA-256 of its
+// certificate, key "signer": audit keys hold only a-z and "_"), whether it is a new
+// install, and the reason of an outcome other than installed. It never holds a
+// path or file contents. Every value is one word of the audit grammar (no
+// space, "=" or quote: they become "_"), and the whole stays within the audit
+// field limit (the reason is shortened first, then the package), so the row
+// is never refused.
 func AppInstallAuditDetail(r AppInstallResult) string {
 	word := func(s string, n int) string {
+		s = proto.SafeText(strings.Join(strings.Fields(s), "_"), n)
+		s = strings.Map(func(c rune) rune {
+			if c == '=' || c == '"' || c == '\'' || unicode.IsSpace(c) || !unicode.IsPrint(c) {
+				return '_'
+			}
+			return c
+		}, s)
 		if s == "" {
 			return "none"
 		}
-		return proto.SafeText(strings.Join(strings.Fields(s), "_"), n)
+		return s
 	}
-	d := "package=" + word(r.Package, 255) + " version_code=" + strconv.FormatInt(r.VersionCode, 10) +
-		" version=" + word(r.VersionName, 60) + " signer_sha256=" + word(r.SignerSHA256, 200) +
-		" sha256=" + word(r.SHA256, 64) + " new_install=" + strconv.FormatBool(r.NewInstall)
+	rest := " version_code=" + strconv.FormatInt(r.VersionCode, 10) + " signer=" + word(r.SignerSHA256, 64) +
+		" new_install=" + strconv.FormatBool(r.NewInstall)
+	room := appInstallAuditBudget - utf8.RuneCountInString(rest) - len("package=")
+	d := "package=" + word(r.Package, max(8, min(room-1, 100))) + rest
 	if r.Reason != "" && r.Outcome != AppInstallInstalled {
-		d += " reason=" + strconv.Quote(proto.SafeText(r.Reason, 200))
+		if room := appInstallAuditBudget - utf8.RuneCountInString(d) - len(" reason="); room >= 8 {
+			d += " reason=" + word(r.Reason, room-1)
+		}
 	}
 	return d
 }

@@ -40,9 +40,13 @@ minion apps status --target <android-worker>
 
 - `--target` is the Worker's id or its name. The path is relative to the
   Minion files folder (`apps/example.apk` for a file in a sub folder).
-- The commands need a Hub (`MINION_HUB_URL` and `MINION_API_KEY_FILE`): the Hub
-  authorizes and audits every install. A session on the Android device itself
-  is refused (see [Security trade-offs](#security-trade-offs)).
+- The Hub authorizes and audits every install. With `MINION_HUB_URL` and
+  `MINION_API_KEY_FILE` the commands call the Hub with that key. Without them,
+  in a session of another Worker, the local Worker sends the request to its
+  Hub on the master lane: it is allowed for a verified session whose grant or
+  master acceptance has `apps_install` (see [Who may install](#who-may-install)).
+  A session on the Android device itself is refused (see
+  [Security trade-offs](#security-trade-offs)).
 - Exit status of `install`: 0 for `installed`, `needs_confirmation_on_device`
   and `installing`; 3 for `refused`; 1 for `failed` or an error; 2 for a usage
   error. `--json` prints the result.
@@ -119,9 +123,22 @@ SHA-256, the APK's SHA-256 and size, and whether it is a new install.
 | Administrator | every Android Worker |
 | Owner | own Android Workers |
 | API key | only when its scope names the action `app_install`; a key with "everything", a wildcard or the file actions has none |
-| Session on another Worker | only through a **Verified** Control grant or master acceptance with the flag **apps_install** (default off), on the master lane. `files_push` never implies it. In this version the Hub honours the flag, but `minion apps install` inside a session does not send the request on the master lane yet: use the CLI with a Hub API key, the web page or the REST API |
+| Session on another Worker | only through a **Verified** Control grant or master acceptance with the flag **apps_install** (default off), on the master lane: `minion apps install` (or the MCP tool) in the session, without a Hub API key, goes there through the local Worker. `files_push` never implies it. A session without a verified source (a claimed one) is refused with a message that says how to get one |
 | Worker identity | none |
 | A session on the Android device itself (local socket) | none: the Worker refuses `app_install` that does not come through the Hub |
+
+Set `apps_install` on a grant on **Access > Grants** (or with `grant_set`
+after `grant_bind`), and on a master acceptance on **Access > Minion control**
+(administrators: the box **may install apps** next to a Worker that the
+Android Worker accepts as a whole; a limited acceptance takes it with
+`control_set_accept`).
+
+From a session on Worker A, with a grant of A's session bound to it:
+
+```sh
+minion files push --target <android-worker-id>:<session> ./example.apk
+minion apps install --target <android-worker> example.apk --allow-new
+```
 
 The action `app_install` implies nothing and nothing implies it: `operate`
 does not allow an install, and neither does `file_write`.

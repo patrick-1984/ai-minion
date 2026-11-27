@@ -96,6 +96,10 @@ type fxWorkerOptions struct {
 	// keeps the Hub link in fxWorker.link, for a test that plays the
 	// Worker's master broker on it (files_master_unix_test.go).
 	master bool
+	// apps attaches the app install end of the Android Worker
+	// (proto.FeatureAppInstallV1) with the folder of the first session as
+	// its Minion files folder (apps_master_unix_test.go).
+	apps bool
 }
 
 // startWorker starts a Worker named name owned by the owner, with one tmux
@@ -156,6 +160,11 @@ func (e *fxE2E) startWorker(name string, opt fxWorkerOptions, sessions ...string
 		if st := w.files.Status(); st != "" {
 			t.Fatalf("the Worker has no file transfer end: %s", st)
 		}
+	}
+	if opt.apps {
+		w.ex.AttachAppInstall(dir, w.dirs[sessions[0]], func() *filexfer.Floor {
+			return filexfer.NewFloor(filexfer.FloorConfig{Home: dir, StateDir: dir})
+		})
 	}
 	srv, err := agent.NewOpServer(agent.OpServerConfig{Executor: w.ex, Policy: policy})
 	if err != nil {

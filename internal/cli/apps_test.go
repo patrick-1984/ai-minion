@@ -139,3 +139,30 @@ func TestAppsStatusPrints(t *testing.T) {
 		t.Fatalf("op = %s", c.Op)
 	}
 }
+
+// Without a Hub API key (a session of a Worker) the commands go to the local
+// Worker daemon, which sends them on to its Hub on the master lane.
+func TestAppsInstallWithoutAHubUsesTheLocalWorker(t *testing.T) {
+	id := ops.NewUUIDv7()
+	b := &fakeOpsBackend{call: func(op string, _ json.RawMessage) (json.RawMessage, error) {
+		if op == ops.OpAppInstallStatus {
+			return json.RawMessage(`{"ready":true}`), nil
+		}
+		res, _ := json.Marshal(ops.AppInstallResult{Outcome: ops.AppInstallInstalled, Path: "x.apk", Package: "org.example.app"})
+		return res, nil
+	}}
+	deps := opsDeps{local: func() client.Backend { return b }}
+	if out, err := runApps(t, deps, "apps", "install", "--target", id, "x.apk"); err != nil || !strings.Contains(out, "outcome: installed") {
+		t.Fatalf("install = %v\n%s", err, out)
+	}
+	var a ops.AppInstallArgs
+	if c := b.last(t); c.Op != ops.OpAppInstall || json.Unmarshal(c.Args, &a) != nil || a.WorkerID != id {
+		t.Fatalf("call = %s %s", c.Op, c.Args)
+	}
+	if out, err := runApps(t, deps, "apps", "status", "--target", id); err != nil || !strings.Contains(out, "ready: yes") {
+		t.Fatalf("status = %v\n%s", err, out)
+	}
+	if c := b.last(t); c.Op != ops.OpAppInstallStatus || !strings.Contains(string(c.Args), id) {
+		t.Fatalf("call = %s %s", c.Op, c.Args)
+	}
+}

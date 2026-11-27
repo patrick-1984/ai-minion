@@ -5,6 +5,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"time"
 
 	"github.com/patrick-1984/ai-minion/internal/ops"
 	"github.com/patrick-1984/ai-minion/internal/proto"
@@ -25,6 +26,42 @@ const maxMasterAncestry = 64
 // authority to the claimed source with a message that says what to do. The
 // result is decoded into out.
 func (b *masterBroker) fileCall(ctx context.Context, session string, pid int, op string, args any, out any) (handled bool, err error) {
+	return b.laneCall(ctx, session, pid, op, args, out, masterLaneFiles)
+}
+
+// appCall sends app_install or app_install_status of the calling session
+// (v0.25.0) on the master lane under the same conditions as [fileCall],
+// except that the Hub must route app installs on the lane (welcome
+// app_install_v1) instead of carrying data legs. The Hub decides the call on
+// the apps_install flag of the verified grants and acceptances and requires
+// app.install.v1 of the target Worker; a claimed source never installs.
+func (b *masterBroker) appCall(ctx context.Context, session string, pid int, op string, args any, out any) (handled bool, err error) {
+	return b.laneCall(ctx, session, pid, op, args, out, masterLaneApps)
+}
+
+// masterLaneKind is the kind of op [masterBroker.laneCall] sends.
+type masterLaneKind int
+
+const (
+	masterLaneFiles masterLaneKind = iota
+	masterLaneApps
+)
+
+// masterAppCallTimeout bounds an app install call on the lane: the Hub waits
+// up to two minutes for the Android Worker's answer, longer than one lease
+// period. The end of the lease still ends the call.
+const masterAppCallTimeout = 2*time.Minute + 15*time.Second
+
+// laneServes reports whether the Hub of the lane serves ops of kind there.
+func laneServes(w HubWelcome, kind masterLaneKind) bool {
+	if kind == masterLaneApps {
+		return w.AppInstallV1
+	}
+	return w.FilesV1
+}
+
+// laneCall is [fileCall] and [appCall].
+func (b *masterBroker) laneCall(ctx context.Context, session string, pid int, op string, args any, out any, kind masterLaneKind) (handled bool, err error) {
 	if pid <= 0 || session == "" {
 		return false, nil
 	}
@@ -45,7 +82,7 @@ func (b *masterBroker) fileCall(ctx context.Context, session string, pid int, op
 	if a != nil {
 		lease = b.currentLease(a)
 	}
-	if a == nil || lease == nil || !b.current.link.Welcome.FilesV1 || !descendsFrom(pid, a.harness.pid) {
+	if a == nil || lease == nil || !laneServes(b.current.link.Welcome, kind) || !descendsFrom(pid, a.harness.pid) {
 		b.mu.Unlock()
 		b.share.Unlock()
 		return false, nil
@@ -59,7 +96,11 @@ func (b *masterBroker) fileCall(ctx context.Context, session string, pid int, op
 	frame := proto.MasterCallRequest{Type: proto.TypeOpRequest, Op: proto.OpMasterCallV1, RequestID: ops.NewUUIDv7(),
 		Args: proto.MasterCallArgs{IncarnationID: a.incarnation, Generation: lease.wire.Generation, LeaseID: lease.wire.LeaseID,
 			Operation: op, Arguments: raw}}
-	callCtx, cancel := context.WithDeadline(ctx, lease.until)
+	deadline := lease.until
+	if kind == masterLaneApps {
+		deadline = time.Now().Add(masterAppCallTimeout)
+	}
+	callCtx, cancel := context.WithDeadline(ctx, deadline)
 	stop := context.AfterFunc(lease.ctx, cancel)
 	b.mu.Unlock()
 	b.share.Unlock()
@@ -70,7 +111,7 @@ func (b *masterBroker) fileCall(ctx context.Context, session string, pid int, op
 		return true, err
 	}
 	if err := json.Unmarshal(res.Result, out); err != nil {
-		return true, proto.NewError(proto.CodeInternal, "the Hub answered the file operation with an unreadable result")
+		return true, proto.NewError(proto.CodeInternal, "the Hub answered "+op+" with an unreadable result")
 	}
 	return true, nil
 }

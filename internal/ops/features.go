@@ -79,8 +79,21 @@ func RequiredFeatures(op string, args json.RawMessage) []string {
 // session-control request that names a Worker (in its target, or in the
 // worker_id of sessions_list) also needs proto.FeatureSessionForward: an older
 // daemon ignores the Worker part and would act on a same-named local session,
-// so it must refuse the request instead (SC-5).
+// so it must refuse the request instead (SC-5). An app_install or
+// app_install_status that names a Worker needs only
+// proto.FeatureAppInstallForward: the local daemon sends it to the Hub.
 func LocalRequiredFeatures(op string, args json.RawMessage) []string {
+	if op == OpAppInstall || op == OpAppInstallStatus {
+		// An app op that names a Worker is sent on by the local daemon (the
+		// Android Worker serves it only through the Hub): it needs the
+		// forwarding daemon, not app.install.v1 of the local one.
+		var a struct {
+			WorkerID string `json:"worker_id"`
+		}
+		if json.Unmarshal(args, &a) == nil && a.WorkerID != "" {
+			return []string{proto.FeatureAppInstallForward}
+		}
+	}
 	var out []string
 	for _, f := range RequiredFeatures(op, args) {
 		if f != proto.FeaturePipeCausal {

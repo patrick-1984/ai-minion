@@ -2,7 +2,9 @@ package cli
 
 // `minion apps install|status` (v0.25.0, docs/guides/android-apps.md): install
 // another app on an Android Worker from an APK in its Minion files folder
-// (copied there with `minion files push`), through the Hub. The generic
+// (copied there with `minion files push`), through the Hub: with a Hub API
+// key, or from a session through the local Worker daemon, which sends it on
+// the master lane. The generic
 // derived commands app_install and app_install_status stay as they are; these
 // add the Worker name, the readable output and the exit status.
 //
@@ -110,12 +112,13 @@ func newAppsInstall(deps opsDeps) *cobra.Command {
 			}
 			allowNew, _ := cmd.Flags().GetBool("allow-new")
 			op, _ := ops.Lookup(ops.OpAppInstall)
-			backend, local, err := pickBackend(cmd, deps, op)
+			// Without a Hub API key the local Worker daemon sends the request to
+			// its Hub: on the master lane for a verified session (the
+			// apps_install flag of its grant or master acceptance), refused
+			// for any other caller.
+			backend, _, err := pickBackend(cmd, deps, op)
 			if err != nil {
 				return err
-			}
-			if local {
-				return errors.New("app installs run through the Hub, which authorizes and audits them: set MINION_HUB_URL and MINION_API_KEY_FILE")
 			}
 			id, err := appsWorker(cmd, backend)
 			if err != nil {
@@ -214,12 +217,9 @@ func newAppsStatus(deps opsDeps) *cobra.Command {
 				return usagef("--target <android-worker> is required")
 			}
 			op, _ := ops.Lookup(ops.OpAppInstallStatus)
-			backend, local, err := pickBackend(cmd, deps, op)
+			backend, _, err := pickBackend(cmd, deps, op)
 			if err != nil {
 				return err
-			}
-			if local {
-				return errors.New("app installs run through the Hub: set MINION_HUB_URL and MINION_API_KEY_FILE")
 			}
 			id, err := appsWorker(cmd, backend)
 			if err != nil {
