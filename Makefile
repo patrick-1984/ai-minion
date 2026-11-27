@@ -72,7 +72,7 @@ lint: check-tmux check-english check-private-names check-docs check-skeleton che
 lint-negative: ## Prove that the import rules reject forbidden imports (scratch copy, no network)
 	GOLANGCI_LINT='$(GOLANGCI_LINT)' scripts/lint-negative.sh
 
-check-private-names: ## Fail if an owner-internal name (former private domain or app ID, internal address, device or Wi-Fi name) is in the tree
+check-private-names: ## Fail if an owner-internal name (private domain or Hub host name, internal address, device or Wi-Fi name; the app ID is allowed) is in the tree
 	scripts/check-private-names.sh
 
 check-english: ## Fail on non-English letters in internal/ Go files (every line) and docs/
