@@ -90,7 +90,8 @@ func TestAdbStatusAndDisableFromTheHub(t *testing.T) {
 	}
 	var st ops.AdbStatusResult
 	_ = json.Unmarshal(raw, &st)
-	if !st.DeviceControl.Available || !st.DeviceControl.Enabled || st.DeviceControl.State != "READY" || len(st.Audit) != 1 {
+	// The Hub's status read is not audited.
+	if !st.DeviceControl.Available || !st.DeviceControl.Enabled || st.DeviceControl.State != "READY" || len(st.Audit) != 0 {
 		t.Fatalf("status %+v", st)
 	}
 	// Another Worker's id is refused.

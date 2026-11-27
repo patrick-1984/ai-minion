@@ -146,7 +146,14 @@ func (e *Executor) adbStatus(ctx context.Context, rq Request) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	res := ops.AdbStatusResult{DeviceControl: toOpsStatus(svc.Status(ctx)), Audit: []ops.AdbAuditEntry{}}
+	// A status read of the Hub (its panel, its sharing guard) is not an
+	// operation of a session and is not audited; it would push the
+	// operations out of the last 20 entries the panel shows.
+	report := svc.Report
+	if hubOrigin(ctx) == nil {
+		report = svc.Status
+	}
+	res := ops.AdbStatusResult{DeviceControl: toOpsStatus(report(ctx)), Audit: []ops.AdbAuditEntry{}}
 	for _, a := range svc.Recent() {
 		res.Audit = append(res.Audit, ops.AdbAuditEntry(a))
 	}

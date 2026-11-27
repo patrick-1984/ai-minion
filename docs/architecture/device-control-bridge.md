@@ -123,7 +123,8 @@ automatic test fails.
 
 One entry per operation in `state/adb/audit.log` (JSON lines, 0600, rotated at 1 MB, 3 old files kept), also
 logged by the Worker as `event=device_control.audit` (which carries it to the remote log sinks and OTEL) and
-shown on the Hub panel (last 20, through `adb_status`). Fields, and only these: `time`, `actor` (`local`),
+shown on the Hub panel (last 20, through `adb_status`; the Hub's own status reads are not audited, so they do
+not push the operations out of that list). Fields, and only these: `time`, `actor` (`local`),
 `session` (the tmux session of the caller: the Worker reads the peer pid of the control socket connection from
 the kernel and walks `/proc/<pid>/stat` parents up to a pane pid; `unknown` otherwise), `op`
 (`status|shell|screencap|input|disable`), `transport` (`tls-loopback`), `result`
