@@ -279,6 +279,9 @@ type Router struct {
 	// synced reports whether a Worker's current connection sent its session
 	// list (the event hub, set after the Router is built).
 	synced atomic.Pointer[func(workerID string) bool]
+	// files admits file_pull and file_push (SetFileAdmitter); nil refuses
+	// them.
+	files atomic.Pointer[FileAdmitter]
 }
 
 // SetSessionsSynced sets the source of [ops.WorkerInfo.SessionsSynced]: the
@@ -676,6 +679,100 @@ func (rt *Router) debugRouted(req CallRequest, start time.Time, res any, err err
 }
 
 func (rt *Router) call(ctx context.Context, req CallRequest, out **call) (any, error) {
+	if req.Op == ops.OpFilePull || req.Op == ops.OpFilePush {
+		return rt.callFile(ctx, req, out)
+	}
+	return rt.callRouted(ctx, req, out)
+}
+
+// FileCall is a file_pull or file_push as the Router got it, before the Hub's
+// transfer service admitted it (files.v1, BRD 5.6).
+type FileCall struct {
+	// Principal is the caller as its path authenticated it.
+	Principal authz.Principal
+	Op        string
+	WorkerID  string
+	Session   string
+	// Args are the caller's arguments (ops.FilePullArgs or ops.FilePushArgs,
+	// a value or a pointer).
+	Args any
+	// VerifiedSession is the calling session when its admission path verified
+	// it (the session of a bound master lease); "" for a claimed source or no
+	// session. Only a verified session carries file authority.
+	VerifiedSession string
+}
+
+// FileDispatch is what the transfer service answers to an admitted
+// [FileCall]: the request the Router sends to the target Worker, and what
+// happens with its answer.
+type FileDispatch struct {
+	// Principal is the principal the request is decided on (with the verified
+	// file authority of its calling session, if any).
+	Principal authz.Principal
+	// Args are the arguments with the Hub's hidden members (transfer id, the
+	// target's leg token, limits) set.
+	Args any
+	// Reprincipal, when set, turns the principal a final admission rebuilt
+	// from what it read now into the one the request is decided on again.
+	Reprincipal func(ctx context.Context, p authz.Principal) (authz.Principal, error)
+	// Finish gets the Worker's answer (result or error) and returns what the
+	// caller gets. Required.
+	Finish func(ctx context.Context, result any, err error) (any, error)
+}
+
+// FileAdmitter admits file_pull and file_push before the Router sends them
+// (the Hub's transfer service, internal/hub/files).
+type FileAdmitter interface {
+	AdmitFile(ctx context.Context, c FileCall) (FileDispatch, error)
+}
+
+// SetFileAdmitter installs the transfer service. Without one the Router
+// refuses file_pull and file_push with unsupported_op: their hidden members
+// are the Hub's, and a request that bypassed the admission would carry the
+// caller's.
+func (rt *Router) SetFileAdmitter(a FileAdmitter) {
+	if a == nil {
+		rt.files.Store(nil)
+		return
+	}
+	rt.files.Store(&a)
+}
+
+// callFile routes a file_pull or file_push through the transfer service.
+func (rt *Router) callFile(ctx context.Context, req CallRequest, out **call) (any, error) {
+	ap := rt.files.Load()
+	if ap == nil {
+		return nil, proto.NewError(proto.CodeUnsupportedOp, "file transfer is not available on this Hub")
+	}
+	verified := ""
+	if req.source.proof == proto.OriginProofVerified {
+		verified = req.source.session
+	}
+	d, err := (*ap).AdmitFile(ctx, FileCall{
+		Principal: req.Principal, Op: req.Op, WorkerID: req.WorkerID, Session: req.Session,
+		Args: req.Args, VerifiedSession: verified,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if d.Finish == nil {
+		return nil, proto.NewError(proto.CodeInternal, "the file transfer admission is incomplete")
+	}
+	req.Principal, req.Args = d.Principal, d.Args
+	if inner := req.admit; inner != nil && d.Reprincipal != nil {
+		req.admit = func(ctx context.Context, on Online) (authz.Principal, error) {
+			p, err := inner(ctx, on)
+			if err != nil {
+				return p, err
+			}
+			return d.Reprincipal(ctx, p)
+		}
+	}
+	res, err := rt.callRouted(ctx, req, out)
+	return d.Finish(ctx, res, err)
+}
+
+func (rt *Router) callRouted(ctx context.Context, req CallRequest, out **call) (any, error) {
 	c, err := rt.prepare(ctx, req, false)
 	if err != nil {
 		return nil, err
