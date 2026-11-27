@@ -138,6 +138,7 @@ GET fragments / streams / scripts (12; not full pages):
 | `/w/{worker}/share` | `handleShareGet` (`page_share.go:139`) | share panel fragment |
 | `/w/{worker}/debug` | `handleDebugGet` (`page_worker_debug.go:228`) | debug panel fragment |
 | `/w/{worker}/hidden-sessions` | `handleWorkerHiddenGet` (`page_worker_hidden.go`) | hidden-sessions panel fragment (v0.23.0) |
+| `/w/{worker}/app-update` | `handleWorkerAppUpdateGet` (`page_worker_app_update.go`) | App updates panel fragment (v0.24.0, administrators on an Android Worker) |
 | `/static/*` | `newStaticHandler` (`web.go:574`) | embedded static assets (ETag, no-cache) |
 
 POST routes behind `gate` (36). "Result" = what answers the htmx call. U = any signed-in user (`userRoute`; the Hub op enforces ownership/admin), A = admin only (`adminRoute`, 404 otherwise), S = `sessionRoute` (resolves worker+session, view/operate rules).
@@ -167,6 +168,7 @@ POST routes behind `gate` (36). "Result" = what answers the htmx call. U = any s
 | `/w/{worker}/share` | `handleShareSet` (`page_share.go:143`) | S | `share_set` | share panel fragment |
 | `/w/{worker}/debug` | `handleDebugSet` (`page_worker_debug.go:184`) | S | `worker_debug` / `worker_logs` | debug panel fragment |
 | `/w/{worker}/hidden-sessions` | `handleWorkerHiddenSet` (`page_worker_hidden.go`) | S | `worker_hidden_sessions_set` | hidden-sessions panel fragment; refused without a call unless owner or admin |
+| `/w/{worker}/app-update` | `handleWorkerAppUpdateSet` (`page_worker_app_update.go`) | S | `worker_app_update_set` | App updates panel fragment (auto / manual / off); refused without a call unless admin |
 | `/admin/users` | `handleUserCreate` (`page_users.go:532`) | A | `user_create` | `user_secret` fragment (temporary password) |
 | `/admin/users/{id}/reset-password` | `handleUserReset` (`:553`) | A | `user_reset_password` | `user_secret` fragment |
 | `/admin/users/{id}/role` | `handleUserRole` (`:567`) | A | `user_set_role` | done() flash + reload |

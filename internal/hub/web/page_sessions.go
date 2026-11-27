@@ -128,6 +128,15 @@ type WorkerRow struct {
 	// Hub's release is not published on GitHub yet).
 	UpdateFailed      string
 	UpdateUnpublished string
+	// UpdateProgress is "Updating to vX: <state>" while an Android app update
+	// runs (downloading, verifying, waiting for idle, installing, needs
+	// confirmation on the device).
+	UpdateProgress string
+	// Android is true for the Minion Android app (an update restarts every
+	// session); AppUpdate is the Hub's update policy of the Worker: auto,
+	// off, or empty for manual (worker_app_update_set).
+	Android   bool
+	AppUpdate string
 	// Version is the protocol version of the current connection; empty while
 	// the Worker is offline.
 	Version string
@@ -626,7 +635,9 @@ func newFilteredView(d Dashboard, all bool, f ListFilter) DashboardView {
 			if d.Admin && w.Online && !w.Pending && w.SelfUpdate {
 				w.UpdateUnpublished = notPublishedText(target)
 			}
-			if d.Admin && w.Online && !w.Pending && w.SelfUpdate {
+			if w.AppUpdate == ops.WorkerAppUpdateOff {
+				w.UpdateBlock = "updates from the Hub are off for this worker"
+			} else if d.Admin && w.Online && !w.Pending && w.SelfUpdate {
 				w.UpdateURL = WorkerUpdatePath(w.ID)
 				if w.UpdateUnpublished == "" {
 					// The bulk action would only be refused for a known draft.
@@ -1273,10 +1284,17 @@ func (s *handlerSource) Snapshot(r *http.Request, all bool) (Dashboard, error) {
 			SessionsSynced:    w.SessionsSynced, SessionsListError: w.SessionsListError,
 			LoginStartupOutdated: w.LoginStartupOutdated,
 			SelfUpdate:           proto.HasFeature(w.Features, proto.FeatureSelfUpdate),
+			Android:              w.OS == "android", AppUpdate: w.AppUpdate,
 		})
-		if row := &d.Workers[len(d.Workers)-1]; d.Admin && w.Online && !w.Pending && row.SelfUpdate {
+		if row := &d.Workers[len(d.Workers)-1]; d.Admin && w.Online && !w.Pending && (row.SelfUpdate || row.Android) {
 			if target, ok := updateTarget(); ok && workerOutdated(w.Build, target) {
-				row.UpdateFailed = updateFailureText(r, s.c, w.ID, target)
+				// An Android app update in progress can take the Worker's
+				// self.update away (the app reports it is busy): ask anyway.
+				if text := updateFailureText(r, s.c, w.ID, target); isUpdateProgress(text) {
+					row.UpdateProgress = text
+				} else if row.SelfUpdate {
+					row.UpdateFailed = text
+				}
 			}
 		}
 	}

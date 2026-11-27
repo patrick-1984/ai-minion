@@ -248,6 +248,10 @@ type RouterConfig struct {
 	// (v0.23.0), which wins over the caller's preference while the Hub
 	// setting is user-controlled. Nil: no Worker has a choice of its own.
 	WorkerHiddenSessions WorkerHiddenSessionsSource
+	// WorkerAppUpdate reads how the Hub updates each Worker (v0.24.0): the
+	// list shows it, and worker_update is refused for a Worker set to off.
+	// Nil: every Worker is manual.
+	WorkerAppUpdate WorkerAppUpdateSource
 	// Monitor records the calls routed to Workers for compliance monitoring;
 	// nil: none.
 	Monitor *compliance.Monitor
@@ -272,10 +276,12 @@ type Router struct {
 	hidden    HiddenSessionsPolicyFunc
 	// workerHidden reads the Workers' own hidden-sessions choices.
 	workerHidden WorkerHiddenSessionsSource
-	mon          *compliance.Monitor
-	contentMgd   func(ctx context.Context, workerID string) (bool, error)
-	telemetry    func() Telemetry
-	codes        *SessionCodes
+	// appUpdate reads the Workers' update policies (worker_app_update_set).
+	appUpdate  WorkerAppUpdateSource
+	mon        *compliance.Monitor
+	contentMgd func(ctx context.Context, workerID string) (bool, error)
+	telemetry  func() Telemetry
+	codes      *SessionCodes
 	// synced reports whether a Worker's current connection sent its session
 	// list (the event hub, set after the Router is built).
 	synced atomic.Pointer[func(workerID string) bool]
@@ -301,7 +307,7 @@ func NewRouter(c RouterConfig) (*Router, error) {
 		userMgd:   c.UserManaged, hidden: c.HiddenSessions, workerHidden: c.WorkerHiddenSessions, mon: c.Monitor, contentMgd: c.ContentManaged,
 		backend: c.Backend, dir: c.Directory, az: c.Authz, catalog: c.Catalog,
 		ownerName: c.OwnerName, timeout: c.ResultTimeout, log: c.Logger,
-		codes: c.Codes,
+		codes: c.Codes, appUpdate: c.WorkerAppUpdate,
 	}
 	if rt.catalog == nil {
 		rt.catalog = ops.Default
@@ -384,6 +390,11 @@ func (rt *Router) ListWorkers(ctx context.Context, p authz.Principal, all bool) 
 			choices, choicesFailed = nil, true
 		}
 	}
+	// The Hub's update policies, read once; a failed read shows none.
+	var appUpdates map[string]string
+	if rt.appUpdate != nil {
+		appUpdates, _ = rt.appUpdate.WorkerAppUpdatePolicies(ctx)
+	}
 	out := make([]ops.WorkerInfo, 0, len(recs))
 	numbers := rt.codes.WorkerNumbers(ctx)
 	for _, w := range recs {
@@ -402,6 +413,7 @@ func (rt *Router) ListWorkers(ctx context.Context, p authz.Principal, all bool) 
 		if v, ok := choices[w.ID]; ok {
 			info.AllowHiddenSessions = &v
 		}
+		info.AppUpdate = appUpdates[w.ID]
 		if on, ok := rt.backend.Get(w.ID); ok {
 			at := ops.Timestamp(on.ConnectedAt)
 			info.Online, info.ProtoVersion, info.ConnectedAt, info.Ops = true, on.Version.String(), &at, on.Ops
@@ -938,6 +950,9 @@ func (rt *Router) prepare(ctx context.Context, req CallRequest, wantStream bool)
 		return nil, err
 	}
 	if err := rt.checkUserManaged(ctx, req.Principal, op.Name, req.WorkerID); err != nil {
+		return nil, err
+	}
+	if err := rt.checkAppUpdate(ctx, op.Name, req.WorkerID); err != nil {
 		return nil, err
 	}
 	check, err := rt.hiddenSessionCheck(ctx, req.Principal, op.Name, req.WorkerID)

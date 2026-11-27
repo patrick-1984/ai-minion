@@ -105,6 +105,9 @@ type WorkerPage struct {
 	// HiddenURL is the Hidden sessions panel of the Worker (v0.23.0); empty
 	// when this person may not operate the Worker.
 	HiddenURL string
+	// AppUpdateURL is the App updates panel (v0.24.0): set for an
+	// administrator on the page of an Android Worker.
+	AppUpdateURL string
 	// Name is the heading (the Worker's name; the id when it has none).
 	Name    string
 	Context string
@@ -248,6 +251,9 @@ func workerData(get func() LiveSource) func(*http.Request) (any, error) {
 			p.RenameURL = WorkerRenamePath(id)
 			p.MaxName = ops.MaxWorkerNameLen
 			p.HiddenURL = WorkerHiddenPath(id)
+		}
+		if v.Worker.Android && isAdminRequest(r) {
+			p.AppUpdateURL = WorkerAppUpdatePath(id)
 		}
 		if all {
 			p.Scope = scopeAll

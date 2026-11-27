@@ -97,7 +97,9 @@ func initRoute(ctx context.Context, env *Env) error {
 		// Each Worker's own choice (v0.23.0) wins over the caller's
 		// account-wide preference.
 		WorkerHiddenSessions: st,
-		Codes:                &workers.SessionCodes{Store: st, Log: cfg.logger()},
+		// How the Hub updates each Worker (v0.24.0): off refuses worker_update.
+		WorkerAppUpdate: st,
+		Codes:           &workers.SessionCodes{Store: st, Log: cfg.logger()},
 	})
 	if err != nil {
 		return fmt.Errorf("route: %w", err)
@@ -142,6 +144,10 @@ func initRoute(ctx context.Context, env *Env) error {
 	// The Worker's own hidden-sessions choice (v0.23.0): its owner or an
 	// administrator.
 	if err := api.RegisterWorkerHiddenSessions(handlers, st, az, hubPolicy); err != nil {
+		return fmt.Errorf("route: %w", err)
+	}
+	// How the Hub updates a Worker (v0.24.0): administrators only.
+	if err := api.RegisterWorkerAppUpdate(handlers, st); err != nil {
 		return fmt.Errorf("route: %w", err)
 	}
 	// The same router resolves the human form of a target (pi-1:minion-3)

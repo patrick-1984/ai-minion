@@ -55,6 +55,23 @@ dialled as before. The status screen shows the active override; **Clear Hub
 address override** (while the Worker is stopped) and **Forget this Hub**
 remove it. Only the Android build of the Worker reads this variable.
 
+## Updates
+
+From v0.24.0 the app updates itself when the Hub sends an update. On Android 12
+and newer there is no dialog. Do this once: install the first APK with the
+updater by hand (`adb install -r minion-android-<version>.apk`). Then open
+Minion and allow **Install unknown apps** for it. The app offers this after the
+Hub setup, as **Allow Minion to install updates**. From a PC:
+`adb shell appops set cc.nasz.minion REQUEST_INSTALL_PACKAGES allow`.
+
+**Updates: Automatic / Ask on this screen / Off** on the Minion screen
+controls what the app does. **Off** also turns remote updates off in the
+Worker. An update restarts the app, so every session restarts and only kept
+sessions come back. The app installs only an APK that the Worker verified
+against the signed release and that is signed with the pinned key in
+`signing-cert.sha256`, with a higher version code. See
+[Android app updates](../docs/guides/android-updates.md).
+
 ## Rooted devices
 
 The Worker, terminal server and initial shells run under the Minion app UID.
