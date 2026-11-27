@@ -50,10 +50,13 @@ type AccessPanelRow struct {
 	Session string
 	// AllSessions: the grant covers every shared session of the Worker.
 	AllSessions bool
-	Masked      bool
-	Worker      string
-	Owner       string
-	Level       string
+	// Everyone: the grant's source is every shared session of every
+	// eligible Worker (Worker is empty then).
+	Everyone bool
+	Masked   bool
+	Worker   string
+	Owner    string
+	Level    string
 	// Effective is the level in effect (from the matrix) when it differs from
 	// the granted Level; empty when they are the same or nothing is in effect.
 	Effective string
@@ -165,7 +168,13 @@ func sessionAccessView(r *http.Request, c OpCaller, s SessionContext) (v Session
 	for _, g := range grants.Grants {
 		gr := GrantRow{Grant: g}
 		link := accessGrantsOf(s.WorkerID) + "#grant-" + url.PathEscape(g.ID)
-		if g.SourceWorkerID == s.WorkerID && g.SourceSession == s.Session {
+		// The source selector as dispatch matches it: this session by name,
+		// every shared session of its Worker, or everyone on another Worker.
+		scope := gr.SourceScopeKey()
+		fromHere := (scope == ops.GrantSourceSession && g.SourceWorkerID == s.WorkerID && g.SourceSession == s.Session) ||
+			(scope == ops.GrantSourceWorker && g.SourceWorkerID == s.WorkerID) ||
+			(scope == ops.GrantSourceEveryone && g.TargetWorkerID != s.WorkerID)
+		if fromHere {
 			row := AccessPanelRow{Session: g.TargetSession, AllSessions: g.TargetSession == "", Worker: gr.TargetWorker(), Owner: g.TargetOwner,
 				Level: grantLevelLabel(g.Level), Via: accessRowGrant, GrantsURL: link}
 			var cell *ops.AccessCell
@@ -178,9 +187,18 @@ func sessionAccessView(r *http.Request, c OpCaller, s SessionContext) (v Session
 		}
 		if g.TargetWorkerID == s.WorkerID && (g.TargetSession == "" || g.TargetSession == s.Session) {
 			row := AccessPanelRow{Session: g.SourceSession, Worker: gr.SourceWorker(), Owner: g.SourceOwner,
-				Level: grantLevelLabel(g.Level), Via: accessRowGrant, GrantsURL: link,
-				WhyURL: accessPairWhy(g.SourceWorkerID, g.SourceSession, s.WorkerID, s.Session)}
-			row.State, row.Tone, row.Effective = accessGrantState(g, cellOf(g.ID, g.SourceWorkerID, g.SourceSession, s.WorkerID, s.Session))
+				Level: grantLevelLabel(g.Level), Via: accessRowGrant, GrantsURL: link}
+			var cell *ops.AccessCell
+			switch scope {
+			case ops.GrantSourceEveryone:
+				row.Everyone = true
+			case ops.GrantSourceWorker:
+				row.AllSessions = true
+			default:
+				row.WhyURL = accessPairWhy(g.SourceWorkerID, g.SourceSession, s.WorkerID, s.Session)
+				cell = cellOf(g.ID, g.SourceWorkerID, g.SourceSession, s.WorkerID, s.Session)
+			}
+			row.State, row.Tone, row.Effective = accessGrantState(g, cell)
 			v.ReachedBy = append(v.ReachedBy, row)
 		}
 	}
