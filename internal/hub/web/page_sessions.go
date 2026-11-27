@@ -137,6 +137,9 @@ type WorkerRow struct {
 	// off, or empty for manual (worker_app_update_set).
 	Android   bool
 	AppUpdate string
+	// InstallsApps is true for an Android Worker that announced
+	// app.install.v1 and serves app_install (v0.25.0).
+	InstallsApps bool
 	// Version is the protocol version of the current connection; empty while
 	// the Worker is offline.
 	Version string
@@ -1285,6 +1288,7 @@ func (s *handlerSource) Snapshot(r *http.Request, all bool) (Dashboard, error) {
 			LoginStartupOutdated: w.LoginStartupOutdated,
 			SelfUpdate:           proto.HasFeature(w.Features, proto.FeatureSelfUpdate),
 			Android:              w.OS == "android", AppUpdate: w.AppUpdate,
+			InstallsApps: workerInstallsApps(w),
 		})
 		if row := &d.Workers[len(d.Workers)-1]; d.Admin && w.Online && !w.Pending && (row.SelfUpdate || row.Android) {
 			if target, ok := updateTarget(); ok && workerOutdated(w.Build, target) {
