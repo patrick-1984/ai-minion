@@ -184,6 +184,7 @@ denies later calls from the revoked attachment even if Claude presents a cached 
 | --- | --- |
 | [Desktop tray](docs/guides/tray.md) | Optional tray for Windows, Ubuntu desktop and macOS: start, stop, pause, set up the Hub, shared sessions, block new sessions, Hub key words; the menu-to-command table |
 | [Android app updates](docs/guides/android-updates.md) | The Minion app updates itself from the Hub: the one-time step, Update and Update now, automatic/manual/off per Worker, the device setting, limits |
+| [Installing Android apps](docs/guides/android-apps.md) | Install other apps on an Android Worker from an APK in its Minion files folder (v0.25.0): `minion apps install\|status`, the one press on the device for a first install, silent updates afterwards, checks, who may install (`apps_install`), security trade-offs |
 | [Pairing and sharing](docs/guides/pairing.md) | Pairing codes, invitation keys, the Hub fingerprint (`--hub-fingerprint`, `minion worker verify-hub`), choosing which sessions the Hub may see, the local share lock |
 | [Reverse proxy](docs/guides/reverse-proxy.md) | TLS in front of the Hub, WebSocket and event-stream settings, trusted proxies |
 | [No direct route](docs/guides/no-direct-route.md) | A Worker that cannot reach the Hub directly: SSH tunnels |

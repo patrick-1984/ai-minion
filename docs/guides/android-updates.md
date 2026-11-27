@@ -128,4 +128,7 @@ installs at once.
 - The app does not yet count failed Worker starts after an update. If a new
   version does not start, install a fixed version by hand.
 
+To install other apps on the device the same way, see
+[Installing Android apps](android-apps.md).
+
 Back to the [README](../../README.md).

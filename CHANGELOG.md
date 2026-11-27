@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **Install other apps on an Android Worker without adb** (`app.install.v1`). Copy an APK into the app's Minion files folder with `minion files push`, then run `minion apps install --target <android-worker> <path> [--allow-new]`; `minion apps status` shows readiness, the last attempt and the APK files. The Worker confines the path to Minion files (no symbolic links, regular file, at most 512 MiB) and hands the SHA-256 to the app, which checks package, version and signer (no downgrade, same signer as the installed app, `--allow-new` for a new app, never Minion itself) and streams the APK into a PackageInstaller session against that digest. A first install needs one press of **Install <app>** on the Minion screen (D-pad, TV) or its notification; updates of apps Minion installed are silent on Android 12 and newer. New ops `app_install` (write) and `app_install_status`, the MCP tools of the same name, a form on the Hub's Android Worker page, and the action `app_install`: owners and administrators hold it, an API key only when its scope names it, and sessions of other Workers only through a verified Control grant or master acceptance with the new flag `apps_install` (default off, never implied by `files_push`; the Hub honours it on the master lane, but a session's `minion apps install` does not use the master lane yet). A preview-only Worker drops the action, and the Worker refuses an install that does not come through the Hub. Every request is audited with package, version code, signer SHA-256 and outcome. See [Installing Android apps](docs/guides/android-apps.md).
+
 ## v0.24.2
 
 ### Fixed
