@@ -2,8 +2,10 @@ package workers
 
 import (
 	"encoding/json"
+	"slices"
 	"testing"
 
+	"github.com/patrick-1984/ai-minion/internal/hub/authz"
 	"github.com/patrick-1984/ai-minion/internal/ops"
 	"github.com/patrick-1984/ai-minion/internal/proto"
 )
@@ -57,6 +59,24 @@ func TestMasterRouteServesTheAppOps(t *testing.T) {
 	} {
 		if _, err := masterRoute(ops.NewUUIDv7(), op, json.RawMessage(raw)); err == nil {
 			t.Fatalf("%s %s was routed", op, raw)
+		}
+	}
+}
+
+// The audit event of an app install names the apps_install grants that
+// decided it, else the acceptance row, as the transfer record of a file op.
+func TestAppAuditIDs(t *testing.T) {
+	for _, c := range []struct {
+		b    authz.FileBasis
+		want []string
+	}{
+		{authz.FileBasis{GrantIDs: []string{"g1", "g2"}, AcceptanceID: "w/a"}, []string{"g1", "g2"}},
+		{authz.FileBasis{AcceptanceID: "w/a"}, []string{"w/a"}},
+		{authz.FileBasis{Standing: true}, nil},
+		{authz.FileBasis{}, nil},
+	} {
+		if got := appAuditIDs(c.b); !slices.Equal(got, c.want) {
+			t.Errorf("appAuditIDs(%+v) = %v, want %v", c.b, got, c.want)
 		}
 	}
 }

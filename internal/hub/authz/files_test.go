@@ -324,3 +324,50 @@ func TestAppInstallFlag(t *testing.T) {
 		t.Error("a master without verified authority allows app_install")
 	}
 }
+
+// The basis of an app install (the audit's grant_id): the apps_install grants
+// that decide it, else the acceptance row with the flag; never a grant or row
+// without the flag, and GrantIDs names the same grants for app_install.
+func TestAppInstallBasis(t *testing.T) {
+	a := dgAuthz(grantStore())
+	ctx := context.Background()
+	install := set(ops.ActionAppInstall)
+	w2 := authz.WorkerResource{ID: "W2"}
+	flagged := ownerGrant("g-apps", "W2", "x", authz.LevelControl)
+	flagged.AppsInstall = true
+	plain := ownerGrant("g-plain", "W2", "x", authz.LevelControl)
+	plain.FilesPush = true
+	p := authz.NewWorkerSessionPrincipal("A1", "main", nil, []authz.DirectGrant{plain, flagged}).WithVerifiedFiles("main", nil)
+	b, err := a.AppInstallBasis(ctx, p, w2)
+	if err != nil || !slices.Equal(b.GrantIDs, []string{"g-apps"}) || b.AcceptanceID != "" || b.Standing {
+		t.Fatalf("basis of an apps_install grant = %+v, %v", b, err)
+	}
+	if ids, err := a.GrantIDs(ctx, p, install, w2); err != nil || !slices.Equal(ids, []string{"g-apps"}) {
+		t.Fatalf("GrantIDs of app_install = %v, %v", ids, err)
+	}
+	// A claimed session: the flag does not count.
+	claimed := authz.NewWorkerSessionPrincipal("A1", "main", nil, []authz.DirectGrant{flagged})
+	if b, err := a.AppInstallBasis(ctx, claimed, w2); err != nil || b.Any() {
+		t.Fatalf("basis of a claimed session = %+v, %v", b, err)
+	}
+	if ids, err := a.GrantIDs(ctx, claimed, install, w2); err != nil || len(ids) != 0 {
+		t.Fatalf("GrantIDs of a claimed session = %v, %v", ids, err)
+	}
+
+	scope := grantScope(tW2, tW3Build)
+	off := authz.FileAcceptance{ID: "acc-off", TargetWorkerID: "W2", FilesPush: true}
+	on := authz.FileAcceptance{ID: "acc-w2", TargetWorkerID: "W2", AppsInstall: true}
+	master := authz.NewBoundMasterPrincipal("A1", scope).WithVerifiedFiles("main", []authz.FileAcceptance{off, on})
+	if b, err := a.AppInstallBasis(ctx, master, w2); err != nil || len(b.GrantIDs) != 0 || b.AcceptanceID != "acc-w2" {
+		t.Fatalf("basis of an acceptance = %+v, %v", b, err)
+	}
+	if b, err := a.AppInstallBasis(ctx, master, authz.WorkerResource{ID: "W3"}); err != nil || b.Any() {
+		t.Fatalf("basis on a Worker the row does not name = %+v, %v", b, err)
+	}
+	if b, err := a.AppInstallBasis(ctx, authz.NewSessionPrincipal("alice"), w2); err != nil || !b.Standing || len(b.GrantIDs) != 0 {
+		t.Fatalf("basis of the owner = %+v, %v", b, err)
+	}
+	if b, err := a.AppInstallBasis(ctx, authz.NewSessionPrincipal("bob"), w2); err != nil || b.Any() {
+		t.Fatalf("basis of a foreign user = %+v, %v", b, err)
+	}
+}

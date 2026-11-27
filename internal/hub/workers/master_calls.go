@@ -385,6 +385,13 @@ func (m *MasterControl) runMasterCall(ctx context.Context, c Call) (any, error) 
 	if len(auth.direct) != 0 {
 		req.granted = func(ids []string) { grantIDs = ids }
 	}
+	// An app install stands on an apps_install grant or acceptance row: its
+	// audit event names the one the final admission decided on, as the
+	// transfer record of a file op does.
+	var appBasis authz.FileBasis
+	if op == ops.OpAppInstall {
+		req.appBasis = func(b authz.FileBasis) { appBasis = b }
+	}
 	var withdrawn atomic.Bool
 	if op != ops.OpSendText && len(auth.direct) != 0 {
 		// An admitted read leaves the pending set: a verified grant that
@@ -401,7 +408,7 @@ func (m *MasterControl) runMasterCall(ctx context.Context, c Call) (any, error) 
 		m.grantUse.Used(grantIDs...)
 	}
 	if op == ops.OpAppInstall {
-		m.recordMasterWrite(ctx, c.Worker.ID, lease.row.SessionName, req, grantIDs, result, err)
+		m.recordMasterWrite(ctx, c.Worker.ID, lease.row.SessionName, req, appAuditIDs(appBasis), result, err)
 	}
 	if isAppOp(op) {
 		// Decided at the final admission on the apps_install flags of the
@@ -632,6 +639,19 @@ func (m *MasterControl) recordMasterWrite(ctx context.Context, workerID, session
 	if aerr := m.auditor.Record(ctx, ev); aerr != nil {
 		slog.Default().Error("workers: audit write failed", "action", req.Op, "error", aerr.Error())
 	}
+}
+
+// appAuditIDs is what the audit event of an app install names as its
+// grant_id: the apps_install grants that decided it, else its acceptance row
+// (as internal/hub/files names a transfer's basis).
+func appAuditIDs(b authz.FileBasis) []string {
+	if len(b.GrantIDs) != 0 {
+		return b.GrantIDs
+	}
+	if b.AcceptanceID != "" {
+		return []string{b.AcceptanceID}
+	}
+	return nil
 }
 
 // appInstallResultOf returns the app install result a routed call answered.

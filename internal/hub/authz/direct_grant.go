@@ -227,7 +227,8 @@ func (a *Authorizer) GrantIDs(ctx context.Context, p Principal, accepted ops.Act
 	}
 	var ids []string
 	for _, g := range p.directList() {
-		if accepted.Permits(append(sub.directFor(g, resolved), sub.directFileFor(g, resolved)...)...) {
+		if accepted.Permits(append(sub.directFor(g, resolved), sub.directFileFor(g, resolved)...)...) ||
+			accepted.Permits(ops.ActionAppInstall) && sub.directAppFor(g, resolved) {
 			ids = append(ids, g.ID)
 		}
 	}

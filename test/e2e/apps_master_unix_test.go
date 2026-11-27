@@ -83,8 +83,9 @@ func TestAppInstallSessionCallerVerifiedSource(t *testing.T) {
 		t.Fatalf("install = %+v", res)
 	}
 
-	// The Hub audited the install of the session with its outcome (the
-	// denied attempt before apps_install too).
+	// The Hub audited the install of the session with its outcome and the
+	// grant whose apps_install flag decided it (the denied attempt before
+	// apps_install too, which no flag decided).
 	code, body = e.ph.do("POST", "/api/v1/ops/"+ops.OpAuditList, ops.AuditListArgs{Action: ops.OpAppInstall}, e.ph.admin)
 	var list ops.AuditListResult
 	if code != http.StatusOK || json.Unmarshal([]byte(body), &list) != nil {
@@ -95,8 +96,8 @@ func TestAppInstallSessionCallerVerifiedSource(t *testing.T) {
 		if ev.Source != a.id+":boss" || ev.Target != b.id || !strings.Contains(ev.Detail, "proof=bound") {
 			continue
 		}
-		refused = refused || ev.Outcome == ops.AppInstallRefused && strings.Contains(ev.Detail, "reason=")
-		denied = denied || ev.Outcome == "denied"
+		refused = refused || ev.Outcome == ops.AppInstallRefused && strings.Contains(ev.Detail, "reason=") && ev.GrantID == g.ID
+		denied = denied || ev.Outcome == "denied" && ev.GrantID == ""
 	}
 	if !refused || !denied {
 		t.Fatalf("no audit row of the session's install: %s", body)
