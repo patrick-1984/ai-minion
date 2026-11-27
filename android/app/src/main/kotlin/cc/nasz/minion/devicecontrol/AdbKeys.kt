@@ -1,11 +1,12 @@
-// Spike K0: adb client key in AndroidKeyStore (two variants) or in an app-private file (fallback).
+// Device control: the adb client key. AndroidKeyStore RSA-2048 (non-exportable) or, if Keystore cannot make
+// one, a software key in an app-private file.
 // SPDX-License-Identifier: Apache-2.0
-package cc.nasz.minion.adbspike
+package cc.nasz.minion.devicecontrol
 
-import android.content.Context
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyInfo
 import android.security.keystore.KeyProperties
+import android.system.Os
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.math.BigInteger
@@ -22,99 +23,92 @@ import java.security.spec.RSAKeyGenParameterSpec
 import java.util.Date
 import javax.security.auth.x500.X500Principal
 
-enum class KeyMode(val alias: String) {
-    /**
-     * Keystore RSA-2048 that also allows raw RSA (padding NONE, digest NONE). Needed because platform Conscrypt
-     * signs TLS 1.3 rsa_pss_rsae_sha256 by padding in BoringSSL and calling Cipher "RSA/ECB/NoPadding"
-     * (private-key encrypt) on the Keystore key (CryptoUpcalls.rsaSignDigestWithPrivateKey).
-     */
-    KEYSTORE_RAW("minion-adb-spike-raw"),
-
-    /** Keystore RSA-2048 restricted to PSS/PKCS1 with SHA-256 (design v2 wording). Expected to FAIL the TLS 1.3 handshake. */
-    KEYSTORE_PSS_ONLY("minion-adb-spike-pss"),
-
-    /** Software RSA-2048 in noBackupFilesDir/adbspike/adbkey (0600): the design's fallback. */
-    APP_FILE("app-file"),
-}
-
-class AdbKey(val mode: KeyMode, val privateKey: PrivateKey, val certificate: X509Certificate) {
+class AdbKey(val inKeystore: Boolean, val privateKey: PrivateKey, val certificate: X509Certificate) {
     val publicKey: RSAPublicKey get() = certificate.publicKey as RSAPublicKey
 
-    /** "android-keystore (TEE|STRONGBOX|SOFTWARE|...)" or "app-file". */
+    /** "android-keystore (TEE|STRONGBOX|SOFTWARE|...)" or "app-file" (design 4.7, G12). */
     fun storageDescription(): String {
-        if (mode == KeyMode.APP_FILE) return "app-file"
-        val info = KeyFactory.getInstance(privateKey.algorithm, "AndroidKeyStore").getKeySpec(privateKey, KeyInfo::class.java)
-        val level = if (android.os.Build.VERSION.SDK_INT >= 31) when (info.securityLevel) {
-            KeyProperties.SECURITY_LEVEL_TRUSTED_ENVIRONMENT -> "TEE"
-            KeyProperties.SECURITY_LEVEL_STRONGBOX -> "STRONGBOX"
-            KeyProperties.SECURITY_LEVEL_SOFTWARE -> "SOFTWARE"
-            KeyProperties.SECURITY_LEVEL_UNKNOWN_SECURE -> "UNKNOWN_SECURE"
-            else -> "UNKNOWN(${info.securityLevel})"
-        } else if (@Suppress("DEPRECATION") info.isInsideSecureHardware) "secure-hardware" else "software"
+        if (!inKeystore) return "app-file"
+        val level = runCatching {
+            val info = KeyFactory.getInstance(privateKey.algorithm, "AndroidKeyStore").getKeySpec(privateKey, KeyInfo::class.java)
+            if (android.os.Build.VERSION.SDK_INT >= 31) when (info.securityLevel) {
+                KeyProperties.SECURITY_LEVEL_TRUSTED_ENVIRONMENT -> "TEE"
+                KeyProperties.SECURITY_LEVEL_STRONGBOX -> "STRONGBOX"
+                KeyProperties.SECURITY_LEVEL_SOFTWARE -> "SOFTWARE"
+                KeyProperties.SECURITY_LEVEL_UNKNOWN_SECURE -> "UNKNOWN_SECURE"
+                else -> "UNKNOWN"
+            } else if (@Suppress("DEPRECATION") info.isInsideSecureHardware) "secure-hardware" else "software"
+        }.getOrDefault("unknown")
         return "android-keystore ($level)"
     }
 }
 
 object AdbKeys {
     const val SUBJECT = "CN=minion@cc.nasz.minion"
+    const val NAME = "minion@cc.nasz.minion"
+    const val ALIAS = "minion-adb"
+    const val FILE_WARNING = "Key stored in an app-private file. Every terminal of this Worker could read it."
 
-    fun load(context: Context, mode: KeyMode): AdbKey = when (mode) {
-        KeyMode.APP_FILE -> fileKey(context)
-        else -> keystoreKey(mode)
+    /** Keystore key if possible, else the file key in [stateDir]/adb (0700 dir, 0600 files). */
+    fun load(stateDir: File): AdbKey = runCatching { keystoreKey() }.getOrElse { fileKey(File(stateDir, "adb")) }
+
+    /** Removes the local key (Keystore entry and file); a new pairing makes a new one. */
+    fun delete(stateDir: File) {
+        runCatching { KeyStore.getInstance("AndroidKeyStore").apply { load(null) }.deleteEntry(ALIAS) }
+        File(stateDir, "adb/adbkey").delete()
+        File(stateDir, "adb/adbkey.crt").delete()
     }
 
-    fun delete(context: Context, mode: KeyMode) {
-        if (mode == KeyMode.APP_FILE) File(context.noBackupFilesDir, "adbspike").deleteRecursively()
-        else KeyStore.getInstance("AndroidKeyStore").apply { load(null) }.deleteEntry(mode.alias)
-    }
+    /**
+     * Key spec per K0 (desk) Q2: platform Conscrypt signs TLS 1.3 rsa_pss_rsae_sha256 by padding in BoringSSL and
+     * calling Cipher "RSA/ECB/NoPadding" with the private key, which AndroidKeyStore maps to a raw SIGN with
+     * KM_PAD_NONE + KM_DIGEST_NONE. So the key needs DIGEST_NONE and ENCRYPTION_PADDING_NONE; purpose stays SIGN.
+     */
+    fun keySpec(): KeyGenParameterSpec = KeyGenParameterSpec.Builder(ALIAS, KeyProperties.PURPOSE_SIGN)
+        .setAlgorithmParameterSpec(RSAKeyGenParameterSpec(2048, RSAKeyGenParameterSpec.F4))
+        .setCertificateSubject(X500Principal(SUBJECT))
+        .setCertificateSerialNumber(BigInteger.ONE)
+        .setCertificateNotBefore(Date(System.currentTimeMillis() - 86_400_000L))
+        .setCertificateNotAfter(Date(System.currentTimeMillis() + 20L * 365 * 86_400_000L))
+        .setSignaturePaddings(KeyProperties.SIGNATURE_PADDING_RSA_PSS, KeyProperties.SIGNATURE_PADDING_RSA_PKCS1)
+        .setDigests(KeyProperties.DIGEST_SHA256, KeyProperties.DIGEST_NONE)
+        .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
+        .setRandomizedEncryptionRequired(false)
+        .build()
 
-    private fun keystoreKey(mode: KeyMode): AdbKey {
+    private fun keystoreKey(): AdbKey {
         val ks = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
-        if (!ks.containsAlias(mode.alias)) {
-            val b = KeyGenParameterSpec.Builder(mode.alias, KeyProperties.PURPOSE_SIGN)
-                .setAlgorithmParameterSpec(RSAKeyGenParameterSpec(2048, RSAKeyGenParameterSpec.F4))
-                .setCertificateSubject(X500Principal(SUBJECT))
-                .setCertificateSerialNumber(BigInteger.ONE)
-                .setCertificateNotBefore(Date(System.currentTimeMillis() - 86_400_000L))
-                .setCertificateNotAfter(Date(System.currentTimeMillis() + 20L * 365 * 86_400_000L))
-                .setSignaturePaddings(KeyProperties.SIGNATURE_PADDING_RSA_PSS, KeyProperties.SIGNATURE_PADDING_RSA_PKCS1)
-            if (mode == KeyMode.KEYSTORE_RAW) {
-                // KM_PAD_NONE + KM_DIGEST_NONE for the raw private-key operation Conscrypt performs.
-                b.setDigests(KeyProperties.DIGEST_SHA256, KeyProperties.DIGEST_NONE)
-                    .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
-                    .setRandomizedEncryptionRequired(false)
-            } else {
-                b.setDigests(KeyProperties.DIGEST_SHA256)
-            }
+        if (!ks.containsAlias(ALIAS)) {
             KeyPairGenerator.getInstance(KeyProperties.KEY_ALGORITHM_RSA, "AndroidKeyStore").apply {
-                initialize(b.build())
+                initialize(keySpec())
                 generateKeyPair()
             }
         }
-        val entry = ks.getEntry(mode.alias, null) as KeyStore.PrivateKeyEntry
-        return AdbKey(mode, entry.privateKey, entry.certificate as X509Certificate)
+        val entry = ks.getEntry(ALIAS, null) as KeyStore.PrivateKeyEntry
+        return AdbKey(true, entry.privateKey, entry.certificate as X509Certificate)
     }
 
-    private fun fileKey(context: Context): AdbKey {
-        val dir = File(context.noBackupFilesDir, "adbspike").apply { mkdirs(); setReadable(false, false); setReadable(true, true) }
+    private fun fileKey(dir: File): AdbKey {
+        check(dir.isDirectory || dir.mkdirs())
+        Os.chmod(dir.path, 448) // 0700
         val keyFile = File(dir, "adbkey")
         val certFile = File(dir, "adbkey.crt")
         if (!keyFile.exists() || !certFile.exists()) {
             val kp = KeyPairGenerator.getInstance("RSA").apply { initialize(RSAKeyGenParameterSpec(2048, RSAKeyGenParameterSpec.F4)) }
                 .generateKeyPair()
-            val cert = SelfSignedCert.build(kp.private, kp.public.encoded, SUBJECT)
             writePrivate(keyFile, kp.private.encoded)
-            writePrivate(certFile, cert)
+            writePrivate(certFile, SelfSignedCert.build(kp.private, kp.public.encoded, SUBJECT))
         }
         val priv = KeyFactory.getInstance("RSA").generatePrivate(PKCS8EncodedKeySpec(keyFile.readBytes()))
-        val cert = CertificateFactory.getInstance("X.509").generateCertificate(certFile.inputStream()) as X509Certificate
-        return AdbKey(KeyMode.APP_FILE, priv, cert)
+        val cert = certFile.inputStream().use { CertificateFactory.getInstance("X.509").generateCertificate(it) as X509Certificate }
+        return AdbKey(false, priv, cert)
     }
 
     private fun writePrivate(f: File, bytes: ByteArray) {
-        f.writeBytes(bytes)
-        f.setReadable(false, false); f.setReadable(true, true)
-        f.setWritable(false, false); f.setWritable(true, true)
+        val tmp = File(f.parentFile, f.name + ".tmp")
+        tmp.outputStream().use { it.write(bytes) }
+        Os.chmod(tmp.path, 384) // 0600
+        check(tmp.renameTo(f))
     }
 }
 

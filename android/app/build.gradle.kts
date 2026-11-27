@@ -12,13 +12,10 @@ require(major <= 209 && minor <= 99 && patch <= 99 && (parts[4].isEmpty() || rc 
     "The Minion version does not fit the Android version code"
 }
 val nativePackage = providers.gradleProperty("minionNativePackage").map(::file)
-// Spike K0 (on-device adb): off by default. Only debug builds get it; a release build with it on fails.
-val adbSpike = providers.gradleProperty("minionAdbSpike").map { it == "true" }.getOrElse(false)
-if (adbSpike) {
-    require(gradle.startParameter.taskNames.none { it.contains("Release", ignoreCase = true) }) {
-        "-PminionAdbSpike=true is for debug builds only"
-    }
-}
+// Device control (on-device adb, design docs/minion-android-adb/DESIGN.md): compiled in, off by default.
+// Only a build with -PminionDeviceControl=true (the gate RC) declares its components, permission and native
+// library; every other build, release included, has no reachable device-control entry point.
+val deviceControl = providers.gradleProperty("minionDeviceControl").map { it == "true" }.getOrElse(false)
 
 android {
     namespace = "cc.nasz.minion"
@@ -46,21 +43,27 @@ android {
         }
     }
 
-    if (adbSpike) {
+    buildFeatures.buildConfig = true
+    defaultConfig.buildConfigField("boolean", "DEVICE_CONTROL", deviceControl.toString())
+
+    if (deviceControl) {
         ndkVersion = "28.2.13676358"
-        buildTypes.named("debug") { applicationIdSuffix = ".adbspike" }
-        sourceSets.named("debug") {
-            kotlin.srcDir("src/adbSpike/kotlin")
-            manifest.srcFile("src/adbSpike/AndroidManifest.xml")
+        // Overlay manifest: provider, pairing activity, SYSTEM_ALERT_WINDOW. Both build types get it.
+        for (type in listOf("debug", "release")) {
+            sourceSets.named(type) { manifest.srcFile("src/deviceControl/AndroidManifest.xml") }
         }
-        sourceSets.named("test") { kotlin.srcDir("src/adbSpikeTest/kotlin") }
         externalNativeBuild.cmake {
-            path = file("src/adbSpike/cpp/CMakeLists.txt")
+            path = file("src/main/cpp/CMakeLists.txt")
             version = "3.31.6"
         }
-        testOptions.unitTests.all { test ->
-            providers.gradleProperty("minionSpake2HostLib").orNull?.let { test.systemProperty("minion.spake2.lib", it) }
+        // Optional offline checkout of the pinned BoringSSL tag (else CMake downloads it and checks the hash).
+        providers.gradleProperty("minionBoringsslDir").orNull?.let { dir ->
+            defaultConfig.externalNativeBuild.cmake.arguments += "-DMINION_BORINGSSL_DIR=$dir"
         }
+    }
+
+    testOptions.unitTests.all { test ->
+        providers.gradleProperty("minionSpake2HostLib").orNull?.let { test.systemProperty("minion.spake2.lib", it) }
     }
 
     packaging.jniLibs {
@@ -78,12 +81,10 @@ kotlin {
 }
 
 dependencies {
-    if (adbSpike) {
-        testImplementation("junit:junit:4.13.2")
-    }
+    testImplementation("junit:junit:4.13.2")
 }
 
-// Belt and braces: the spike's native library never goes into a release APK.
-androidComponents.onVariants(androidComponents.selector().withBuildType("release")) { variant ->
-    variant.packaging.jniLibs.excludes.add("**/libminion_spake2.so")
+// Belt and braces: without the flag the SPAKE2 library never goes into any APK.
+if (!deviceControl) {
+    androidComponents.onVariants { variant -> variant.packaging.jniLibs.excludes.add("**/libminion_spake2.so") }
 }

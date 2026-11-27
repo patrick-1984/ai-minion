@@ -1,136 +1,163 @@
-// Spike K0: smallest adb client: pair (code, port) and run one shell command over TLS on 127.0.0.1.
+// Device control: the adb client (pairing and TLS connect), loopback only.
 // SPDX-License-Identifier: Apache-2.0
 //
-// Platform TLS only: SSLContext "TLSv1.3" from the default provider (platform Conscrypt), the TLS exporter from
-// the public android.net.ssl.SSLSockets.exportKeyingMaterial (API 31). No hidden API, no bundled Conscrypt.
-// Spike limits (K1 must fix): trusts any adbd server certificate (design 4.4 provenance check comes later),
-// one stream at a time, no shell v2 exit codes.
-package cc.nasz.minion.adbspike
+// Platform TLS only: SSLContext "TLSv1.3" from the default provider (platform Conscrypt), the TLS exporter from the
+// public android.net.ssl.SSLSockets.exportKeyingMaterial (API 31). No hidden API, no bundled Conscrypt, no
+// BouncyCastle, no libadb-android, no LGPL code. adbd's server certificate cannot identify adbd (design 3.4): every
+// new connection must pass the provenance check (4.4) before any operation is sent.
+package cc.nasz.minion.devicecontrol
 
+import android.annotation.SuppressLint
 import android.net.ssl.SSLSockets
 import android.os.Build
-import java.io.ByteArrayOutputStream
 import java.io.IOException
-import java.io.InputStream
-import java.io.OutputStream
+import java.net.ConnectException
+import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.Socket
-import java.security.MessageDigest
+import java.net.SocketTimeoutException
 import java.security.Principal
 import java.security.PrivateKey
 import java.security.SecureRandom
 import java.security.cert.X509Certificate
 import javax.net.ssl.SSLContext
+import javax.net.ssl.SSLException
 import javax.net.ssl.SSLSocket
 import javax.net.ssl.X509ExtendedKeyManager
 import javax.net.ssl.X509TrustManager
 
-class AdbBridge(private val key: AdbKey, private val log: (String) -> Unit) {
-    private val host = "127.0.0.1"
+/** A failure with a stable reason code (bridge protocol `error.code`). Never carries a secret. */
+class BridgeException(val code: String, message: String) : IOException(message)
+
+class AdbBridge(private val key: AdbKey, private val provenance: ProvenanceRegistry = ProvenanceRegistry.shared) {
+    private val loopback: InetAddress = InetAddress.getByAddress("localhost", byteArrayOf(127, 0, 0, 1))
 
     init {
         require(Build.VERSION.SDK_INT >= 31) { "needs Android 12 (API 31) for SSLSockets.exportKeyingMaterial" }
     }
 
-    /** Pairs with the Wireless debugging pairing port. [code] is wiped. */
+    /** Pairs with the Wireless debugging pairing port on 127.0.0.1. [code] is wiped whatever happens. */
     fun pair(port: Int, code: CharArray) {
-        val tls = tlsSocket(Socket().apply { connect(InetSocketAddress(host, port), 5000); soTimeout = 15000; tcpNoDelay = true }, port)
-        tls.use { s ->
-            s.startHandshake()
-            describe("pairing", s)
-            check(SSLSockets.isSupportedSocket(s)) { "platform SSLSocket not supported by SSLSockets" }
-            val exported = SSLSockets.exportKeyingMaterial(s, PairingPacket.EXPORTER_LABEL, null, PairingPacket.EXPORTER_SIZE)
-                ?: throw IOException("SSLSockets.exportKeyingMaterial returned null")
-            log("exporter: ${exported.size} bytes from SSLSockets.exportKeyingMaterial")
-            val codeBytes = String(code).toByteArray(Charsets.UTF_8)
-            code.fill('\u0000')
-            val password = codeBytes + exported
-            codeBytes.fill(0); exported.fill(0)
-            val out = s.outputStream
-            val inp = s.inputStream
-            Spake2.alice().use { spake ->
-                val ours = spake.generateMessage(password) // wipes password
-                out.write(PairingPacket.frame(PairingPacket.TYPE_SPAKE2_MSG, ours)); out.flush()
-                val theirs = PairingPacket.read(inp, PairingPacket.TYPE_SPAKE2_MSG)
-                val keyMaterial = spake.processMessage(theirs)
-                val cipher = PairingCipher(keyMaterial)
-                keyMaterial.fill(0)
-                try {
-                    val info = PairingPacket.peerInfo(AdbPubkey.encodeWithName(key.publicKey, "minion@cc.nasz.minion"))
-                    out.write(PairingPacket.frame(PairingPacket.TYPE_PEER_INFO, cipher.encrypt(info))); out.flush()
-                    val sealed = PairingPacket.read(inp, PairingPacket.TYPE_PEER_INFO)
-                    val peer = try { cipher.decrypt(sealed) } catch (e: Exception) {
-                        throw IOException("pairing: wrong code (peer info did not decrypt)", e)
-                    }
-                    check(peer.size == PairingPacket.PEER_INFO_SIZE) { "pairing: peer info size ${peer.size}" }
-                    // Type 1 = ADB_DEVICE_GUID. The GUID is a hint only (design 3.4), logged for the report.
-                    val guid = String(peer, 1, peer.size - 1, Charsets.UTF_8).substringBefore('\u0000')
-                    log("paired: peer info type=${peer[0]} guid=$guid")
-                } finally { cipher.wipe() }
+        try {
+            if (!EndpointChooser.validPort(port)) throw BridgeException("bad_request", "Enter the pairing port shown in Settings.")
+            val tls = tlsSocket(dial(port, 15_000), port)
+            tls.use { s ->
+                s.startHandshake()
+                if (!SSLSockets.isSupportedSocket(s)) throw BridgeException("internal", "platform TLS socket has no exporter")
+                val exported = SSLSockets.exportKeyingMaterial(s, PairingPacket.EXPORTER_LABEL, null, PairingPacket.EXPORTER_SIZE)
+                    ?: throw BridgeException("internal", "TLS exporter returned nothing")
+                val codeBytes = ByteArray(code.size) { code[it].code.toByte() } // ASCII digits only (keypad)
+                code.fill('\u0000')
+                val password = codeBytes + exported
+                codeBytes.fill(0); exported.fill(0)
+                val out = s.outputStream
+                val inp = s.inputStream
+                Spake2.alice().use { spake ->
+                    val ours = spake.generateMessage(password) // wipes password
+                    out.write(PairingPacket.frame(PairingPacket.TYPE_SPAKE2_MSG, ours)); out.flush()
+                    val theirs = PairingPacket.read(inp, PairingPacket.TYPE_SPAKE2_MSG)
+                    val keyMaterial = spake.processMessage(theirs)
+                    val cipher = PairingCipher(keyMaterial)
+                    keyMaterial.fill(0)
+                    try {
+                        val info = PairingPacket.peerInfo(AdbPubkey.encodeWithName(key.publicKey, AdbKeys.NAME))
+                        out.write(PairingPacket.frame(PairingPacket.TYPE_PEER_INFO, cipher.encrypt(info))); out.flush()
+                        val sealed = PairingPacket.read(inp, PairingPacket.TYPE_PEER_INFO)
+                        cipher.decrypt(sealed) // AEADBadTagException with a wrong code
+                    } finally { cipher.wipe() }
+                }
             }
+        } catch (e: BridgeException) {
+            throw e
+        } catch (_: ConnectException) {
+            throw BridgeException("pairing_closed", "Nothing answers on the pairing port. Open the pairing screen again.")
+        } catch (_: Exception) {
+            // No exception text is passed on: messages come only from this class and never contain the code.
+            throw BridgeException("code_rejected", CODE_REJECTED)
+        } finally {
+            code.fill('\u0000')
         }
     }
 
-    /** Connects to the Wireless debugging connection port and runs `shell:<command>`; returns its output. */
-    fun shell(port: Int, command: String): String {
-        val raw = Socket().apply { connect(InetSocketAddress(host, port), 5000); soTimeout = 15000; tcpNoDelay = true }
-        raw.use {
+    /**
+     * Connects to the connection port on 127.0.0.1: CNXN -> STLS -> TLS 1.3 with the client key -> CNXN, then the
+     * provenance check. Returns a verified, started connection or throws a [BridgeException] with the reason.
+     */
+    fun connect(port: Int): AdbConnection {
+        val raw = try { dial(port, 5_000) } catch (_: IOException) {
+            throw BridgeException("needs_wifi", "Nothing answers on 127.0.0.1:$port. Wireless debugging is off or the port changed.")
+        }
+        var conn: AdbConnection? = null
+        try {
             val rawOut = raw.getOutputStream()
-            rawOut.write(AdbMessage(AdbMessage.A_CNXN, AdbMessage.VERSION, AdbMessage.MAX_DATA, "host::\u0000".toByteArray()).encode())
+            rawOut.write(AdbMessage(AdbMessage.A_CNXN, AdbMessage.VERSION, AdbMessage.MAX_DATA, BANNER).encode())
             rawOut.flush()
-            val first = AdbMessage.read(raw.getInputStream())
-            log("adbd answered ${AdbMessage.name(first.command)}")
-            if (first.command == AdbMessage.A_AUTH) throw IOException("adbd asked for legacy AUTH, not TLS: is this the Wireless debugging port?")
-            check(first.command == AdbMessage.A_STLS) { "expected STLS, got ${AdbMessage.name(first.command)}" }
+            val first = try { AdbMessage.read(raw.getInputStream()) } catch (_: IOException) {
+                throw BridgeException("endpoint_unverified", "The endpoint on port $port does not speak adb.")
+            }
+            if (first.command != AdbMessage.A_STLS) {
+                throw BridgeException("endpoint_unverified", "The endpoint on port $port is not Wireless debugging (no TLS).")
+            }
             rawOut.write(AdbMessage(AdbMessage.A_STLS, AdbMessage.STLS_VERSION, 0).encode()); rawOut.flush()
             val tls = tlsSocket(raw, port)
-            tls.startHandshake() // proves the Keystore key signed CertificateVerify (adbd checks it against paired keys)
-            describe("connect", tls)
-            val inp = tls.inputStream
-            val out = tls.outputStream
-            val cnxn = AdbMessage.read(inp)
-            check(cnxn.command == AdbMessage.A_CNXN) { "expected CNXN after TLS, got ${AdbMessage.name(cnxn.command)}" }
-            log("device banner: ${String(cnxn.data, Charsets.UTF_8).trimEnd('\u0000').take(200)}")
-            return runStream(inp, out, "shell:$command")
+            val cnxn = try {
+                tls.startHandshake()
+                AdbMessage.read(tls.inputStream)
+            } catch (_: SocketTimeoutException) {
+                throw BridgeException("endpoint_unverified", "The endpoint on port $port did not finish the adb handshake.")
+            } catch (_: SSLException) {
+                throw BridgeException("not_paired", NOT_PAIRED)
+            } catch (_: IOException) {
+                throw BridgeException("not_paired", NOT_PAIRED)
+            }
+            if (cnxn.command != AdbMessage.A_CNXN) throw BridgeException("endpoint_unverified", "Unexpected adb handshake on port $port.")
+            tls.soTimeout = 0
+            val c = AdbConnection(tls.inputStream, tls.outputStream) { runCatching { tls.close() }; runCatching { raw.close() } }
+            conn = c.start()
+            verify(c)
+            return c
+        } catch (e: Exception) {
+            conn?.close()
+            runCatching { raw.close() }
+            if (e is BridgeException) throw e
+            throw BridgeException("endpoint_unverified", "The endpoint on port $port failed the adb handshake.")
         }
     }
 
-    private fun runStream(inp: InputStream, out: OutputStream, service: String): String {
-        val localId = 1
-        out.write(AdbMessage(AdbMessage.A_OPEN, localId, 0, (service + "\u0000").toByteArray()).encode()); out.flush()
-        var remoteId = 0
-        val result = ByteArrayOutputStream()
-        while (true) {
-            val m = AdbMessage.read(inp)
-            when (m.command) {
-                AdbMessage.A_OKAY -> remoteId = m.arg0
-                AdbMessage.A_WRTE -> {
-                    result.write(m.data)
-                    out.write(AdbMessage(AdbMessage.A_OKAY, localId, m.arg0).encode()); out.flush()
-                }
-                AdbMessage.A_CLSE -> {
-                    if (remoteId != 0) { out.write(AdbMessage(AdbMessage.A_CLSE, localId, remoteId).encode()); out.flush() }
-                    return result.toString(Charsets.UTF_8.name())
-                }
-                else -> log("ignored ${AdbMessage.name(m.command)}")
-            }
+    /** Design 4.4: the peer must make the provider call as uid 2000 with our nonce within 5 s and exit 0. */
+    private fun verify(conn: AdbConnection) {
+        val nonce = provenance.issue()
+        val exit = try {
+            AdbOps.shell(conn, provenance.command(nonce), 5_000) { _, _ -> }
+        } catch (_: IOException) {
+            -1
         }
+        val proven = provenance.await(nonce, if (exit == 0) 5_000 else 1)
+        if (exit != 0 || !proven) {
+            throw BridgeException("endpoint_unverified", "The endpoint could not prove it is this device's adbd (provenance check failed).")
+        }
+    }
+
+    private fun dial(port: Int, soTimeout: Int): Socket {
+        require(EndpointChooser.validPort(port)) { "bad port" }
+        val s = Socket()
+        try {
+            s.connect(InetSocketAddress(loopback, port), 5_000)
+            s.soTimeout = soTimeout
+            s.tcpNoDelay = true
+        } catch (e: IOException) {
+            runCatching { s.close() }
+            throw e
+        }
+        return s
     }
 
     private fun tlsSocket(base: Socket, port: Int): SSLSocket {
         val ctx = SSLContext.getInstance("TLSv1.3")
-        ctx.init(arrayOf(keyManager()), arrayOf(trustAnyServer()), SecureRandom())
-        log("TLS provider: ${ctx.provider.name} ${ctx.provider.version}")
-        val s = ctx.socketFactory.createSocket(base, host, port, true) as SSLSocket
+        ctx.init(arrayOf(keyManager()), arrayOf(anyServerCertificate()), SecureRandom())
+        val s = ctx.socketFactory.createSocket(base, "127.0.0.1", port, true) as SSLSocket
         s.enabledProtocols = arrayOf("TLSv1.3")
         return s
-    }
-
-    private fun describe(what: String, s: SSLSocket) {
-        val sess = s.session
-        val server = (sess.peerCertificates.firstOrNull() as? X509Certificate)?.encoded
-        val fp = server?.let { MessageDigest.getInstance("SHA-256").digest(it).joinToString("") { b -> "%02x".format(b) } }
-        log("$what TLS ok: ${sess.protocol} ${sess.cipherSuite}; client key ${key.storageDescription()}; server cert sha256=$fp")
     }
 
     private fun keyManager() = object : X509ExtendedKeyManager() {
@@ -143,11 +170,18 @@ class AdbBridge(private val key: AdbKey, private val log: (String) -> Unit) {
         override fun chooseServerAlias(keyType: String?, issuers: Array<out Principal>?, socket: Socket?) = null
     }
 
-    // Spike only: adbd's certificate is not pinned here. K1 implements the provenance check of design 4.4.
-    @android.annotation.SuppressLint("CustomX509TrustManager", "TrustAllX509TrustManager")
-    private fun trustAnyServer() = object : X509TrustManager {
+    // adbd's certificate is generated at runtime and identifies nothing (design 3.4). Trust comes from the
+    // loopback-only dial plus the provenance check of every connection, not from the certificate.
+    @SuppressLint("CustomX509TrustManager", "TrustAllX509TrustManager")
+    private fun anyServerCertificate() = object : X509TrustManager {
         override fun checkClientTrusted(chain: Array<out X509Certificate>?, authType: String?) {}
         override fun checkServerTrusted(chain: Array<out X509Certificate>?, authType: String?) {}
         override fun getAcceptedIssuers(): Array<X509Certificate> = emptyArray()
+    }
+
+    companion object {
+        val BANNER = "host::features=shell_v2,cmd\u0000".toByteArray(Charsets.UTF_8)
+        const val CODE_REJECTED = "Code not accepted. Open the pairing screen again for a new code."
+        const val NOT_PAIRED = "Authorization ended in Android. Pair again in the Minion app."
     }
 }

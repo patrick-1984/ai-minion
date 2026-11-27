@@ -1,4 +1,4 @@
-// Spike K0: JNI shim over BoringSSL SPAKE2 (spake25519) for adb Wireless debugging pairing.
+// Device control: JNI shim over BoringSSL SPAKE2 (spake25519) for adb Wireless debugging pairing.
 // SPDX-License-Identifier: Apache-2.0
 //
 // The adb pairing protocol (AOSP packages/modules/adb pairing_auth/pairing_auth.cpp) uses BoringSSL
@@ -14,7 +14,7 @@
 #include <openssl/curve25519.h>
 #include <openssl/mem.h>
 
-#define JNI_FN(name) Java_cc_nasz_minion_adbspike_Spake2_##name
+#define JNI_FN(name) Java_cc_nasz_minion_devicecontrol_Spake2_##name
 
 static void throw_state(JNIEnv *env, const char *msg) {
     jclass c = (*env)->FindClass(env, "java/lang/IllegalStateException");

@@ -1,6 +1,6 @@
-# Spike K0: libminion_spake2.so = JNI shim + BoringSSL libcrypto (static), for the adb pairing SPAKE2.
-# Built only with -PminionAdbSpike=true (debug builds). Also builds on the host (Linux) for JVM unit tests:
-#   cmake -S android/app/src/adbSpike/cpp -B build-host -G Ninja -DMINION_BORINGSSL_DIR=<checkout>
+# Device control: libminion_spake2.so = JNI shim + BoringSSL libcrypto (static), for the adb pairing SPAKE2.
+# Built only with -PminionDeviceControl=true. Also builds on the host (Linux) for JVM unit tests:
+#   cmake -S android/app/src/main/cpp -B build-host -G Ninja -DMINION_BORINGSSL_DIR=<checkout of the pinned tag>
 cmake_minimum_required(VERSION 3.22)
 project(minion_spake2 C CXX)
 
@@ -33,3 +33,7 @@ target_link_libraries(minion_spake2 PRIVATE crypto)
 target_compile_options(minion_spake2 PRIVATE -Wall -Wextra -Werror -fvisibility=hidden)
 # Only the JNI entry points are exported; BoringSSL symbols stay private. 16 KiB pages (Android 15+).
 target_link_options(minion_spake2 PRIVATE -Wl,--exclude-libs,ALL -Wl,--gc-sections -Wl,-z,max-page-size=16384)
+# The app keeps debug symbols of its Go/tmux PIEs (keepDebugSymbols); this library has nothing to keep.
+if(ANDROID)
+  target_link_options(minion_spake2 PRIVATE -Wl,--strip-all)
+endif()

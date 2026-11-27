@@ -1,6 +1,6 @@
-// Spike K0 host tests: wire formats, HKDF vector, self-signed cert, and the BoringSSL SPAKE2 JNI shim.
+// Device control host tests: wire formats, HKDF vector, self-signed cert, and the BoringSSL SPAKE2 JNI shim.
 // SPDX-License-Identifier: Apache-2.0
-package cc.nasz.minion.adbspike
+package cc.nasz.minion.devicecontrol
 
 import java.io.ByteArrayInputStream
 import java.nio.ByteBuffer
@@ -18,7 +18,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeTrue
 import org.junit.Test
 
-class AdbSpikeTest {
+class AdbWireTest {
     private fun hex(s: String) = s.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
 
     @Test fun hkdfRfc5869Case1() {

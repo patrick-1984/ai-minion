@@ -1,6 +1,6 @@
-// Spike K0: Kotlin side of the BoringSSL SPAKE2 JNI shim (libminion_spake2.so).
+// Device control: Kotlin side of the BoringSSL SPAKE2 JNI shim (libminion_spake2.so).
 // SPDX-License-Identifier: Apache-2.0
-package cc.nasz.minion.adbspike
+package cc.nasz.minion.devicecontrol
 
 import java.io.Closeable
 

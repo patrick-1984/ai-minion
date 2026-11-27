@@ -32,6 +32,7 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
+import cc.nasz.minion.devicecontrol.DeviceControl
 import java.net.URI
 import java.time.Instant
 import java.time.ZoneId
@@ -66,6 +67,8 @@ class MainActivity : Activity() {
     private lateinit var forget: Button
     private lateinit var clearOverride: Button
     private lateinit var reviewUsage: Button
+    // Only in -PminionDeviceControl=true builds (BuildConfig.DEVICE_CONTROL); never created otherwise.
+    private var deviceControl: Button? = null
 
     private val service = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName, binder: IBinder) {
@@ -258,6 +261,11 @@ class MainActivity : Activity() {
                 .setPositiveButton("Clear") { _, _ -> worker?.clearDialOverride() }.show()
         }
         page.addView(clearOverride, row(6))
+        if (DeviceControl.available) {
+            deviceControl = button("Device control") {
+                startActivity(Intent().setClassName(this, "cc.nasz.minion.devicecontrol.DeviceControlActivity"))
+            }.also { page.addView(it, row(6)) }
+        }
         return scroll
     }
 
@@ -305,7 +313,11 @@ class MainActivity : Activity() {
         reviewUsage.visible(value.usage?.accepted == false && !value.busy)
         forget.visible(configured && !value.wanted && !value.busy)
         clearOverride.visible(value.dialOverride.isNotBlank() && !value.wanted && !value.busy)
-        val controls = listOf(done, pair, token, start, pause, stop, share, boot, reviewUsage, forget, clearOverride)
+        deviceControl?.let {
+            it.visible(configured && !value.busy)
+            it.text = value.deviceControl.ifEmpty { "Device control: off" }
+        }
+        val controls = listOfNotNull(done, pair, token, start, pause, stop, share, boot, reviewUsage, forget, clearOverride, deviceControl)
         for (control in controls) control.isEnabled = worker != null
         if (television && currentFocus == null) {
             controls.firstOrNull { it.isEnabled && it.visibility == View.VISIBLE }?.requestFocus()

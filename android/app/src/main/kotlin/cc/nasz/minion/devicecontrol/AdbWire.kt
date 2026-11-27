@@ -1,10 +1,10 @@
-// Spike K0: adb wire formats (pure JVM, unit-tested on the host).
+// Device control: adb wire formats (pure JVM, unit-tested on the host).
 // SPDX-License-Identifier: Apache-2.0
 //
 // Written for Minion from the AOSP adb sources (packages/modules/adb: protocol.txt, pairing_connection.cpp,
 // pairing_auth.cpp, aes_128_gcm.cpp, libcrypto_utils/android_pubkey.cpp; Apache-2.0), cross-read with
 // libadb-android 3.1.1 (used under its Apache-2.0 option). No code of spake2-java is used.
-package cc.nasz.minion.adbspike
+package cc.nasz.minion.devicecontrol
 
 import java.io.DataInputStream
 import java.io.EOFException
@@ -170,5 +170,109 @@ class AdbMessage(val command: Int, val arg0: Int, val arg1: Int, val data: ByteA
 
         fun name(cmd: Int): String =
             String(ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).putInt(cmd).array(), Charsets.US_ASCII)
+    }
+}
+
+/** adb shell protocol v2 (shell_protocol.h): id(1) + data length (4, little-endian) + data. */
+object ShellV2 {
+    const val STDIN = 0
+    const val STDOUT = 1
+    const val STDERR = 2
+    const val EXIT = 3
+    const val CLOSE_STDIN = 4
+    const val HEADER = 5
+    const val MAX_PACKET = 1024 * 1024
+
+    fun packet(id: Int, data: ByteArray = ByteArray(0)): ByteArray =
+        ByteBuffer.allocate(HEADER + data.size).order(ByteOrder.LITTLE_ENDIAN)
+            .put(id.toByte()).putInt(data.size).put(data).array()
+
+    /** Incremental parser: adb WRTE boundaries do not line up with shell packets. */
+    class Parser {
+        private var buf = ByteArray(0)
+
+        fun feed(chunk: ByteArray): List<Pair<Int, ByteArray>> {
+            buf += chunk
+            val out = ArrayList<Pair<Int, ByteArray>>()
+            var pos = 0
+            while (buf.size - pos >= HEADER) {
+                val len = ByteBuffer.wrap(buf, pos + 1, 4).order(ByteOrder.LITTLE_ENDIAN).int
+                if (len < 0 || len > MAX_PACKET) throw IOException("shell v2: bad packet length $len")
+                if (buf.size - pos - HEADER < len) break
+                out.add((buf[pos].toInt() and 0xff) to buf.copyOfRange(pos + HEADER, pos + HEADER + len))
+                pos += HEADER + len
+            }
+            buf = buf.copyOfRange(pos, buf.size)
+            return out
+        }
+
+        val pending: Int get() = buf.size
+    }
+}
+
+/** Builds remote command lines. Every argument is single-quoted for the device's /system/bin/sh. */
+object ShellQuote {
+    fun quote(arg: String): String = "'" + arg.replace("'", "'\\''") + "'"
+
+    /**
+     * One argument is a command line as typed (`minion adb shell -- 'ls | head'`); several arguments are an
+     * argument vector, each quoted (`minion adb shell -- sh -c 'exit 7'` keeps `exit 7` as one argument).
+     */
+    fun commandLine(argv: List<String>): String {
+        require(argv.isNotEmpty() && argv.none { it.contains('\u0000') }) { "empty command or NUL in an argument" }
+        return if (argv.size == 1) argv[0] else argv.joinToString(" ") { quote(it) }
+    }
+}
+
+/** The four `input` forms of design 4.6, validated before anything is sent (exit 2 on the Worker side). */
+object InputArgs {
+    private val keycode = Regex("""(KEYCODE_[A-Z0-9_]{1,40}|[0-9]{1,3})""")
+    private val number = Regex("""[0-9]{1,5}""")
+
+    /** Returns the remote command line, or null if the arguments are not one of the allowed forms. */
+    fun commandLine(args: List<String>): String? {
+        if (args.isEmpty()) return null
+        val rest = args.drop(1)
+        val ok = when (args[0]) {
+            "keyevent" -> rest.size in 1..8 && rest.all { keycode.matches(it) }
+            "text" -> rest.size == 1 && rest[0].length in 1..1000 && rest[0].none { it.isISOControl() }
+            "tap" -> rest.size == 2 && rest.all { number.matches(it) }
+            "swipe" -> rest.size in 4..5 && rest.all { number.matches(it) }
+            else -> false
+        }
+        return if (ok) (listOf("input") + args).joinToString(" ") { ShellQuote.quote(it) } else null
+    }
+}
+
+/**
+ * Splits the small command lines the Worker builds (safe bare words and '...' with '\'' escapes) back into words.
+ * Anything else (other unquoted characters, double quotes, `$`, `;`, unbalanced quotes) gives null: refused.
+ */
+object ShellWords {
+    private fun safe(c: Char) = c.isLetterOrDigit() && c.code < 128 || c in "_@%+=:,./-"
+
+    fun split(line: String): List<String>? {
+        val words = ArrayList<String>()
+        var cur: StringBuilder? = null
+        var i = 0
+        while (i < line.length) {
+            val c = line[i]
+            when {
+                c == ' ' -> { cur?.let { words.add(it.toString()) }; cur = null; i++ }
+                c == '\'' -> {
+                    val end = line.indexOf('\'', i + 1)
+                    if (end < 0) return null
+                    (cur ?: StringBuilder().also { cur = it }).append(line, i + 1, end)
+                    i = end + 1
+                }
+                c == '\\' && i + 1 < line.length && line[i + 1] == '\'' -> {
+                    (cur ?: StringBuilder().also { cur = it }).append('\''); i += 2
+                }
+                safe(c) -> { (cur ?: StringBuilder().also { cur = it }).append(c); i++ }
+                else -> return null
+            }
+        }
+        cur?.let { words.add(it.toString()) }
+        return words
     }
 }
